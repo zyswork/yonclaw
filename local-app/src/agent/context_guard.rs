@@ -343,6 +343,132 @@ pub fn enforce(
     }
 }
 
+/// 智能上下文压缩（异步版本）
+///
+/// 参考 Hermes Agent：保护前 3 条 + 后 4 条消息，
+/// 中间部分用 LLM 生成摘要替换，而不是直接删除。
+/// 在 agent_loop 中当 token 超预算时调用。
+pub async fn compress_with_summary(
+    messages: &mut Vec<serde_json::Value>,
+    config: &ContextGuardConfig,
+    llm_config: &super::llm::LlmConfig,
+) -> Option<String> {
+    let budget = config.total_budget();
+    let current_tokens = estimate_total(messages);
+
+    // 只在超过 60% 预算时触发摘要压缩
+    if current_tokens < (budget as f64 * 0.6) as usize {
+        return None;
+    }
+
+    let protect_first = 3usize; // 保护前 3 条（system + 首轮对话）
+    let protect_last = 4usize;  // 保护后 4 条（最近的上下文）
+
+    if messages.len() <= protect_first + protect_last + 2 {
+        return None; // 太短没必要压缩
+    }
+
+    let compress_start = protect_first;
+    let compress_end = messages.len().saturating_sub(protect_last);
+    if compress_start >= compress_end {
+        return None;
+    }
+
+    // 提取要压缩的中间消息
+    let middle = &messages[compress_start..compress_end];
+    let middle_tokens: usize = middle.iter().map(estimate_message_tokens).sum();
+
+    // 只有中间部分足够大才值得压缩
+    if middle_tokens < 2000 {
+        return None;
+    }
+
+    // 构建摘要输入
+    let mut summary_input = String::new();
+    for msg in middle {
+        let role = msg["role"].as_str().unwrap_or("?");
+        if role == "system" { continue; }
+        let content = msg["content"].as_str().unwrap_or("");
+        let truncated: String = content.chars().take(300).collect();
+        match role {
+            "user" => summary_input.push_str(&format!("用户: {}\n", truncated)),
+            "assistant" => summary_input.push_str(&format!("助手: {}\n", truncated)),
+            "tool" => {
+                let name = msg["name"].as_str().unwrap_or("tool");
+                let preview: String = content.chars().take(100).collect();
+                summary_input.push_str(&format!("[工具 {}]: {}\n", name, preview));
+            }
+            _ => {}
+        }
+    }
+
+    // 用 LLM 生成摘要
+    let prompt = format!(
+        "请将以下对话历史压缩为简洁摘要（3-5 句话），保留关键信息、决策和上下文。不要遗漏重要的工具调用结果。\n\n{}", summary_input
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let client = super::llm::LlmClient::new(super::llm::LlmConfig {
+        temperature: Some(0.2),
+        max_tokens: Some(500),
+        ..llm_config.clone()
+    });
+
+    let summary = match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        client.call_stream(
+            &[serde_json::json!({"role": "user", "content": prompt})],
+            None, None, tx,
+        ),
+    ).await {
+        Ok(Ok(resp)) => {
+            if resp.content.trim().is_empty() {
+                // 收集 stream 输出
+                let mut collected = String::new();
+                while let Ok(token) = rx.try_recv() { collected.push_str(&token); }
+                collected
+            } else {
+                resp.content
+            }
+        }
+        _ => {
+            log::warn!("上下文压缩: LLM 摘要生成超时或失败，回退到简单删除");
+            return None;
+        }
+    };
+
+    if summary.trim().is_empty() {
+        return None;
+    }
+
+    // 用摘要消息替换中间部分
+    let summary_msg = serde_json::json!({
+        "role": "assistant",
+        "content": format!("[对话摘要]\n{}", summary.trim())
+    });
+
+    // 重建消息列表：前 N + 摘要 + 后 N
+    let mut new_messages = Vec::new();
+    new_messages.extend_from_slice(&messages[..compress_start]);
+    new_messages.push(summary_msg);
+    new_messages.extend_from_slice(&messages[compress_end..]);
+
+    let old_count = messages.len();
+    let new_tokens = estimate_total(&new_messages);
+    *messages = new_messages;
+
+    // 修复 tool_call/result 配对
+    repair_tool_pairing(messages);
+
+    let saved = middle_tokens.saturating_sub(estimate_message_tokens(&messages[compress_start]));
+    log::info!(
+        "上下文压缩: {}条→{}条，{} tokens→{} tokens（节省 {}）",
+        old_count, messages.len(), current_tokens, new_tokens, saved
+    );
+
+    Some(summary)
+}
+
 // ────────────────────────────────────────────────────────────────
 // 保护逻辑
 // ────────────────────────────────────────────────────────────────

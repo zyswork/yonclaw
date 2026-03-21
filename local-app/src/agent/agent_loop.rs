@@ -38,6 +38,8 @@ pub struct AgentLoopDeps<'a> {
     pub agent_config: Option<String>,
     /// 模型提供商注册表（Phase 1: 可选，为空则用传统 LlmClient）
     pub provider_registry: Option<&'a crate::plugin_system::ProviderRegistry>,
+    /// 进化引擎状态（跟踪工具调用次数）
+    pub evolution_state: Option<&'a std::sync::Arc<super::self_evolution::EvolutionState>>,
 }
 
 /// 多轮工具调用循环
@@ -101,6 +103,15 @@ pub async fn run_agent_loop(
         // 每轮执行 ContextGuard（防止工具调用累积导致上下文爆炸）
         if round > 0 {
             let guard_config = super::context_guard::ContextGuardConfig::for_model(&config.model);
+            // 先尝试智能摘要压缩（用 LLM 生成中间对话摘要）
+            let guard_config_clone = guard_config.clone();
+            if let Some(summary) = super::context_guard::compress_with_summary(
+                &mut messages, &guard_config_clone, config,
+            ).await {
+                log::info!("智能压缩(round {}): 已生成摘要（{}字符），消息数={}",
+                    round + 1, summary.len(), messages.len());
+            }
+            // 摘要后仍超预算则用传统方式截断
             let guard_result = super::context_guard::enforce(&guard_config, &mut messages);
             if guard_result.modified {
                 log::info!("ContextGuard(round {}): {}→{} tokens, removed={}, compacted={}",
@@ -338,6 +349,11 @@ pub async fn run_agent_loop(
                 // 尝试外部工具（MCP 等）
                 execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
             };
+
+            // 记录工具调用到进化引擎
+            if let Some(es) = deps.evolution_state {
+                es.on_tool_call();
+            }
 
             // 审计
             let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc.name, &tc.arguments.to_string(), Some(&result_text), success, "allowed", source, duration_ms).await;

@@ -71,6 +71,10 @@ pub struct Orchestrator {
     pub plugin_registry: crate::plugin_sdk::PluginRegistry,
     /// 模型提供商注册表
     provider_registry: crate::plugin_system::ProviderRegistry,
+    /// 自我进化状态
+    pub evolution_state: std::sync::Arc<super::self_evolution::EvolutionState>,
+    /// 自我进化配置
+    evolution_config: super::self_evolution::EvolutionConfig,
 }
 
 impl Orchestrator {
@@ -92,6 +96,7 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(SettingsTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(ProviderTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(AgentSelfConfigTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(super::delegate::DelegateTaskTool::new(pool.clone())));
         let mcp_manager = McpManager::new(pool.clone());
         // 初始化钩子运行器（注册默认日志钩子）
         let mut hook_runner = super::hooks::HookRunner::new();
@@ -118,6 +123,8 @@ impl Orchestrator {
             },
             plugin_registry: crate::plugin_sdk::PluginRegistry::new(),
             provider_registry: crate::plugin_system::create_default_registry(),
+            evolution_state: std::sync::Arc::new(super::self_evolution::EvolutionState::new()),
+            evolution_config: super::self_evolution::EvolutionConfig::default(),
         }
     }
 
@@ -705,6 +712,7 @@ impl Orchestrator {
             lifecycle: &self.lifecycle,
             agent_config: agent.config.clone(),
             provider_registry: Some(&self.provider_registry),
+            evolution_state: Some(&self.evolution_state),
         };
         let response = match super::agent_loop::run_agent_loop(&loop_deps, &config, final_messages, system_prompt_opt, provider, &tx, &final_tool_defs, &skill_tools, agent_id, session_id, &cancel_token, dispatcher.as_ref()).await {
             Ok(resp) => resp,
@@ -780,6 +788,46 @@ impl Orchestrator {
 
         // 11. 每日 Token 限额检查（异步，不阻塞返回，超限下次请求拦截）
         // TODO: 在 send_message_stream 入口处做前置检查
+
+        // 11. 自我进化：检查是否触发后台 review
+        {
+            self.evolution_state.on_user_message();
+            let should_skill = self.evolution_state.should_review_skills(&self.evolution_config);
+            let should_memory = self.evolution_state.should_review_memory(&self.evolution_config);
+
+            if should_skill || should_memory {
+                let review_type = if should_skill && should_memory {
+                    super::self_evolution::ReviewType::Both
+                } else if should_skill {
+                    super::self_evolution::ReviewType::Skill
+                } else {
+                    super::self_evolution::ReviewType::Memory
+                };
+
+                log::info!("进化引擎: 触发 {:?} review（tool_calls={}, user_msgs={}）",
+                    review_type,
+                    self.evolution_state.tool_calls_since_skill_review.load(std::sync::atomic::Ordering::Relaxed),
+                    self.evolution_state.user_msgs_since_memory_review.load(std::sync::atomic::Ordering::Relaxed),
+                );
+
+                // 获取最近的对话消息
+                let recent = memory::conversation::load_chat_messages(&self.pool, session_id, 30).await.unwrap_or_default();
+                if recent.len() >= 4 {
+                    super::self_evolution::spawn_background_review(
+                        self.pool.clone(),
+                        agent_id.to_string(),
+                        session_id.to_string(),
+                        api_key.to_string(),
+                        provider.to_string(),
+                        base_url.map(|s| s.to_string()),
+                        agent.model.clone(),
+                        review_type,
+                        recent,
+                        self.evolution_state.clone(),
+                    ).await;
+                }
+            }
+        }
 
         Ok(response)
     }

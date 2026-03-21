@@ -69,7 +69,7 @@ const BUILTIN_TOOLS = [
   { name: 'agent_self_config', desc: '自身配置', icon: '\u{1F916}' },
 ]
 
-const CATEGORIES = ['全部', '已安装', '可安装', '生产力', '开发', '媒体', '平台', '内置工具']
+const CATEGORIES = ['全部', '已安装', '可安装', '在线市场', '生产力', '开发', '媒体', '平台', '内置工具']
 
 export default function SkillsPage() {
   const [marketplace, setMarketplace] = useState<MarketplaceSkill[]>([])
@@ -79,9 +79,13 @@ export default function SkillsPage() {
   const [activeTab, setActiveTab] = useState('全部')
   const [loading, setLoading] = useState(true)
   const [operating, setOperating] = useState('')
+  const [onlineSkills, setOnlineSkills] = useState<any[]>([])
+  const [onlineSearch, setOnlineSearch] = useState('')
+  const [onlineLoading, setOnlineLoading] = useState(false)
 
   useEffect(() => { loadAgents() }, [])
   useEffect(() => { if (selectedAgent) loadAll() }, [selectedAgent])
+  useEffect(() => { if (activeTab === '在线市场') loadOnlineSkills() }, [activeTab])
 
   const loadAgents = async () => {
     try {
@@ -101,6 +105,22 @@ export default function SkillsPage() {
       setMarketplace(mp)
       setInstalled(inst)
     } catch { /* ignore */ }
+  }
+
+  const loadOnlineSkills = async (q?: string) => {
+    setOnlineLoading(true)
+    try {
+      const url = q
+        ? `https://zys-openclaw.com/api/v1/skill-hub/search?q=${encodeURIComponent(q)}`
+        : 'https://zys-openclaw.com/api/v1/skill-hub/search'
+      const resp = await invoke<string>('cloud_api_proxy', { url, method: 'GET', body: '' })
+      const data = JSON.parse(resp)
+      setOnlineSkills(data.skills || [])
+    } catch (e) {
+      console.error('加载在线技能失败:', e)
+      setOnlineSkills([])
+    }
+    setOnlineLoading(false)
   }
 
   const installedNames = new Set(installed.map(s => s.name))
@@ -306,12 +326,62 @@ export default function SkillsPage() {
           </div>
         ))}
 
-        {filtered.length === 0 && (
+        {filtered.length === 0 && activeTab !== '在线市场' && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
             该分类暂无技能
           </div>
         )}
       </div>
+
+      {/* 在线市场 */}
+      {activeTab === '在线市场' && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input
+              value={onlineSearch}
+              onChange={e => setOnlineSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) loadOnlineSkills(onlineSearch) }}
+              placeholder="搜索在线技能..."
+              style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+            />
+            <button onClick={() => loadOnlineSkills(onlineSearch)}
+              style={{ padding: '8px 16px', borderRadius: 6, backgroundColor: 'var(--accent)', color: '#fff', border: 'none', fontSize: 13, cursor: 'pointer' }}>
+              搜索
+            </button>
+          </div>
+
+          {onlineLoading ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中...</div>
+          ) : onlineSkills.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>暂无在线技能</div>
+          ) : (
+            onlineSkills.map((s: any) => (
+              <div key={s.slug} style={{
+                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0',
+                borderBottom: '1px solid var(--border-subtle)',
+              }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: 10, backgroundColor: 'var(--bg-glass)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0,
+                }}>{s.icon || '🧩'}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</span>
+                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, backgroundColor: 'var(--bg-glass)', color: 'var(--text-muted)' }}>{s.category}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>⬇ {s.downloads}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.description}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                  v{s.version} · {s.author}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       {/* 底部提示 */}
       <div style={{
