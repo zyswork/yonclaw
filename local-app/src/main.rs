@@ -1998,6 +1998,68 @@ async fn run_install_cmd(skill_name: &str, cmd: &str, args: &[&str], path: &str)
     }
 }
 
+/// 从应用内置资源释放 marketplace 技能
+///
+/// 检查 ~/.yonclaw/marketplace/ 是否为空或缺少技能，
+/// 从 bundled-skills/ 资源释放到 marketplace 目录。
+fn seed_marketplace_skills() {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
+    let marketplace_dir = home.join(".yonclaw/marketplace");
+    let _ = std::fs::create_dir_all(&marketplace_dir);
+
+    // 获取应用的 resource 目录（Tauri 打包后在 .app/Contents/Resources/）
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    // Tauri 1.x 资源路径：
+    // macOS: YonClaw.app/Contents/Resources/bundled-skills/
+    // Windows: <exe_dir>/bundled-skills/
+    // Linux: <exe_dir>/bundled-skills/ 或 /usr/share/yonclaw/bundled-skills/
+    let possible_paths = vec![
+        exe_path.parent().unwrap_or(std::path::Path::new(".")).join("../Resources/bundled-skills"),
+        exe_path.parent().unwrap_or(std::path::Path::new(".")).join("bundled-skills"),
+        std::path::PathBuf::from("bundled-skills"), // 开发模式
+    ];
+
+    let bundled_dir = match possible_paths.iter().find(|p| p.exists()) {
+        Some(p) => p.clone(),
+        None => {
+            log::info!("Marketplace: 未找到内置技能资源目录（开发模式正常）");
+            return;
+        }
+    };
+
+    // 遍历内置技能，缺失的释放到 marketplace
+    let entries = match std::fs::read_dir(&bundled_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut seeded = 0;
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() { continue; }
+        let name = entry.file_name();
+        let dest = marketplace_dir.join(&name);
+        if !dest.exists() {
+            if let Ok(_) = copy_dir_recursive(&entry.path(), &dest) {
+                seeded += 1;
+            }
+        }
+    }
+
+    if seeded > 0 {
+        log::info!("Marketplace: 已释放 {} 个内置技能到 {}", seeded, marketplace_dir.display());
+    } else {
+        let count = std::fs::read_dir(&marketplace_dir).map(|e| e.count()).unwrap_or(0);
+        log::info!("Marketplace: {} 个技能已就绪", count);
+    }
+}
+
 /// 递归复制目录
 fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
@@ -3000,6 +3062,9 @@ async fn main() {
             }
         });
     }
+
+    // 释放内置技能到 marketplace（首次安装或 marketplace 为空时）
+    seed_marketplace_skills();
 
     // 记录初始化完成时间
     let init_elapsed = app_start_time.elapsed();
