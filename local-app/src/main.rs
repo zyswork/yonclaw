@@ -2541,6 +2541,30 @@ async fn cloud_api_proxy(
     resp.json::<serde_json::Value>().await.map_err(|e| format!("解析响应失败: {}", e))
 }
 
+/// 获取微信登录二维码
+#[tauri::command]
+async fn weixin_get_qrcode() -> Result<serde_json::Value, String> {
+    channels::weixin::get_login_qrcode().await
+}
+
+/// 轮询微信扫码状态
+#[tauri::command]
+async fn weixin_poll_status(qrcode: String) -> Result<serde_json::Value, String> {
+    channels::weixin::poll_qrcode_status(&qrcode).await
+}
+
+/// 保存微信 token 并启动轮询
+#[tauri::command]
+async fn weixin_save_token(
+    state: State<'_, Arc<AppState>>,
+    bot_token: String,
+) -> Result<(), String> {
+    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('weixin_bot_token', ?)")
+        .bind(&bot_token).execute(state.orchestrator.pool()).await;
+    log::info!("微信: token 已保存");
+    Ok(())
+}
+
 /// 验证 Telegram Bot Token（桌面端能翻墙访问 api.telegram.org）
 #[tauri::command]
 async fn verify_telegram_token(bot_token: String) -> Result<serde_json::Value, String> {
@@ -3378,6 +3402,29 @@ async fn main() {
                 });
             }
 
+            // 启动微信长轮询（如果配置了 token）
+            {
+                let wx_pool = pool_for_setup.clone();
+                let wx_orch = app_state_for_setup.orchestrator.clone();
+                let wx_handle = app.handle().clone();
+                tokio::spawn(async move {
+                    let token: Option<String> = sqlx::query_scalar(
+                        "SELECT value FROM settings WHERE key = 'weixin_bot_token'"
+                    ).fetch_optional(&wx_pool).await.ok().flatten();
+
+                    if let Some(token) = token {
+                        if !token.trim().is_empty() {
+                            channels::weixin::start_weixin(
+                                channels::weixin::WeixinConfig { bot_token: token.trim().to_string() },
+                                wx_pool, wx_orch, wx_handle,
+                            ).await;
+                        }
+                    } else {
+                        log::info!("微信: 未配置 bot token，跳过（需先扫码登录）");
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3464,6 +3511,9 @@ async fn main() {
             extract_memories_from_history,
             cleanup_system_sessions,
             cloud_api_proxy,
+            weixin_get_qrcode,
+            weixin_poll_status,
+            weixin_save_token,
             verify_telegram_token,
         ])
         .build(tauri::generate_context!())

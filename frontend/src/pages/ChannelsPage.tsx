@@ -18,7 +18,7 @@ const CHANNELS: ChannelInfo[] = [
   { id: 'telegram', name: 'Telegram', icon: '\u{1F4E8}', desc: '通过 Telegram Bot 与 AI 对话。从 @BotFather 获取 Token，一分钟接入。', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF...', type: 'password' }] },
   { id: 'feishu', name: '飞书 (Lark)', icon: '\u{1F426}', desc: '飞书群聊 AI 助手。在飞书开放平台创建应用，获取 App ID 和 Secret。', connected: false, configFields: [{ key: 'appId', label: 'App ID', placeholder: 'cli_xxx' }, { key: 'appSecret', label: 'App Secret', placeholder: '', type: 'password' }] },
   { id: 'dingtalk', name: '钉钉', icon: '\u{1F4AC}', desc: '钉钉群机器人接入。', connected: false },
-  { id: 'wechat', name: '微信', icon: '\u{1F4F1}', desc: '微信公众号/企业微信接入。', connected: false },
+  { id: 'wechat', name: '微信', icon: '\u{1F4F1}', desc: '通过 iLinkai 协议接入个人微信。扫码登录即可使用。', connected: false, configFields: [{ key: 'qrLogin', label: '扫码登录', placeholder: '点击获取二维码', type: 'qrcode' }] },
   { id: 'discord', name: 'Discord', icon: '\u{1F3AE}', desc: '通过 Bot API 接入 Discord。', connected: false },
   { id: 'slack', name: 'Slack', icon: '\u{1F4BC}', desc: 'Socket Mode 接入 Slack 工作区。', connected: false },
 ]
@@ -57,6 +57,50 @@ export default function ChannelsPage() {
   }
 
   const handleSetup = async (channelId: string) => {
+    if (channelId === 'wechat') {
+      setSaving(true); setError('正在获取登录二维码...')
+      try {
+        const qrData = await invoke<any>('weixin_get_qrcode')
+        const qrcodeUrl = qrData.qrcode_img_content || qrData.qrcode || ''
+        if (!qrcodeUrl) { setError('获取二维码失败'); setSaving(false); return }
+
+        // 显示二维码让用户扫
+        setError('请用微信扫描二维码登录（60秒内有效）')
+        const qrWindow = window.open('', '_blank', 'width=300,height=350')
+        if (qrWindow) {
+          qrWindow.document.write(`<html><body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif"><h3>微信扫码登录</h3><img src="data:image/png;base64,${qrcodeUrl}" style="width:250px;height:250px"/><p style="color:#999;font-size:12px">请用微信扫描二维码</p></body></html>`)
+        }
+
+        // 轮询扫码状态
+        const qrcode = qrData.qrcode
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 2000))
+          try {
+            const status = await invoke<any>('weixin_poll_status', { qrcode })
+            if (status.status === 'confirmed' && status.bot_token) {
+              await invoke('weixin_save_token', { botToken: status.bot_token })
+              await invoke('set_setting', { key: 'weixin_bot_token', value: status.bot_token })
+              if (qrWindow) qrWindow.close()
+              setConfiguring(null); setError('')
+              alert('微信已连接！重启应用后生效。')
+              checkStatuses()
+              setSaving(false)
+              return
+            }
+            if (status.status === 'scaned') {
+              setError('已扫码，请在手机上确认...')
+            }
+            if (status.status === 'expired') {
+              setError('二维码已过期，请重试')
+              if (qrWindow) qrWindow.close()
+              break
+            }
+          } catch { /* continue polling */ }
+        }
+      } catch (e: any) { setError('微信登录失败: ' + String(e)) }
+      setSaving(false)
+      return
+    }
     if (channelId === 'feishu') {
       const appId = formValues.appId?.trim()
       const appSecret = formValues.appSecret?.trim()

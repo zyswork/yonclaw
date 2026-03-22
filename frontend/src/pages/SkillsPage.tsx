@@ -112,15 +112,23 @@ export default function SkillsPage() {
   const loadOnlineSkills = async (q?: string) => {
     setOnlineLoading(true)
     try {
-      const url = q
-        ? `https://zys-openclaw.com/api/v1/skill-hub/search?q=${encodeURIComponent(q)}`
-        : 'https://zys-openclaw.com/api/v1/skill-hub/search'
-      const resp = await invoke<string>('cloud_api_proxy', { url, method: 'GET', body: '' })
-      const data = JSON.parse(resp)
+      const path = q
+        ? `/api/v1/skill-hub/search?q=${encodeURIComponent(q)}`
+        : '/api/v1/skill-hub/search'
+      const resp = await invoke<any>('cloud_api_proxy', { method: 'GET', path, body: null })
+      const data = resp
       setOnlineSkills(data.skills || [])
     } catch (e) {
       console.error('加载在线技能失败:', e)
-      setOnlineSkills([])
+      // fallback：直接 fetch（如果 WebView 允许）
+      try {
+        const url = q
+          ? `https://zys-openclaw.com/api/v1/skill-hub/search?q=${encodeURIComponent(q)}`
+          : 'https://zys-openclaw.com/api/v1/skill-hub/search'
+        const resp = await fetch(url)
+        const data = await resp.json()
+        setOnlineSkills(data.skills || [])
+      } catch { setOnlineSkills([]) }
     }
     setOnlineLoading(false)
   }
@@ -129,8 +137,9 @@ export default function SkillsPage() {
     setDownloading(slug)
     try {
       const msg = await invoke<string>('download_skill_from_hub', { slug })
-      await loadAll()
-      alert(msg)
+      await loadAll() // 刷新本地 marketplace 列表
+      loadOnlineSkills(onlineSearch) // 刷新在线列表（更新"已有"状态）
+      alert(msg + '\n\n现在可以在"全部"tab 里安装到 Agent。')
     } catch (e) { alert('下载失败: ' + e) }
     setDownloading('')
   }
@@ -140,7 +149,8 @@ export default function SkillsPage() {
     setPublishing(skillName)
     try {
       const msg = await invoke<string>('publish_skill_to_hub', { skillName, author })
-      alert(msg)
+      alert(msg + '\n\n所有用户都可以在"在线市场"看到并下载这个技能了。')
+      if (activeTab === '在线市场') loadOnlineSkills(onlineSearch)
     } catch (e) { alert('发布失败: ' + e) }
     setPublishing('')
   }

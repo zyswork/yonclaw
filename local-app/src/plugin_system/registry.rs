@@ -116,6 +116,12 @@ impl PluginRegistry {
             cf("app_secret", "App Secret", "password", true, ""),
         ]));
 
+        self.register(PluginManifest::builtin(
+            "weixin-channel", "\u{5FAE}\u{4FE1}",
+            "iLinkai \u{534F}\u{8BAE}\u{63A5}\u{5165}\u{4E2A}\u{4EBA}\u{5FAE}\u{4FE1}\u{FF0C}\u{626B}\u{7801}\u{767B}\u{5F55} + \u{957F}\u{8F6E}\u{8BE2}",
+            PluginType::Channel, "\u{1F4F1}",
+        ));
+
         // 规划中的渠道
         self.register(PluginManifest::builtin(
             "discord-channel", "Discord",
