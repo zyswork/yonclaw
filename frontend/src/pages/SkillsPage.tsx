@@ -82,6 +82,8 @@ export default function SkillsPage() {
   const [onlineSkills, setOnlineSkills] = useState<any[]>([])
   const [onlineSearch, setOnlineSearch] = useState('')
   const [onlineLoading, setOnlineLoading] = useState(false)
+  const [downloading, setDownloading] = useState('')
+  const [publishing, setPublishing] = useState('')
 
   useEffect(() => { loadAgents() }, [])
   useEffect(() => { if (selectedAgent) loadAll() }, [selectedAgent])
@@ -121,6 +123,26 @@ export default function SkillsPage() {
       setOnlineSkills([])
     }
     setOnlineLoading(false)
+  }
+
+  const handleDownloadFromHub = async (slug: string) => {
+    setDownloading(slug)
+    try {
+      const msg = await invoke<string>('download_skill_from_hub', { slug })
+      await loadAll()
+      alert(msg)
+    } catch (e) { alert('下载失败: ' + e) }
+    setDownloading('')
+  }
+
+  const handlePublishToHub = async (skillName: string) => {
+    const author = prompt('发布者名称（留空则为 community）:', '') || ''
+    setPublishing(skillName)
+    try {
+      const msg = await invoke<string>('publish_skill_to_hub', { skillName, author })
+      alert(msg)
+    } catch (e) { alert('发布失败: ' + e) }
+    setPublishing('')
   }
 
   const installedNames = new Set(installed.map(s => s.name))
@@ -296,20 +318,31 @@ export default function SkillsPage() {
 
             {/* 操作按钮 */}
             {!skill.isBuiltin && (
-              <div style={{ flexShrink: 0 }}>
-                {skill.installed ? (
+              <div style={{ flexShrink: 0, display: 'flex', gap: 6 }}>
+                {skill.installed ? (<>
+                  <button
+                    onClick={() => handlePublishToHub(skill.name)}
+                    disabled={publishing === skill.name}
+                    style={{
+                      padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                      border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
+                      color: 'var(--accent)', fontWeight: 500,
+                    }}
+                  >
+                    {publishing === skill.name ? '...' : '发布'}
+                  </button>
                   <button
                     onClick={() => handleUninstall(skill.name)}
                     disabled={operating === skill.name}
                     style={{
-                      padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
                       border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
                       color: 'var(--error)', fontWeight: 500,
                     }}
                   >
                     {operating === skill.name ? '...' : '卸载'}
                   </button>
-                ) : (
+                </>) : (
                   <button
                     onClick={() => handleInstall(skill.name)}
                     disabled={operating === skill.name}
@@ -374,8 +407,22 @@ export default function SkillsPage() {
                     {s.description}
                   </div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
-                  v{s.version} · {s.author}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>v{s.version}</span>
+                  {installedNames.has(s.slug) || marketplace.some(m => m.name === s.slug) ? (
+                    <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 500 }}>已有</span>
+                  ) : (
+                    <button
+                      onClick={() => handleDownloadFromHub(s.slug)}
+                      disabled={downloading === s.slug}
+                      style={{
+                        padding: '4px 12px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                        border: 'none', backgroundColor: 'var(--accent)', color: '#fff', fontWeight: 500,
+                      }}
+                    >
+                      {downloading === s.slug ? '下载中...' : '下载'}
+                    </button>
+                  )}
                 </div>
               </div>
             ))

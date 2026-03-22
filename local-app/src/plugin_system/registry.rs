@@ -107,17 +107,20 @@ impl PluginRegistry {
             PluginType::Channel, "\u{1F4E8}",
         ).with_config(vec![cf("bot_token", "Bot Token", "password", true, "123456:ABC-DEF...")]));
 
+        self.register(PluginManifest::builtin(
+            "feishu-channel", "飞书",
+            "WebSocket 长连接接入飞书，支持流式卡片输出、Markdown 渲染",
+            PluginType::Channel, "\u{1F426}",
+        ).with_config(vec![
+            cf("app_id", "App ID", "text", true, "cli_xxx"),
+            cf("app_secret", "App Secret", "password", true, ""),
+        ]));
+
         // 规划中的渠道
         self.register(PluginManifest::builtin(
             "discord-channel", "Discord",
             "通过 Bot API 接入 Discord 服务器",
             PluginType::Channel, "\u{1F3AE}",
-        ).with_status("planned"));
-
-        self.register(PluginManifest::builtin(
-            "feishu-channel", "飞书",
-            "飞书群聊 AI 助手",
-            PluginType::Channel, "\u{1F426}",
         ).with_status("planned"));
 
         self.register(PluginManifest::builtin(

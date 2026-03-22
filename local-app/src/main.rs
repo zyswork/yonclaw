@@ -1630,12 +1630,32 @@ async fn list_system_plugins(
     let db_state: std::collections::HashMap<String, bool> = rows.into_iter()
         .map(|(id, en)| (id, en == 1)).collect();
 
+    // 从 settings 读取渠道配置状态
+    let tg_token: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'telegram_bot_token'")
+        .fetch_optional(state.orchestrator.pool()).await.ok().flatten();
+    let feishu_id: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'feishu_app_id'")
+        .fetch_optional(state.orchestrator.pool()).await.ok().flatten();
+
     for p in &mut plugins {
-        if let Some(id) = p.get("id").and_then(|v| v.as_str()) {
-            if let Some(&enabled) = db_state.get(id) {
+        if let Some(id) = p.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+            // 全局启用状态
+            if let Some(&enabled) = db_state.get(&id) {
                 p["enabled"] = serde_json::Value::Bool(enabled);
             } else {
                 p["enabled"] = p.get("defaultEnabled").cloned().unwrap_or(serde_json::Value::Bool(true));
+            }
+
+            // 渠道连接状态
+            match id.as_str() {
+                "telegram-channel" => {
+                    let connected = tg_token.as_ref().map_or(false, |t| !t.trim().is_empty());
+                    p["connected"] = serde_json::Value::Bool(connected);
+                }
+                "feishu-channel" => {
+                    let connected = feishu_id.as_ref().map_or(false, |t| !t.trim().is_empty());
+                    p["connected"] = serde_json::Value::Bool(connected);
+                }
+                _ => {}
             }
         }
     }
@@ -1674,6 +1694,32 @@ async fn save_plugin_config(
     .bind(&plugin_id).bind(&config_json).bind(now)
     .execute(state.orchestrator.pool()).await
     .map_err(|e| format!("保存失败: {}", e))?;
+
+    // 渠道类插件：同步配置到 settings 表（让启动时的渠道初始化能读到）
+    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&config_json) {
+        match plugin_id.as_str() {
+            "telegram-channel" => {
+                if let Some(token) = cfg["bot_token"].as_str() {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('telegram_bot_token', ?)")
+                        .bind(token).execute(state.orchestrator.pool()).await;
+                    log::info!("插件配置同步: telegram_bot_token → settings");
+                }
+            }
+            "feishu-channel" => {
+                if let Some(id) = cfg["app_id"].as_str() {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('feishu_app_id', ?)")
+                        .bind(id).execute(state.orchestrator.pool()).await;
+                }
+                if let Some(secret) = cfg["app_secret"].as_str() {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('feishu_app_secret', ?)")
+                        .bind(secret).execute(state.orchestrator.pool()).await;
+                }
+                log::info!("插件配置同步: feishu_app_id/secret → settings");
+            }
+            _ => {}
+        }
+    }
+
     Ok(())
 }
 
@@ -1752,6 +1798,185 @@ async fn list_marketplace_skills() -> Result<Vec<serde_json::Value>, String> {
         }));
     }
     Ok(result)
+}
+
+/// 从云端技能市场下载并安装到本地 marketplace
+#[tauri::command]
+async fn download_skill_from_hub(
+    slug: String,
+) -> Result<String, String> {
+    let marketplace_dir = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".yonclaw/marketplace");
+    let dest = marketplace_dir.join(&slug);
+
+    if dest.exists() {
+        return Ok(format!("技能 {} 已存在于本地 marketplace", slug));
+    }
+
+    let client = reqwest::Client::new();
+
+    // 1. 先获取技能元数据
+    let meta_url = format!("https://zys-openclaw.com/api/v1/skill-hub/{}", slug);
+    let meta_resp = client.get(&meta_url).send().await
+        .map_err(|e| format!("获取技能信息失败: {}", e))?;
+    let meta: serde_json::Value = meta_resp.json().await
+        .map_err(|e| format!("解析技能信息失败: {}", e))?;
+
+    if meta.get("error").is_some() {
+        return Err(format!("技能不存在: {}", slug));
+    }
+
+    // 2. 尝试下载技能包
+    let download_url = format!("https://zys-openclaw.com/api/v1/skill-hub/{}/download", slug);
+    let dl_resp = client.get(&download_url).send().await;
+
+    let has_package = if let Ok(resp) = dl_resp {
+        if resp.status().is_success() {
+            // 解压 tar.gz 到 marketplace
+            let bytes = resp.bytes().await.map_err(|e| format!("下载失败: {}", e))?;
+            let gz = flate2::read::GzDecoder::new(&bytes[..]);
+            let mut archive = tar::Archive::new(gz);
+            let _ = std::fs::create_dir_all(&dest);
+            archive.unpack(&dest).map_err(|e| format!("解压失败: {}", e))?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // 3. 如果没有包文件，从元数据生成一个基本的 SKILL.md
+    if !has_package {
+        let _ = std::fs::create_dir_all(&dest);
+        let name = meta["name"].as_str().unwrap_or(&slug);
+        let desc = meta["description"].as_str().unwrap_or("");
+        let category = meta["category"].as_str().unwrap_or("general");
+        let tags: Vec<String> = meta["tags"].as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let skill_md = format!(
+            "---\nname: {}\ndescription: {}\ntrigger_keywords:\n{}\n---\n\n# {}\n\n{}\n",
+            slug, desc,
+            tags.iter().map(|t| format!("  - {}", t)).collect::<Vec<_>>().join("\n"),
+            name, desc
+        );
+        std::fs::write(dest.join("SKILL.md"), skill_md)
+            .map_err(|e| format!("写入 SKILL.md 失败: {}", e))?;
+    }
+
+    log::info!("云端技能下载完成: {} → {}", slug, dest.display());
+    Ok(format!("技能 {} 已下载到本地", slug))
+}
+
+/// 将本地技能发布到云端技能市场
+#[tauri::command]
+async fn publish_skill_to_hub(
+    skill_name: String,
+    author: String,
+) -> Result<String, String> {
+    let marketplace_dir = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".yonclaw/marketplace");
+    let skill_dir = marketplace_dir.join(&skill_name);
+
+    if !skill_dir.exists() {
+        return Err(format!("技能不存在: {}", skill_name));
+    }
+
+    let skill_md_path = skill_dir.join("SKILL.md");
+    if !skill_md_path.exists() {
+        return Err("缺少 SKILL.md".to_string());
+    }
+
+    // 解析 SKILL.md 元数据
+    let content = std::fs::read_to_string(&skill_md_path)
+        .map_err(|e| format!("读取 SKILL.md 失败: {}", e))?;
+
+    let (name, description, tags) = parse_skill_meta(&content, &skill_name);
+
+    let client = reqwest::Client::new();
+
+    // 1. 发布元数据
+    let publish_url = "https://zys-openclaw.com/api/v1/skill-hub/publish";
+    let resp = client.post(publish_url)
+        .json(&serde_json::json!({
+            "slug": skill_name,
+            "name": name,
+            "description": description,
+            "author": if author.is_empty() { "community".to_string() } else { author },
+            "version": "1.0.0",
+            "category": "community",
+            "tags": tags,
+        }))
+        .send().await
+        .map_err(|e| format!("发布失败: {}", e))?;
+
+    let result: serde_json::Value = resp.json().await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    if result.get("error").is_some() {
+        return Err(format!("发布失败: {}", result["error"].as_str().unwrap_or("?")));
+    }
+
+    // 2. 打包并上传技能包（tar.gz）
+    let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", skill_name));
+    {
+        let tar_file = std::fs::File::create(&tar_path)
+            .map_err(|e| format!("创建打包文件失败: {}", e))?;
+        let enc = flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
+        tar_builder.append_dir_all(".", &skill_dir)
+            .map_err(|e| format!("打包失败: {}", e))?;
+        tar_builder.finish().map_err(|e| format!("完成打包失败: {}", e))?;
+    }
+
+    let tar_bytes = std::fs::read(&tar_path)
+        .map_err(|e| format!("读取打包文件失败: {}", e))?;
+    let upload_url = format!("https://zys-openclaw.com/api/v1/skill-hub/{}/upload", skill_name);
+    let _ = client.post(&upload_url)
+        .header("Content-Type", "application/octet-stream")
+        .body(tar_bytes)
+        .send().await;
+
+    let _ = std::fs::remove_file(&tar_path);
+
+    log::info!("技能已发布到云端: {}", skill_name);
+    Ok(format!("技能 {} 已发布", skill_name))
+}
+
+/// 从 SKILL.md 内容解析元数据
+fn parse_skill_meta(content: &str, default_name: &str) -> (String, String, Vec<String>) {
+    let trimmed = content.trim();
+    if trimmed.starts_with("---") {
+        let rest = &trimmed[3..];
+        if let Some(end) = rest.find("---") {
+            let yaml_str = &rest[..end];
+            if let Ok(data) = serde_yaml::from_str::<serde_json::Value>(yaml_str) {
+                let name = data["name"].as_str().unwrap_or(default_name).to_string();
+                let desc = data["description"].as_str().unwrap_or("").to_string();
+                let tags = data["trigger_keywords"].as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                return (name, desc, tags);
+            }
+        }
+    }
+    // 纯 Markdown：从标题和首段推断
+    let mut name = default_name.to_string();
+    let mut desc = String::new();
+    for line in trimmed.lines() {
+        let l = line.trim();
+        if l.starts_with("# ") && name == default_name {
+            name = l.trim_start_matches("# ").to_string();
+        } else if !l.is_empty() && !l.starts_with('#') && desc.is_empty() {
+            desc = l.to_string();
+            break;
+        }
+    }
+    (name, desc, vec![])
 }
 
 /// 安装技能到指定 Agent（从 marketplace 复制到 agent skills 目录）
@@ -3210,6 +3435,8 @@ async fn main() {
             get_agent_plugin_states,
             set_agent_plugin,
             list_marketplace_skills,
+            download_skill_from_hub,
+            publish_skill_to_hub,
             install_skill_to_agent,
             uninstall_skill_from_agent,
             check_runtime,

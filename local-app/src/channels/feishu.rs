@@ -179,8 +179,8 @@ async fn try_websocket_mode(
 
     let (mut write, mut read) = ws_stream.split();
 
-    // 事件去重
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 事件去重（Arc + Mutex 跨 spawn 共享）
+    let seen_ids = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<String>::new()));
     let mut seq: u64 = 0;
     let mut ping_secs: u64 = 120;
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(ping_secs));
@@ -244,7 +244,14 @@ async fn try_websocket_mode(
                             continue;
                         }
 
-                        // DATA 帧（事件）
+                        // DATA 帧（事件）— 必须 3 秒内 ACK，否则飞书重发
+                        {
+                            let mut ack = frame.clone();
+                            ack.payload = Some(br#"{"code":200,"headers":{},"data":[]}"#.to_vec());
+                            ack.headers.push(PbHeader { key: "biz_rt".into(), value: "0".into() });
+                            let _ = write.send(WsMsg::Binary(ack.encode_to_vec())).await;
+                        }
+
                         if let Some(payload) = &frame.payload {
                             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(payload) {
                                 log::info!("飞书: 收到事件: type={}", frame.header_value("type"));
@@ -254,9 +261,9 @@ async fn try_websocket_mode(
                                 let p = pool.clone();
                                 let o = orchestrator.clone();
                                 let h = app_handle.clone();
-                                let mut sids = seen_ids.clone();
+                                let sids = seen_ids.clone();
                                 tokio::spawn(async move {
-                                    handle_feishu_event(&event, &mut sids, &aid, &asec, &p, &o, &h).await;
+                                    handle_feishu_event(&event, &sids, &aid, &asec, &p, &o, &h).await;
                                 });
                             }
                         }
@@ -291,7 +298,7 @@ async fn try_websocket_mode(
 /// 处理飞书事件
 async fn handle_feishu_event(
     event: &serde_json::Value,
-    seen_ids: &mut std::collections::HashSet<String>,
+    seen_ids: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     app_id: &str,
     app_secret: &str,
     pool: &sqlx::SqlitePool,
@@ -311,13 +318,13 @@ async fn handle_feishu_event(
 
     // 去重
     if !event_id.is_empty() {
-        if seen_ids.contains(event_id) {
-            return;
-        }
-        seen_ids.insert(event_id.to_string());
-        // 保持集合大小
-        if seen_ids.len() > 1000 {
-            seen_ids.clear();
+        if let Ok(mut ids) = seen_ids.lock() {
+            if ids.contains(event_id) {
+                log::info!("飞书: 跳过重复事件: {}", event_id);
+                return;
+            }
+            ids.insert(event_id.to_string());
+            if ids.len() > 1000 { ids.clear(); }
         }
     }
 

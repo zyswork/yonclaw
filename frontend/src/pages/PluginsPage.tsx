@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/tauri'
 interface PluginInfo {
   id: string; name: string; version: string; description: string
   pluginType: string; builtin: boolean; icon: string
-  enabled: boolean; defaultEnabled: boolean; status: string
+  enabled: boolean; defaultEnabled: boolean; status: string; connected?: boolean
   configSchema: { key: string; label: string; field_type: string; required: boolean; default?: string; placeholder?: string }[]
 }
 
@@ -216,6 +216,7 @@ export default function PluginsPage() {
                       {plugin.builtin && plugin.status === 'active' && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, backgroundColor: '#6366F1', color: '#fff' }}>内置</span>}
                       {plugin.status === 'ready' && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, backgroundColor: '#f59e0b', color: '#fff' }}>就绪</span>}
                       {plugin.status === 'planned' && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, backgroundColor: '#9ca3af', color: '#fff' }}>规划中</span>}
+                      {plugin.connected && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, backgroundColor: '#22c55e', color: '#fff' }}>已连接</span>}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {plugin.description}

@@ -34,6 +34,8 @@ once_cell = "1"
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures-util = "0.3"
 prost = "0.13"
+flate2 = "1"
+tar = "0.4"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
