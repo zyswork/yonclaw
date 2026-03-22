@@ -126,6 +126,7 @@ export default function SettingsPage() {
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [newModelId, setNewModelId] = useState('')
   const [newModelName, setNewModelName] = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
 
   const loadProviders = async () => {
     try {
@@ -159,7 +160,6 @@ export default function SettingsPage() {
   }
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(t('settings.confirmDeleteProvider', { name }))) return
     try {
       await invoke('delete_provider', { providerId: id })
       setMessage({ type: 'success', text: t('settingsExtra.deleted', { name }) })
@@ -168,6 +168,7 @@ export default function SettingsPage() {
     } catch (err) {
       setMessage({ type: 'error', text: t('settingsExtra.deleteFailed') + ': ' + String(err) })
     }
+    setDeleteConfirm(null)
   }
 
   const handleAddPreset = async (preset: typeof PRESET_PROVIDERS[0]) => {
@@ -371,7 +372,7 @@ export default function SettingsPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => handleDelete(p.id, p.name)}
+                  onClick={() => setDeleteConfirm({ id: p.id, name: p.name })}
                   style={{
                     padding: '4px 8px', fontSize: '12px', cursor: 'pointer',
                     border: '1px solid #f5c6cb', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)', color: '#dc3545',
@@ -543,6 +544,44 @@ export default function SettingsPage() {
       {providers.length === 0 && (
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px 0' }}>
           {t('settings.emptyProviders')}
+        </div>
+      )}
+
+      {/* 删除确认弹窗 */}
+      {deleteConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: 'white', borderRadius: 12, padding: 24,
+            maxWidth: 400, width: '90%',
+          }}>
+            <h3 style={{ margin: '0 0 8px' }}>{t('agents.confirmDeleteTitle')}</h3>
+            <p style={{ color: 'var(--text-secondary)', margin: '0 0 20px', fontSize: 14 }}>
+              {t('settings.confirmDeleteProvider', { name: deleteConfirm.name })}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                style={{
+                  padding: '8px 16px', border: '1px solid var(--border-subtle)', borderRadius: 6,
+                  backgroundColor: 'white', cursor: 'pointer', fontSize: 13,
+                }}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm.id, deleteConfirm.name)}
+                style={{
+                  padding: '8px 16px', border: 'none', borderRadius: 6,
+                  backgroundColor: '#dc2626', color: 'white', cursor: 'pointer', fontSize: 13,
+                }}
+              >
+                {t('common.delete')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
