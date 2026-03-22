@@ -108,7 +108,7 @@ export default function AgentListPage() {
       </div>
 
       {error && (
-        <div style={{ padding: 12, backgroundColor: 'var(--error-bg)', color: '#dc2626', borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
+        <div style={{ padding: 12, backgroundColor: 'var(--error-bg)', color: 'var(--error)', borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
           {error}
         </div>
       )}
@@ -152,7 +152,7 @@ export default function AgentListPage() {
               onClick={() => navigate(`/agents/${agent.id}`)}
               onMouseEnter={(e) => {
                 e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.08)'
-                e.currentTarget.style.borderColor = '#007bff'
+                e.currentTarget.style.borderColor = 'var(--accent)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.boxShadow = 'none'
@@ -266,7 +266,7 @@ export default function AgentListPage() {
                 onClick={() => handleDelete(deleteConfirm)}
                 style={{
                   padding: '8px 16px', border: 'none', borderRadius: 6,
-                  backgroundColor: '#dc2626', color: 'white', cursor: 'pointer',
+                  backgroundColor: 'var(--error)', color: 'white', cursor: 'pointer',
                 }}
               >
                 {t('agents.btnConfirmDelete')}

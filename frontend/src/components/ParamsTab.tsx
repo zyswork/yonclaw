@@ -139,9 +139,9 @@ export default function ParamsTab({ agentId }: ParamsTabProps) {
               onClick={() => setTemperature(p.value)}
               style={{
                 padding: '4px 12px', fontSize: '12px', border: '1px solid',
-                borderColor: activePreset?.id === p.id ? '#007bff' : '#ddd',
+                borderColor: activePreset?.id === p.id ? 'var(--accent)' : '#ddd',
                 borderRadius: '4px', cursor: 'pointer',
-                backgroundColor: activePreset?.id === p.id ? '#007bff' : 'white',
+                backgroundColor: activePreset?.id === p.id ? 'var(--accent)' : 'white',
                 color: activePreset?.id === p.id ? 'white' : '#333',
               }}
             >
@@ -240,7 +240,7 @@ export default function ParamsTab({ agentId }: ParamsTabProps) {
         onClick={handleSave}
         disabled={saving}
         style={{
-          width: '100%', padding: '8px', backgroundColor: '#007bff',
+          width: '100%', padding: '8px', backgroundColor: 'var(--accent)',
           color: 'white', border: 'none', borderRadius: '4px', fontSize: '13px',
           cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
         }}
@@ -251,7 +251,7 @@ export default function ParamsTab({ agentId }: ParamsTabProps) {
       {status && (
         <div style={{
           fontSize: '12px', marginTop: '6px', textAlign: 'center',
-          color: status.startsWith(t('paramsTab.saveFailed')) ? '#dc3545' : '#28a745',
+          color: status.startsWith(t('paramsTab.saveFailed')) ? 'var(--error)' : 'var(--success)',
         }}>
           {status}
         </div>

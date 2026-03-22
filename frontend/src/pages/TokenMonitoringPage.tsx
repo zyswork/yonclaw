@@ -108,8 +108,8 @@ export default function TokenMonitoringPage() {
         </select>
         {[7, 14, 30].map(d => (
           <button key={d} onClick={() => setDays(d)} style={{
-            padding: '6px 12px', border: `1px solid ${days === d ? '#007bff' : '#ddd'}`,
-            borderRadius: 6, backgroundColor: days === d ? '#007bff' : 'white',
+            padding: '6px 12px', border: `1px solid ${days === d ? 'var(--accent)' : '#ddd'}`,
+            borderRadius: 6, backgroundColor: days === d ? 'var(--accent)' : 'white',
             color: days === d ? 'white' : '#333', cursor: 'pointer', fontSize: 13,
           }}>{d}{t('tokens.labelDays')}</button>
         ))}
@@ -119,10 +119,10 @@ export default function TokenMonitoringPage() {
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
             {[
-              { label: t('tokens.statTotal'), value: formatTokens(stats.total_tokens), color: '#007bff' },
-              { label: t('tokens.statInput'), value: formatTokens(stats.total_input_tokens), color: '#28a745' },
+              { label: t('tokens.statTotal'), value: formatTokens(stats.total_tokens), color: 'var(--accent)' },
+              { label: t('tokens.statInput'), value: formatTokens(stats.total_input_tokens), color: 'var(--success)' },
               { label: t('tokens.statOutput'), value: formatTokens(stats.total_output_tokens), color: '#fd7e14' },
-              { label: t('tokens.statCost'), value: `$${totalCost.toFixed(2)}`, color: '#dc3545' },
+              { label: t('tokens.statCost'), value: `$${totalCost.toFixed(2)}`, color: 'var(--error)' },
             ].map(({ label, value, color }) => (
               <div key={label} style={{
                 padding: 16, borderRadius: 8, border: '1px solid var(--border-subtle)', textAlign: 'center',
@@ -174,7 +174,7 @@ export default function TokenMonitoringPage() {
                       <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(m.output_tokens)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>{formatTokens(m.total_tokens)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.calls}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#dc3545' }}>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--error)' }}>
                         ${estimateCost(m.model, m.input_tokens, m.output_tokens).toFixed(4)}
                       </td>
                     </tr>

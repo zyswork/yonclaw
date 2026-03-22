@@ -197,7 +197,7 @@ export default function MemoryPage() {
       {message && (
         <div style={{
           padding: '10px 14px', borderRadius: '6px', marginBottom: '12px', fontSize: '13px',
-          backgroundColor: message.type === 'success' ? '#f0fdf4' : '#fef2f2',
+          backgroundColor: message.type === 'success' ? '#f0fdf4' : 'var(--error-bg)',
           color: message.type === 'success' ? '#22c55e' : '#ef4444',
         }}>
           {message.text}

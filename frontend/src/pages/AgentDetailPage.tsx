@@ -200,8 +200,8 @@ export default function AgentDetailPage() {
             style={{
               padding: '10px 16px', border: 'none', cursor: 'pointer',
               fontSize: 14, backgroundColor: 'transparent', whiteSpace: 'nowrap',
-              color: activeTab === tab.id ? '#007bff' : '#666',
-              borderBottom: activeTab === tab.id ? '2px solid #007bff' : '2px solid transparent',
+              color: activeTab === tab.id ? 'var(--accent)' : '#666',
+              borderBottom: activeTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
               fontWeight: activeTab === tab.id ? 600 : 400,
             }}
           >
@@ -249,7 +249,7 @@ function SessionItem({ s, activeSession, onSelect, onDelete, renamingSession, re
         <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
           onBlur={() => onFinishRename(renameValue)}
           onKeyDown={(e) => { if (e.key === 'Enter') onFinishRename(renameValue); if (e.key === 'Escape') onCancelRename() }}
-          style={{ flex: 1, padding: '2px 4px', border: '1px solid #3b82f6', borderRadius: 3, fontSize: 13, outline: 'none' }}
+          style={{ flex: 1, padding: '2px 4px', border: '1px solid var(--accent)', borderRadius: 3, fontSize: 13, outline: 'none' }}
         />
       ) : (
         <div onClick={onSelect} onDoubleClick={onStartRename}
@@ -1126,7 +1126,7 @@ function ChatTab({ agentId }: { agentId: string }) {
                     <div style={{
                       maxWidth: isSystem ? '85%' : '70%',
                       padding: '10px 14px', borderRadius: 12,
-                      backgroundColor: isUser ? '#3b82f6' : isSystem ? '#f0fdf4' : '#f3f4f6',
+                      backgroundColor: isUser ? 'var(--accent)' : isSystem ? '#f0fdf4' : '#f3f4f6',
                       color: isUser ? 'white' : '#333',
                       border: isSystem ? '1px solid #bbf7d0' : 'none',
                       fontSize: isSystem ? 13 : 14,
@@ -1173,7 +1173,7 @@ function ChatTab({ agentId }: { agentId: string }) {
                 {['/help','/new','/model','/status','/usage','/tools','/skills','/providers','/memory','/compact','/clear','/reset','/export','/stop','/agents','/kill','/rename','/sessions','/skill'].filter(c =>
                   c.startsWith(input.toLowerCase())
                 ).map(c => (
-                  <span key={c} onClick={() => { setInput(c === '/model' || c === '/rename' || c === '/temp' || c === '/kill' || c === '/skill' ? c + ' ' : c); }} style={{ cursor: 'pointer', color: '#3b82f6', fontFamily: 'monospace', padding: '2px 6px', backgroundColor: 'var(--accent-bg)', borderRadius: 4 }}>{c}</span>
+                  <span key={c} onClick={() => { setInput(c === '/model' || c === '/rename' || c === '/temp' || c === '/kill' || c === '/skill' ? c + ' ' : c); }} style={{ cursor: 'pointer', color: 'var(--accent)', fontFamily: 'monospace', padding: '2px 6px', backgroundColor: 'var(--accent-bg)', borderRadius: 4 }}>{c}</span>
                 ))}
               </div>
             )}
@@ -1334,8 +1334,8 @@ function SkillsTab({ agentId }: { agentId: string }) {
                 onClick={() => handleToggle(skill.name, skill.enabled)}
                 style={{
                   padding: '4px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
-                  border: '1px solid var(--border-subtle)', backgroundColor: skill.enabled ? '#dcfce7' : '#f3f4f6',
-                  color: skill.enabled ? '#16a34a' : '#666',
+                  border: '1px solid var(--border-subtle)', backgroundColor: skill.enabled ? 'var(--success-bg)' : '#f3f4f6',
+                  color: skill.enabled ? 'var(--success)' : '#666',
                 }}
               >
                 {skill.enabled ? t('agentDetailSub.skillsEnabled') : t('agentDetailSub.skillsDisabled')}
@@ -1427,8 +1427,8 @@ function CronTab({ agentId }: { agentId: string }) {
                 <td style={{ padding: '10px 12px' }}>
                   <span style={{
                     padding: '2px 8px', borderRadius: 4, fontSize: 11,
-                    backgroundColor: job.enabled ? '#dcfce7' : '#f3f4f6',
-                    color: job.enabled ? '#16a34a' : '#666',
+                    backgroundColor: job.enabled ? 'var(--success-bg)' : '#f3f4f6',
+                    color: job.enabled ? 'var(--success)' : '#666',
                   }}>
                     {job.enabled ? t('agentDetailSub.cronRunning') : t('agentDetailSub.cronPaused')}
                   </span>
@@ -1511,7 +1511,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
     <div style={{ padding: 20, maxWidth: 500 }}>
       <h3 style={{ margin: '0 0 20px', fontSize: 16 }}>{t('agentDetailSub.settingsTitle')}</h3>
 
-      {msg && <div style={{ padding: 8, backgroundColor: msg === t('settings.successSaved') ? '#dcfce7' : '#fef2f2', color: msg === t('settings.successSaved') ? '#16a34a' : '#dc2626', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{msg}</div>}
+      {msg && <div style={{ padding: 8, backgroundColor: msg === t('settings.successSaved') ? 'var(--success-bg)' : 'var(--error-bg)', color: msg === t('settings.successSaved') ? 'var(--success)' : 'var(--error)', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{msg}</div>}
 
       {/* 名称 */}
       <div style={{ marginBottom: 16 }}>
@@ -1566,7 +1566,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
         ) : (
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={handleDelete} style={{
-              padding: '8px 16px', backgroundColor: '#dc2626', color: 'white',
+              padding: '8px 16px', backgroundColor: 'var(--error)', color: 'white',
               border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13,
             }}>
               {t('agents.btnConfirmDelete')}
@@ -1641,8 +1641,8 @@ function AuditTab({ agentId }: { agentId: string }) {
                 <td style={{ padding: '8px 12px' }}>
                   <span style={{
                     padding: '2px 6px', borderRadius: 4, fontSize: 11,
-                    backgroundColor: entry.policyDecision === 'allowed' ? '#dcfce7' : '#fef2f2',
-                    color: entry.policyDecision === 'allowed' ? '#16a34a' : '#dc2626',
+                    backgroundColor: entry.policyDecision === 'allowed' ? 'var(--success-bg)' : 'var(--error-bg)',
+                    color: entry.policyDecision === 'allowed' ? 'var(--success)' : 'var(--error)',
                   }}>
                     {entry.policyDecision}
                   </span>
@@ -1651,8 +1651,8 @@ function AuditTab({ agentId }: { agentId: string }) {
                 <td style={{ padding: '8px 12px' }}>
                   <span style={{
                     padding: '2px 6px', borderRadius: 4, fontSize: 11,
-                    backgroundColor: entry.success ? '#dcfce7' : '#fef2f2',
-                    color: entry.success ? '#16a34a' : '#dc2626',
+                    backgroundColor: entry.success ? 'var(--success-bg)' : 'var(--error-bg)',
+                    color: entry.success ? 'var(--success)' : 'var(--error)',
                   }}>
                     {entry.success ? t('agentDetailSub.auditSuccess') : t('agentDetailSub.auditFailed')}
                   </span>
@@ -1707,8 +1707,8 @@ function SubagentsTab({ agentId }: { agentId: string }) {
 
   const statusColor = (status: string) => {
     if (status === 'Running') return { bg: '#dbeafe', color: '#2563eb' }
-    if (status === 'Completed') return { bg: '#dcfce7', color: 'var(--success)' }
-    if (status.startsWith('Failed')) return { bg: '#fef2f2', color: 'var(--error)' }
+    if (status === 'Completed') return { bg: 'var(--success-bg)', color: 'var(--success)' }
+    if (status.startsWith('Failed')) return { bg: 'var(--error-bg)', color: 'var(--error)' }
     if (status === 'Timeout') return { bg: '#fef3c7', color: '#d97706' }
     if (status === 'Cancelled') return { bg: '#f3f4f6', color: 'var(--text-secondary)' }
     return { bg: '#f3f4f6', color: 'var(--text-secondary)' }
@@ -1846,9 +1846,9 @@ interface AutonomyConfigData {
 }
 
 const LEVEL_COLORS: Record<string, { color: string; bg: string }> = {
-  L1Confirm: { color: 'var(--error)', bg: '#fef2f2' },
+  L1Confirm: { color: 'var(--error)', bg: 'var(--error-bg)' },
   L2Notify: { color: '#d97706', bg: '#fef3c7' },
-  L3Autonomous: { color: 'var(--success)', bg: '#dcfce7' },
+  L3Autonomous: { color: 'var(--success)', bg: 'var(--success-bg)' },
 }
 
 const TOOL_GROUP_TOOLS = [

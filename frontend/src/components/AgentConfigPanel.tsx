@@ -69,8 +69,8 @@ export default function AgentConfigPanel({ agentId, onClose }: AgentConfigPanelP
               fontSize: '12px', display: 'flex', alignItems: 'center',
               justifyContent: 'center', gap: '4px',
               backgroundColor: 'transparent',
-              color: activeTab === tab.id ? '#007bff' : '#666',
-              borderBottom: activeTab === tab.id ? '2px solid #007bff' : '2px solid transparent',
+              color: activeTab === tab.id ? 'var(--accent)' : '#666',
+              borderBottom: activeTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
               fontWeight: activeTab === tab.id ? 600 : 400,
             }}
           >

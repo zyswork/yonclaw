@@ -249,7 +249,7 @@ export default function CronPage() {
         <h2 style={{ margin: 0, fontSize: 20 }}>{t('cron.title')}</h2>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          style={{ ...btnStyle, padding: '6px 16px', fontSize: 13, background: showCreate ? '#eee' : '#1976d2', color: showCreate ? '#333' : '#fff', border: 'none' }}
+          style={{ ...btnStyle, padding: '6px 16px', fontSize: 13, background: showCreate ? '#eee' : 'var(--accent)', color: showCreate ? '#333' : '#fff', border: 'none' }}
         >
           {showCreate ? t('common.cancel') : t('cron.btnCreate')}
         </button>
@@ -398,7 +398,7 @@ export default function CronPage() {
           </div>
 
           <button onClick={handleCreate} disabled={creating}
-            style={{ ...btnStyle, padding: '8px 24px', fontSize: 14, background: '#1976d2', color: '#fff', border: 'none', opacity: creating ? 0.6 : 1 }}>
+            style={{ ...btnStyle, padding: '8px 24px', fontSize: 14, background: 'var(--accent)', color: '#fff', border: 'none', opacity: creating ? 0.6 : 1 }}>
             {creating ? t('common.creating') : t('common.create')}
           </button>
         </div>

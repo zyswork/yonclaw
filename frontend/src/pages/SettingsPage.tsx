@@ -298,7 +298,7 @@ export default function SettingsPage() {
               )}
               <div
                 onClick={handleAddCustom}
-                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '13px', color: '#007bff' }}
+                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '13px', color: 'var(--accent)' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#f5f5f5' }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
               >
@@ -312,7 +312,7 @@ export default function SettingsPage() {
       {message && (
         <div style={{
           padding: '10px 15px', marginBottom: '16px', borderRadius: '6px', fontSize: '13px',
-          backgroundColor: message.type === 'success' ? '#d4edda' : '#f8d7da',
+          backgroundColor: message.type === 'success' ? '#d4edda' : 'var(--error-bg)',
           color: message.type === 'success' ? '#155724' : '#721c24',
           border: `1px solid ${message.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`,
         }}>
@@ -351,7 +351,7 @@ export default function SettingsPage() {
                 <strong style={{ fontSize: '15px' }}>{p.name}</strong>
                 <span style={{
                   fontSize: '11px', padding: '2px 6px', borderRadius: '3px',
-                  backgroundColor: hasKey || isOllama ? '#28a745' : '#ffc107',
+                  backgroundColor: hasKey || isOllama ? 'var(--success)' : '#ffc107',
                   color: hasKey || isOllama ? 'white' : '#333',
                 }}>
                   {isOllama ? t('settings.labelLocal') : hasKey ? t('settings.labelConfigured') : t('settings.labelNoKey')}
@@ -376,7 +376,7 @@ export default function SettingsPage() {
                   onClick={() => setDeleteConfirm({ id: p.id, name: p.name })}
                   style={{
                     padding: '4px 8px', fontSize: '12px', cursor: 'pointer',
-                    border: '1px solid #f5c6cb', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)', color: '#dc3545',
+                    border: '1px solid #f5c6cb', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)', color: 'var(--error)',
                   }}
                 >
                   {t('common.delete')}
@@ -460,7 +460,7 @@ export default function SettingsPage() {
                 {/* 模型列表编辑 */}
                 <div>
                   <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
-                    {t('settings.fieldModels')} <span style={{ color: '#dc3545' }}>*</span>
+                    {t('settings.fieldModels')} <span style={{ color: 'var(--error)' }}>*</span>
                   </label>
                   {editForm.models.length === 0 && (
                     <div style={{
@@ -480,7 +480,7 @@ export default function SettingsPage() {
                         {m.name || m.id}
                         <span
                           onClick={() => removeModelFromForm(m.id)}
-                          style={{ cursor: 'pointer', color: '#dc3545', fontWeight: 'bold', fontSize: '14px', lineHeight: 1 }}
+                          style={{ cursor: 'pointer', color: 'var(--error)', fontWeight: 'bold', fontSize: '14px', lineHeight: 1 }}
                         >
                           ×
                         </span>
@@ -576,7 +576,7 @@ export default function SettingsPage() {
                 onClick={() => handleDelete(deleteConfirm.id, deleteConfirm.name)}
                 style={{
                   padding: '8px 16px', border: 'none', borderRadius: 6,
-                  backgroundColor: '#dc2626', color: 'white', cursor: 'pointer', fontSize: 13,
+                  backgroundColor: 'var(--error)', color: 'white', cursor: 'pointer', fontSize: 13,
                 }}
               >
                 {t('common.delete')}

@@ -123,7 +123,7 @@ export default function AuditLogPage() {
                     <td style={tdStyle}>
                       <span style={{
                         fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
-                        backgroundColor: entry.success ? '#d1fae5' : '#fef2f2',
+                        backgroundColor: entry.success ? '#d1fae5' : 'var(--error-bg)',
                         color: entry.success ? '#065f46' : '#991b1b',
                       }}>
                         {entry.success ? t('audit.statusSuccess') : t('audit.statusFailure')}

@@ -112,7 +112,7 @@ export default function Dashboard() {
         <StatCard
           label={t('dashboard.agentCount')}
           value={String(health?.agents ?? 0)}
-          valueColor="#3b82f6"
+          valueColor="var(--accent)"
           icon="agent"
           sub={`${agents.length} ${t('dashboard.registered')}`}
         />
@@ -168,7 +168,7 @@ export default function Dashboard() {
                   transition: 'border-color 0.2s, box-shadow 0.2s',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = '#3b82f6'
+                  e.currentTarget.style.borderColor = 'var(--accent)'
                   e.currentTarget.style.boxShadow = '0 2px 8px rgba(59,130,246,0.1)'
                 }}
                 onMouseLeave={(e) => {
@@ -201,7 +201,7 @@ export default function Dashboard() {
             { to: '/skills', label: t('dashboard.skillManagement'), color: '#8b5cf6', bg: '#f5f3ff' },
             { to: '/memory', label: t('dashboard.memoryManagement'), color: '#f59e0b', bg: '#fffbeb' },
             { to: '/cron', label: t('dashboard.cronJobs'), color: '#06b6d4', bg: '#ecfeff' },
-            { to: '/token-monitoring', label: t('dashboard.tokenMonitoring'), color: 'var(--error)', bg: '#fef2f2' },
+            { to: '/token-monitoring', label: t('dashboard.tokenMonitoring'), color: 'var(--error)', bg: 'var(--error-bg)' },
             { to: '/settings', label: t('dashboard.systemSettings'), color: 'var(--text-secondary)', bg: '#f9fafb' },
           ].map((item) => (
             <Link

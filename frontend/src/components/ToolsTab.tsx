@@ -113,9 +113,9 @@ export default function ToolsTab({ agentId }: ToolsTabProps) {
               onClick={() => handleSetProfile(p.id)}
               style={{
                 padding: '4px 12px', fontSize: '12px', border: '1px solid',
-                borderColor: profile === p.id ? '#007bff' : '#ddd',
+                borderColor: profile === p.id ? 'var(--accent)' : '#ddd',
                 borderRadius: '4px', cursor: 'pointer',
-                backgroundColor: profile === p.id ? '#007bff' : 'white',
+                backgroundColor: profile === p.id ? 'var(--accent)' : 'white',
                 color: profile === p.id ? 'white' : '#333',
               }}
             >
@@ -131,7 +131,7 @@ export default function ToolsTab({ agentId }: ToolsTabProps) {
       {status && (
         <div style={{
           fontSize: '12px', marginBottom: '8px', textAlign: 'center',
-          color: (status.includes(t('toolsTab.switchFailed')) || status.includes(t('toolsTab.operationFailed'))) ? '#dc3545' : '#28a745',
+          color: (status.includes(t('toolsTab.switchFailed')) || status.includes(t('toolsTab.operationFailed'))) ? 'var(--error)' : 'var(--success)',
         }}>
           {status}
         </div>
@@ -220,7 +220,7 @@ function ToolRow({ tool, onToggle }: { tool: ToolInfo; onToggle: (name: string, 
         />
         <span style={{
           position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: tool.enabled ? '#007bff' : '#ccc',
+          backgroundColor: tool.enabled ? 'var(--accent)' : '#ccc',
           borderRadius: '9px', transition: 'background-color 0.2s',
         }}>
           <span style={{

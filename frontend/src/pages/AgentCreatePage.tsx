@@ -205,9 +205,9 @@ export default function AgentCreatePage() {
             onClick={() => setMode(m)}
             style={{
               padding: '8px 20px', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 500,
-              border: mode === m ? '2px solid #007bff' : '2px solid #e5e7eb',
+              border: mode === m ? '2px solid var(--accent)' : '2px solid #e5e7eb',
               backgroundColor: mode === m ? '#e8f0fe' : 'white',
-              color: mode === m ? '#007bff' : '#666',
+              color: mode === m ? 'var(--accent)' : '#666',
             }}
           >
             {m === 'manual' ? t('agentCreate.modeManual') : t('agentCreate.modeAi')}
@@ -233,7 +233,7 @@ export default function AgentCreatePage() {
             }}
           />
           {error && (
-            <div style={{ padding: 10, backgroundColor: 'var(--error-bg)', color: '#dc2626', borderRadius: 8, marginTop: 12, fontSize: 13 }}>
+            <div style={{ padding: 10, backgroundColor: 'var(--error-bg)', color: 'var(--error)', borderRadius: 8, marginTop: 12, fontSize: 13 }}>
               {error}
             </div>
           )}
@@ -266,7 +266,7 @@ export default function AgentCreatePage() {
                 fontSize: 14,
                 fontWeight: 600,
                 color: i <= step ? '#fff' : '#999',
-                backgroundColor: i < step ? '#28a745' : i === step ? '#007bff' : '#e9ecef',
+                backgroundColor: i < step ? 'var(--success)' : i === step ? 'var(--accent)' : '#e9ecef',
                 transition: 'background-color 0.2s',
               }}
             >
@@ -289,7 +289,7 @@ export default function AgentCreatePage() {
                   flex: 1,
                   height: 2,
                   margin: '0 12px',
-                  backgroundColor: i < step ? '#28a745' : '#e9ecef',
+                  backgroundColor: i < step ? 'var(--success)' : '#e9ecef',
                   transition: 'background-color 0.2s',
                 }}
               />
@@ -315,7 +315,7 @@ export default function AgentCreatePage() {
                   onClick={() => applyTemplate(tpl)}
                   style={{
                     padding: '10px 12px',
-                    border: name === t(tpl.nameKey) ? '2px solid #007bff' : '1px solid #ddd',
+                    border: name === t(tpl.nameKey) ? '2px solid var(--accent)' : '1px solid #ddd',
                     borderRadius: 8,
                     backgroundColor: name === t(tpl.nameKey) ? '#e7f1ff' : '#fff',
                     cursor: 'pointer',
@@ -336,7 +336,7 @@ export default function AgentCreatePage() {
           {/* Agent 名称 */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              {t('agentCreate.fieldName')} <span style={{ color: '#dc3545' }}>*</span>
+              {t('agentCreate.fieldName')} <span style={{ color: 'var(--error)' }}>*</span>
             </label>
             <input
               value={name}
@@ -356,7 +356,7 @@ export default function AgentCreatePage() {
           {/* 系统提示词 */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              {t('agentCreate.fieldSystemPrompt')} <span style={{ color: '#dc3545' }}>*</span>
+              {t('agentCreate.fieldSystemPrompt')} <span style={{ color: 'var(--error)' }}>*</span>
             </label>
             <textarea
               value={systemPrompt}
@@ -429,10 +429,10 @@ export default function AgentCreatePage() {
                     padding: '4px 14px',
                     fontSize: 12,
                     border: '1px solid',
-                    borderColor: activePreset?.id === p.id ? '#007bff' : '#ddd',
+                    borderColor: activePreset?.id === p.id ? 'var(--accent)' : '#ddd',
                     borderRadius: 4,
                     backgroundColor: activePreset?.id === p.id ? '#e7f1ff' : '#fff',
-                    color: activePreset?.id === p.id ? '#007bff' : '#333',
+                    color: activePreset?.id === p.id ? 'var(--accent)' : '#333',
                     cursor: 'pointer',
                   }}
                 >
@@ -549,7 +549,7 @@ export default function AgentCreatePage() {
               style={{
                 marginTop: 16,
                 padding: '10px 14px',
-                backgroundColor: '#f8d7da',
+                backgroundColor: 'var(--error-bg)',
                 color: '#842029',
                 borderRadius: 6,
                 fontSize: 13,
@@ -596,7 +596,7 @@ export default function AgentCreatePage() {
               fontSize: 14,
               border: 'none',
               borderRadius: 6,
-              backgroundColor: canNext() ? '#007bff' : '#ccc',
+              backgroundColor: canNext() ? 'var(--accent)' : '#ccc',
               color: '#fff',
               cursor: canNext() ? 'pointer' : 'not-allowed',
               fontWeight: 500,
@@ -613,7 +613,7 @@ export default function AgentCreatePage() {
               fontSize: 14,
               border: 'none',
               borderRadius: 6,
-              backgroundColor: creating ? '#6c757d' : '#28a745',
+              backgroundColor: creating ? '#6c757d' : 'var(--success)',
               color: '#fff',
               cursor: creating ? 'not-allowed' : 'pointer',
               fontWeight: 600,

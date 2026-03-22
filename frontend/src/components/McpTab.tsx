@@ -201,7 +201,7 @@ export default function McpTab({ agentId }: McpTabProps) {
             ))}
           </div>
           <button onClick={handleAdd} disabled={!form.name.trim()}
-            style={{ ...btnStyle, backgroundColor: '#007bff', color: '#fff', width: '100%' }}>
+            style={{ ...btnStyle, backgroundColor: 'var(--accent)', color: '#fff', width: '100%' }}>
             {t('mcpTab.submitAdd')}
           </button>
         </div>

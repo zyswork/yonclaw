@@ -380,7 +380,7 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
           onClick={handleSaveForm}
           disabled={saving}
           style={{
-            width: '100%', padding: '8px', backgroundColor: '#007bff', color: 'white',
+            width: '100%', padding: '8px', backgroundColor: 'var(--accent)', color: 'white',
             border: 'none', borderRadius: '4px', cursor: saving ? 'not-allowed' : 'pointer',
             opacity: saving ? 0.6 : 1, fontSize: '13px',
           }}
@@ -388,7 +388,7 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
           {saving ? t('common.saving') : t('soulFile.saveSoulFiles')}
         </button>
         {status && (
-          <div style={{ fontSize: '12px', color: status.startsWith(t('soulFile.saveFailed')) ? '#dc3545' : '#28a745', marginTop: '6px', textAlign: 'center' }}>
+          <div style={{ fontSize: '12px', color: status.startsWith(t('soulFile.saveFailed')) ? 'var(--error)' : 'var(--success)', marginTop: '6px', textAlign: 'center' }}>
             {status}
           </div>
         )}
@@ -457,7 +457,7 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
             onClick={handleSaveRaw}
             disabled={saving}
             style={{
-              marginTop: '8px', width: '100%', padding: '8px', backgroundColor: '#007bff',
+              marginTop: '8px', width: '100%', padding: '8px', backgroundColor: 'var(--accent)',
               color: 'white', border: 'none', borderRadius: '4px', fontSize: '13px',
               cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
             }}
@@ -465,7 +465,7 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
             {saving ? t('common.saving') : t('soulFile.saveBtn')}
           </button>
           {status && (
-            <div style={{ fontSize: '12px', color: status.startsWith(t('soulFile.saveFailed')) ? '#dc3545' : '#28a745', marginTop: '6px', textAlign: 'center' }}>
+            <div style={{ fontSize: '12px', color: status.startsWith(t('soulFile.saveFailed')) ? 'var(--error)' : 'var(--success)', marginTop: '6px', textAlign: 'center' }}>
               {status}
             </div>
           )}
