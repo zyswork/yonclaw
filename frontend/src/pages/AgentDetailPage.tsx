@@ -171,7 +171,7 @@ export default function AgentDetailPage() {
   if (!agent || !agentId) return <div style={{ padding: 40, textAlign: 'center' }}>{t('agentDetail.notFound')}</div>
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', position: 'absolute', inset: 0 }}>
       {/* 顶部：返回 + Agent 信息 */}
       <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 16 }}>
         <button
@@ -1000,7 +1000,7 @@ function ChatTab({ agentId }: { agentId: string }) {
 
       {/* 对话区（整个区域支持拖拽图片） */}
       <div
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}
+        style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy' }}
         onDragEnter={(e) => { e.preventDefault(); e.stopPropagation() }}
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e) }}
