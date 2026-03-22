@@ -121,7 +121,7 @@ export default function Dashboard() {
           value={formatNumber(health?.today_tokens ?? 0)}
           valueColor="#8b5cf6"
           icon="token"
-          sub={`${t('common.approxCost')}${((health?.today_tokens ?? 0) / 1000 * 0.002).toFixed(4)}`}
+          sub={`${t('common.approxCost')}${((health?.today_tokens ?? 0) / 1000 * 0.003).toFixed(4)}`}
         />
         <StatCard
           label={t('dashboard.memoryCount')}

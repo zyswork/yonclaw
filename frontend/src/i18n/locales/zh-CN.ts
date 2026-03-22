@@ -65,6 +65,8 @@ export const zhCN: TranslationMap = {
     audit: '审计日志',
     tokenMonitor: 'Token 监控',
     version: 'YonClaw v0.1.0',
+    expand: '展开侧边栏',
+    collapse: '折叠侧边栏',
   },
   dashboard: {
     title: '仪表板',

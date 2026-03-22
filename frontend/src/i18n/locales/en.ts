@@ -65,6 +65,8 @@ export const en: TranslationMap = {
     audit: 'Audit Log',
     tokenMonitor: 'Token Monitor',
     version: 'YonClaw v0.1.0',
+    expand: 'Expand sidebar',
+    collapse: 'Collapse sidebar',
   },
   dashboard: {
     title: 'Dashboard',

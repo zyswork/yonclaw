@@ -60,7 +60,7 @@ export default function Sidebar() {
                 background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)',
                 cursor: 'pointer', fontSize: 18, padding: 4, lineHeight: 1,
               }}
-              title="展开侧边栏"
+              title={t('sidebar.expand')}
             >
               ☰
             </button>
@@ -75,7 +75,7 @@ export default function Sidebar() {
                 cursor: 'pointer', fontSize: 16, padding: '2px 4px', lineHeight: 1,
                 marginRight: 4,
               }}
-              title="折叠侧边栏"
+              title={t('sidebar.collapse')}
             >
               ☰
             </button>
