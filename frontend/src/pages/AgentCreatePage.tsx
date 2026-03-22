@@ -42,10 +42,10 @@ interface Agent {
 
 /** 预置 Agent 模板 */
 const TEMPLATES = [
-  { name: '通用助手', prompt: '你是一个有用的AI助手，擅长回答各种问题。', icon: '💬' },
-  { name: '编程助手', prompt: '你是一个资深编程助手，擅长代码编写、调试和架构设计。请用简洁专业的方式回答。', icon: '👨‍💻' },
-  { name: '翻译专家', prompt: '你是一个专业翻译，擅长中英互译。保持原文风格和语气，翻译要自然流畅。', icon: '🌐' },
-  { name: '写作助手', prompt: '你是一个专业写作助手，擅长文章撰写、润色和创意写作。', icon: '✍️' },
+  { nameKey: 'chatPage.templateGeneral', prompt: '你是一个有用的AI助手，擅长回答各种问题。', icon: '💬' },
+  { nameKey: 'chatPage.templateCoding', prompt: '你是一个资深编程助手，擅长代码编写、调试和架构设计。请用简洁专业的方式回答。', icon: '👨‍💻' },
+  { nameKey: 'chatPage.templateTranslator', prompt: '你是一个专业翻译，擅长中英互译。保持原文风格和语气，翻译要自然流畅。', icon: '🌐' },
+  { nameKey: 'chatPage.templateWriter', prompt: '你是一个专业写作助手，擅长文章撰写、润色和创意写作。', icon: '✍️' },
 ]
 
 /** 温度预设 */
@@ -116,7 +116,7 @@ export default function AgentCreatePage() {
 
   // 应用模板
   const applyTemplate = (tpl: (typeof TEMPLATES)[0]) => {
-    setName(tpl.name)
+    setName(t(tpl.nameKey))
     setSystemPrompt(tpl.prompt)
   }
 
@@ -147,7 +147,7 @@ export default function AgentCreatePage() {
       setMode('manual')
       setStep(2)
     } catch (e: any) {
-      setError(String(e?.message || e || 'AI 生成失败'))
+      setError(String(e?.message || e || t('agentCreate.aiGenerateFailed')))
     } finally {
       setAiGenerating(false)
     }
@@ -188,7 +188,7 @@ export default function AgentCreatePage() {
         navigate(`/agents/${agent.id}`)
       }
     } catch (e: any) {
-      setError(String(e?.message || e || '创建失败'))
+      setError(String(e?.message || e || t('chatPage.createFailed')))
       setCreating(false)
     }
   }
@@ -311,13 +311,13 @@ export default function AgentCreatePage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               {TEMPLATES.map((tpl) => (
                 <button
-                  key={tpl.name}
+                  key={tpl.nameKey}
                   onClick={() => applyTemplate(tpl)}
                   style={{
                     padding: '10px 12px',
-                    border: name === tpl.name ? '2px solid #007bff' : '1px solid #ddd',
+                    border: name === t(tpl.nameKey) ? '2px solid #007bff' : '1px solid #ddd',
                     borderRadius: 8,
-                    backgroundColor: name === tpl.name ? '#e7f1ff' : '#fff',
+                    backgroundColor: name === t(tpl.nameKey) ? '#e7f1ff' : '#fff',
                     cursor: 'pointer',
                     textAlign: 'left',
                     fontSize: 13,
@@ -327,7 +327,7 @@ export default function AgentCreatePage() {
                   }}
                 >
                   <span style={{ fontSize: 20 }}>{tpl.icon}</span>
-                  <span>{tpl.name}</span>
+                  <span>{t(tpl.nameKey)}</span>
                 </button>
               ))}
             </div>

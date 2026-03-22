@@ -191,7 +191,7 @@ export default function AgentListPage() {
                 display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const,
                 lineHeight: '1.5',
               }}>
-                {agent.systemPrompt || '无描述'}
+                {agent.systemPrompt || t('agents.noDescription')}
               </p>
 
               {/* 底部信息 */}

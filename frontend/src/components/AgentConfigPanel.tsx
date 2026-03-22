@@ -9,6 +9,7 @@
  */
 
 import { useState } from 'react'
+import { useI18n } from '../i18n'
 import SoulFileTab from './SoulFileTab'
 import ToolsTab from './ToolsTab'
 import ParamsTab from './ParamsTab'
@@ -29,6 +30,7 @@ const TABS: { id: TabId; icon: string; label: string }[] = [
 ]
 
 export default function AgentConfigPanel({ agentId, onClose }: AgentConfigPanelProps) {
+  const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<TabId>('soul')
 
   return (
@@ -41,14 +43,14 @@ export default function AgentConfigPanel({ agentId, onClose }: AgentConfigPanelP
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         padding: '8px 12px', borderBottom: '1px solid #eee',
       }}>
-        <span style={{ fontSize: '13px', fontWeight: 600, color: '#333' }}>配置</span>
+        <span style={{ fontSize: '13px', fontWeight: 600, color: '#333' }}>{t('chatPage.configTitle')}</span>
         <button
           onClick={onClose}
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
             fontSize: '16px', color: '#999', padding: '2px 6px', lineHeight: 1,
           }}
-          title="关闭"
+          title={t('common.cancel')}
         >
           ✕
         </button>

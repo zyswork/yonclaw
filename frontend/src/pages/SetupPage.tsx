@@ -57,7 +57,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       const agents = await invoke<any[]>('list_agents')
       if (!agents || agents.length === 0) {
         await invoke('create_agent', {
-          name: '通用助手', systemPrompt: '你是一个有用的AI助手，擅长回答各种问题。', model: 'gpt-4o',
+          name: t('chatPage.templateGeneral'), systemPrompt: '你是一个有用的AI助手，擅长回答各种问题。', model: 'gpt-4o',
         })
       }
       setSetupStatus(s => ({ ...s, agent: 'done' }))
@@ -85,7 +85,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       const p = await invoke<any[]>('get_providers') || []
       const custom = {
         id: 'custom-' + Date.now(),
-        name: '自定义供应商',
+        name: t('settingsExtra.customProvider'),
         apiType: 'openai',
         baseUrl: apiUrl.trim() || 'https://api.openai.com/v1',
         apiKey: apiKey.trim(),
@@ -96,7 +96,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       await invoke('set_setting', { key: 'providers', value: JSON.stringify(p) })
       setProviders(prev => [...prev, { name: custom.name, hasKey: true }])
       setApiKey('')
-    } catch (e) { alert('保存失败: ' + e) }
+    } catch (e) { alert(t('settingsExtra.saveFailed') + ': ' + e) }
   }
 
   const pages = [
@@ -144,13 +144,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0, backgroundColor: S.card, borderRadius: 12, border: `1px solid ${S.cardBorder}`, overflow: 'hidden' }}>
           {(skills.length > 0 ? skills : [
-            { name: 'memory_write', desc: '长期记忆存储', icon: '\u{1F9E0}' },
-            { name: 'memory_read', desc: '记忆检索（语义+关键词）', icon: '\u{1F50D}' },
-            { name: 'bash_exec', desc: '执行终端命令', icon: '\u{1F4BB}' },
-            { name: 'file_read', desc: '读取本地文件', icon: '\u{1F4C4}' },
-            { name: 'web_fetch', desc: '获取网页内容', icon: '\u{1F310}' },
-            { name: 'provider_manage', desc: '对话中管理 AI 供应商', icon: '\u2699\uFE0F' },
-            { name: 'agent_self_config', desc: '对话中修改模型和参数', icon: '\u{1F916}' },
+            { name: 'memory_write', desc: t('skills.builtinMemoryWrite'), icon: '\u{1F9E0}' },
+            { name: 'memory_read', desc: t('skills.builtinMemoryRead'), icon: '\u{1F50D}' },
+            { name: 'bash_exec', desc: t('skills.builtinBashExec'), icon: '\u{1F4BB}' },
+            { name: 'file_read', desc: t('skills.builtinFileRead'), icon: '\u{1F4C4}' },
+            { name: 'web_fetch', desc: t('skills.builtinWebFetch'), icon: '\u{1F310}' },
+            { name: 'provider_manage', desc: t('skills.builtinProviderManage'), icon: '\u2699\uFE0F' },
+            { name: 'agent_self_config', desc: t('skills.builtinAgentSelfConfig'), icon: '\u{1F916}' },
           ]).map((skill, i, arr) => (
             <div key={i} style={{
               display: 'flex', alignItems: 'center', padding: '13px 18px',
@@ -208,7 +208,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
               <label style={{ fontSize: 13, color: S.textSub, display: 'block', marginBottom: 6 }}>Base URL（可选）</label>
               <input
                 value={apiUrl} onChange={e => setApiUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1（默认）"
+                placeholder="https://api.openai.com/v1"
                 style={{
                   width: '100%', padding: '10px 14px', border: `1px solid ${S.cardBorder}`,
                   borderRadius: 8, fontSize: 14, boxSizing: 'border-box', background: S.bg, color: S.text,

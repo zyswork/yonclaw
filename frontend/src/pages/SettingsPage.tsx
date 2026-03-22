@@ -669,7 +669,7 @@ function AdvancedSettings() {
               const res = await fetch(embeddingUrl, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${embeddingKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: embeddingModel || 'text-embedding-3-small', input: '测试连接', dimensions: parseInt(embeddingDimensions) || 1024 }),
+                body: JSON.stringify({ model: embeddingModel || 'text-embedding-3-small', input: 'test', dimensions: parseInt(embeddingDimensions) || 1024 }),
               })
               const data = await res.json()
               if (data?.data?.[0]?.embedding) {

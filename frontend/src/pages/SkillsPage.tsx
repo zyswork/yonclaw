@@ -53,21 +53,21 @@ const SKILL_META: Record<string, { icon: string; category: string }> = {
 
 // 内置工具（始终可用，不需安装）
 const BUILTIN_TOOLS = [
-  { name: 'memory_write', desc: '长期记忆存储', icon: '\u{1F9E0}' },
-  { name: 'memory_read', desc: '记忆检索', icon: '\u{1F50D}' },
-  { name: 'bash_exec', desc: '执行终端命令', icon: '\u{1F4BB}' },
-  { name: 'file_read', desc: '读取文件', icon: '\u{1F4C4}' },
-  { name: 'file_write', desc: '写入文件', icon: '\u{1F4DD}' },
-  { name: 'file_edit', desc: '编辑文件', icon: '\u270F\uFE0F' },
-  { name: 'file_list', desc: '列出目录', icon: '\u{1F4C1}' },
-  { name: 'code_search', desc: '代码搜索', icon: '\u{1F50E}' },
-  { name: 'web_fetch', desc: '获取网页', icon: '\u{1F310}' },
-  { name: 'calculator', desc: '数学计算', icon: '\u{1F522}' },
-  { name: 'date_time', desc: '当前时间', icon: '\u{1F552}' },
-  { name: 'diff_edit', desc: 'Diff 编辑', icon: '\u{1F4CB}' },
-  { name: 'settings_manage', desc: '系统设置', icon: '\u{1F527}' },
-  { name: 'provider_manage', desc: '供应商管理', icon: '\u2699\uFE0F' },
-  { name: 'agent_self_config', desc: '自身配置', icon: '\u{1F916}' },
+  { name: 'memory_write', descKey: 'skills.builtinMemoryWrite', icon: '\u{1F9E0}' },
+  { name: 'memory_read', descKey: 'skills.builtinMemoryRead', icon: '\u{1F50D}' },
+  { name: 'bash_exec', descKey: 'skills.builtinBashExec', icon: '\u{1F4BB}' },
+  { name: 'file_read', descKey: 'skills.builtinFileRead', icon: '\u{1F4C4}' },
+  { name: 'file_write', descKey: 'skills.builtinFileWrite', icon: '\u{1F4DD}' },
+  { name: 'file_edit', descKey: 'skills.builtinFileEdit', icon: '\u270F\uFE0F' },
+  { name: 'file_list', descKey: 'skills.builtinFileList', icon: '\u{1F4C1}' },
+  { name: 'code_search', descKey: 'skills.builtinCodeSearch', icon: '\u{1F50E}' },
+  { name: 'web_fetch', descKey: 'skills.builtinWebFetch', icon: '\u{1F310}' },
+  { name: 'calculator', descKey: 'skills.builtinCalculator', icon: '\u{1F522}' },
+  { name: 'date_time', descKey: 'skills.builtinDateTime', icon: '\u{1F552}' },
+  { name: 'diff_edit', descKey: 'skills.builtinDiffEdit', icon: '\u{1F4CB}' },
+  { name: 'settings_manage', descKey: 'skills.builtinSettingsManage', icon: '\u{1F527}' },
+  { name: 'provider_manage', descKey: 'skills.builtinProviderManage', icon: '\u2699\uFE0F' },
+  { name: 'agent_self_config', descKey: 'skills.builtinAgentSelfConfig', icon: '\u{1F916}' },
 ]
 
 const CATEGORY_KEYS = ['all', 'installed', 'available', 'online', 'productivity', 'development', 'media', 'platform', 'builtin']
@@ -155,19 +155,19 @@ export default function SkillsPage() {
       const msg = await invoke<string>('download_skill_from_hub', { slug })
       await loadAll() // 刷新本地 marketplace 列表
       loadOnlineSkills(onlineSearch) // 刷新在线列表（更新"已有"状态）
-      alert(msg + '\n\n现在可以在"全部"tab 里安装到 Agent。')
-    } catch (e) { alert('下载失败: ' + e) }
+      alert(msg)
+    } catch (e) { alert(t('skills.downloadFailed') + ': ' + e) }
     setDownloading('')
   }
 
   const handlePublishToHub = async (skillName: string) => {
-    const author = prompt('发布者名称（留空则为 community）:', '') || ''
+    const author = prompt(t('skills.promptAuthor'), '') || ''
     setPublishing(skillName)
     try {
       const msg = await invoke<string>('publish_skill_to_hub', { skillName, author })
-      alert(msg + '\n\n所有用户都可以在"在线市场"看到并下载这个技能了。')
+      alert(msg)
       if (activeTab === 'online') loadOnlineSkills(onlineSearch)
-    } catch (e) { alert('发布失败: ' + e) }
+    } catch (e) { alert(t('skills.publishFailed') + ': ' + e) }
     setPublishing('')
   }
 
@@ -178,7 +178,7 @@ export default function SkillsPage() {
     try {
       await invoke('install_skill_to_agent', { agentId: selectedAgent, skillName })
       await loadAll()
-    } catch (e) { alert('安装失败: ' + e) }
+    } catch (e) { alert(t('skills.installFailed') + ': ' + e) }
     setOperating('')
   }
 
@@ -188,7 +188,7 @@ export default function SkillsPage() {
     try {
       await invoke('uninstall_skill_from_agent', { agentId: selectedAgent, skillName })
       await loadAll()
-    } catch (e) { alert('卸载失败: ' + e) }
+    } catch (e) { alert(t('skills.uninstallFailed') + ': ' + e) }
     setOperating('')
   }
 
@@ -224,7 +224,7 @@ export default function SkillsPage() {
       }),
     // 内置工具
     ...BUILTIN_TOOLS.map(b => ({
-      name: b.name, desc: b.desc, icon: b.icon, category: 'builtin',
+      name: b.name, desc: t(b.descKey), icon: b.icon, category: 'builtin',
       installed: true, isBuiltin: true, tools_count: 0,
     })),
   ]

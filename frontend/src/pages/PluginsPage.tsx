@@ -66,14 +66,14 @@ export default function PluginsPage() {
     try {
       await invoke('toggle_system_plugin', { pluginId, enabled: !currentEnabled })
       await loadPlugins()
-    } catch (e) { alert('操作失败: ' + e) }
+    } catch (e) { alert(t('cronExtra.operationFailed') + ': ' + e) }
   }
 
   const toggleAgentPlugin = async (pluginId: string, currentEnabled: boolean) => {
     try {
       await invoke('set_agent_plugin', { agentId: selectedAgent, pluginId, enabled: !currentEnabled })
       await loadAgentStates()
-    } catch (e) { alert('操作失败: ' + e) }
+    } catch (e) { alert(t('cronExtra.operationFailed') + ': ' + e) }
   }
 
   const openConfig = async (pluginId: string) => {
@@ -90,7 +90,7 @@ export default function PluginsPage() {
       await invoke('save_plugin_config', { pluginId: configuring, configJson: JSON.stringify(configValues) })
       setConfiguring(null)
       setConfigValues({})
-    } catch (e) { alert('保存失败: ' + e) }
+    } catch (e) { alert(t('settingsExtra.saveFailed') + ': ' + e) }
   }
 
   const getAgentEnabled = (pluginId: string, globalEnabled: boolean): boolean => {
@@ -155,7 +155,7 @@ export default function PluginsPage() {
           backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--accent)',
         }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
-            {configuringPlugin.icon} {configuringPlugin.name} 配置
+            {configuringPlugin.icon} {configuringPlugin.name} {t('plugins.btnConfig')}
           </div>
           {configuringPlugin.configSchema.map(field => (
             <div key={field.key} style={{ marginBottom: 10 }}>
@@ -188,7 +188,7 @@ export default function PluginsPage() {
       )}
 
       {/* 插件列表 */}
-      {(activeType === '全部' ? TYPE_ORDER : [activeType]).map(type => {
+      {(activeType === 'all' ? TYPE_ORDER : [activeType]).map(type => {
         const items = grouped[type]
         if (!items || items.length === 0) return null
         return (

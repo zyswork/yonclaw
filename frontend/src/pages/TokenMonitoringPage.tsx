@@ -144,7 +144,7 @@ export default function TokenMonitoringPage() {
                       width: '100%', maxWidth: 30,
                       height: `${(d.totalTokens / maxDaily) * 80}px`,
                       backgroundColor: 'var(--accent)', borderRadius: '3px 3px 0 0', minHeight: 2,
-                    }} title={`${d.date}: ${d.totalTokens} tokens, ${d.calls} 次调用`} />
+                    }} title={`${d.date}: ${d.totalTokens} tokens, ${d.calls} calls`} />
                     <div style={{ fontSize: 9, color: '#bbb', marginTop: 2 }}>{d.date.slice(5)}</div>
                   </div>
                 ))}

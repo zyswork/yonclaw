@@ -16,18 +16,28 @@ interface ChannelInfo {
   configFields?: { key: string; label: string; placeholder: string; type?: string }[]
 }
 
-const CHANNELS: ChannelInfo[] = [
-  { id: 'telegram', name: 'Telegram', icon: '\u{1F4E8}', desc: '通过 Telegram Bot 与 AI 对话。从 @BotFather 获取 Token，一分钟接入。', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF...', type: 'password' }] },
-  { id: 'feishu', name: '飞书 (Lark)', icon: '\u{1F426}', desc: '飞书群聊 AI 助手。在飞书开放平台创建应用，获取 App ID 和 Secret。', connected: false, configFields: [{ key: 'appId', label: 'App ID', placeholder: 'cli_xxx' }, { key: 'appSecret', label: 'App Secret', placeholder: '', type: 'password' }] },
-  { id: 'dingtalk', name: '钉钉', icon: '\u{1F4AC}', desc: '钉钉群机器人接入。', connected: false },
-  { id: 'wechat', name: '微信', icon: '\u{1F4F1}', desc: '通过 iLinkai 协议接入个人微信。点击连接后扫码登录。', connected: false },
-  { id: 'discord', name: 'Discord', icon: '\u{1F3AE}', desc: '通过 Bot API 接入 Discord。', connected: false },
-  { id: 'slack', name: 'Slack', icon: '\u{1F4BC}', desc: 'Socket Mode 接入 Slack 工作区。', connected: false },
+const CHANNEL_DEFS: Omit<ChannelInfo, 'desc'>[] = [
+  { id: 'telegram', name: 'Telegram', icon: '\u{1F4E8}', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF...', type: 'password' }] },
+  { id: 'feishu', name: '飞书 (Lark)', icon: '\u{1F426}', connected: false, configFields: [{ key: 'appId', label: 'App ID', placeholder: 'cli_xxx' }, { key: 'appSecret', label: 'App Secret', placeholder: '', type: 'password' }] },
+  { id: 'dingtalk', name: '钉钉', icon: '\u{1F4AC}', connected: false },
+  { id: 'wechat', name: '微信', icon: '\u{1F4F1}', connected: false },
+  { id: 'discord', name: 'Discord', icon: '\u{1F3AE}', connected: false },
+  { id: 'slack', name: 'Slack', icon: '\u{1F4BC}', connected: false },
 ]
+
+const DESC_KEYS: Record<string, string> = {
+  telegram: 'channels.descTelegram',
+  feishu: 'channels.descFeishu',
+  dingtalk: 'channels.descDingtalk',
+  wechat: 'channels.descWechat',
+  discord: 'channels.descDiscord',
+  slack: 'channels.descSlack',
+}
 
 export default function ChannelsPage() {
   const { t } = useI18n()
-  const [channels, setChannels] = useState(CHANNELS)
+  const buildChannels = (): ChannelInfo[] => CHANNEL_DEFS.map(ch => ({ ...ch, desc: t(DESC_KEYS[ch.id] || '') }))
+  const [channels, setChannels] = useState<ChannelInfo[]>(() => buildChannels())
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [formValues, setFormValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
@@ -72,9 +82,9 @@ export default function ChannelsPage() {
         console.log('weixin qr data:', qrData)
         const qrcodeImg = qrData.qrcode_img_content || ''
         const qrcodeId = qrData.qrcode || ''
-        if (!qrcodeId) { setError('获取二维码失败: ' + JSON.stringify(qrData)); setSaving(false); return }
+        if (!qrcodeId) { setError(t('channels.errorGetQr') + ': ' + JSON.stringify(qrData)); setSaving(false); return }
 
-        console.log('微信二维码: qrcode=' + qrcodeId + ', img=' + qrcodeImg.substring(0, 80))
+        console.log('weixin QR: qrcode=' + qrcodeId + ', img=' + qrcodeImg.substring(0, 80))
 
         // qrcode_img_content 是微信扫码链接，用 QRCodeSVG 渲染
         setWeixinQr(qrcodeImg || `https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode_img?qrcode=${qrcodeId}`)
@@ -107,7 +117,7 @@ export default function ChannelsPage() {
                 setSaving(false)
                 return
               } else {
-                setError('登录确认但未获取到 token，请重试')
+                setError(t('channels.errorNoToken'))
                 break
               }
             }
@@ -122,14 +132,14 @@ export default function ChannelsPage() {
           }
         }
         setError(t('channels.errorTimeout'))
-      } catch (e: any) { setError('微信登录失败: ' + String(e)); console.error(e) }
+      } catch (e: any) { setError(t('channels.errorLoginFailed') + ': ' + String(e)); console.error(e) }
       setSaving(false)
       return
     }
     if (channelId === 'feishu') {
       const appId = formValues.appId?.trim()
       const appSecret = formValues.appSecret?.trim()
-      if (!appId || !appSecret) { setError('请填写 App ID 和 App Secret'); return }
+      if (!appId || !appSecret) { setError(t('channels.errorFillFields')); return }
       setSaving(true); setError('')
       try {
         await invoke('set_setting', { key: 'feishu_app_id', value: appId })
@@ -137,22 +147,22 @@ export default function ChannelsPage() {
         setConfiguring(null); setFormValues({}); setError('')
         alert(t('channels.successConfigured'))
         checkStatuses()
-      } catch (e: any) { setError('保存失败: ' + String(e)) }
+      } catch (e: any) { setError(t('channels.errorSaveFailed') + ': ' + String(e)) }
       setSaving(false)
       return
     }
     if (channelId !== 'telegram') { alert(t('channels.errorNotSupported')); return }
     const token = formValues.botToken?.trim()
-    if (!token) { setError('请输入 Bot Token'); return }
+    if (!token) { setError(t('channels.errorFillToken')); return }
 
     setSaving(true); setError('')
     try {
       // 步骤 1: 通过 Tauri Rust 侧验证 Token（绕过 WebView 限制）
-      setError('正在验证 Token...')
+      setError(t('channels.verifyingToken'))
       const verifyResult = await invoke<any>('verify_telegram_token', { botToken: token })
 
-      if (!verifyResult.ok) { setError('Token 无效: ' + (verifyResult.error || '')); setSaving(false); return }
-      setError(`验证成功: @${verifyResult.username}，正在保存...`)
+      if (!verifyResult.ok) { setError(t('channels.tokenInvalid') + ': ' + (verifyResult.error || '')); setSaving(false); return }
+      setError(t('channels.verifySuccess', { username: verifyResult.username }))
 
       // 步骤 2: 保存到本地 settings（桌面端直接轮询 Telegram）
       await invoke('set_setting', { key: 'telegram_bot_token', value: token })
@@ -166,7 +176,7 @@ export default function ChannelsPage() {
       setConfiguring(null); setFormValues({}); setError('')
       alert(t('channels.successConnected'))
       checkStatuses()
-    } catch (e: any) { setError('连接失败: ' + String(e)) }
+    } catch (e: any) { setError(t('channels.errorConnectFailed') + ': ' + String(e)) }
     setSaving(false)
   }
 
@@ -191,7 +201,7 @@ export default function ChannelsPage() {
       {loadError && (
         <div style={{ padding: '10px 16px', borderRadius: 8, backgroundColor: 'var(--error-bg)', color: 'var(--error)', fontSize: 13, marginTop: 12 }}>
           {loadError}
-          <button onClick={checkStatuses} style={{ marginLeft: 12, fontSize: 12, padding: '2px 8px', borderRadius: 4, cursor: 'pointer' }}>重试</button>
+          <button onClick={checkStatuses} style={{ marginLeft: 12, fontSize: 12, padding: '2px 8px', borderRadius: 4, cursor: 'pointer' }}>{t('channels.retryBtn')}</button>
         </div>
       )}
 

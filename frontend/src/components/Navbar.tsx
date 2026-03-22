@@ -5,8 +5,10 @@
  */
 
 import { useNavigate } from 'react-router-dom'
+import { useI18n } from '../i18n'
 
 export default function Navbar() {
+  const { t } = useI18n()
   const navigate = useNavigate()
 
   const handleLogout = () => {
@@ -36,7 +38,7 @@ export default function Navbar() {
           fontSize: '14px',
         }}
       >
-        退出登录
+        {t('common.logout')}
       </button>
     </nav>
   )

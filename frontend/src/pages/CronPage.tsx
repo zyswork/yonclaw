@@ -287,7 +287,7 @@ export default function CronPage() {
             {form.scheduleKind === 'cron' && (
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
                 <input value={form.cronExpr} onChange={e => updateForm({ cronExpr: e.target.value })}
-                  style={inputStyle} placeholder="0 9 * * *（分 时 日 月 周）" />
+                  style={inputStyle} placeholder="0 9 * * * (min hr day mon wk)" />
                 <select value={form.cronTz} onChange={e => updateForm({ cronTz: e.target.value })} style={inputStyle}>
                   <option value="Asia/Shanghai">Asia/Shanghai</option>
                   <option value="UTC">UTC</option>
@@ -333,7 +333,7 @@ export default function CronPage() {
               <label style={labelStyle}>
                 {t('cronExtra.shellCommand')}
                 <input value={form.command} onChange={e => updateForm({ command: e.target.value })}
-                  style={inputStyle} placeholder="例：echo hello" />
+                  style={inputStyle} placeholder="e.g. echo hello" />
               </label>
             )}
             {form.jobType === 'mcp_tool' && (

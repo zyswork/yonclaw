@@ -282,7 +282,7 @@ function UserMessageContent({ content }: { content: string }) {
           <img
             key={i}
             src={convertLocalPath(p.value)}
-            alt="图片"
+            alt="image"
             style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, marginTop: 4, display: 'block' }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
@@ -631,37 +631,7 @@ function ChatTab({ agentId }: { agentId: string }) {
   const handleSlashCommand = async (cmd: string, args: string): Promise<string | null> => {
     switch (cmd) {
       case 'help':
-        return `## 可用命令
-
-**会话**
-- \`/new\` — 新建会话
-- \`/clear\` — 清空当前会话历史
-- \`/compact\` — 压缩上下文（减少 Token 消耗）
-- \`/rename <名称>\` — 重命名当前会话
-
-**模型**
-- \`/model\` — 查看当前模型
-- \`/model <名称>\` — 切换模型
-- \`/temp <0-2>\` — 调整温度
-
-**信息**
-- \`/status\` — 系统状态
-- \`/usage\` — Token 用量
-- \`/tools\` — 列出可用工具
-- \`/skills\` — 列出已安装技能
-- \`/providers\` — 列出供应商配置
-- \`/memory\` — 查看记忆统计
-- \`/sessions\` — 列出所有会话
-
-**Agent**
-- \`/agents\` — 列出所有 Agent
-- \`/kill <id|all>\` — 终止子 Agent
-- \`/skill [名称]\` — 查看/激活技能
-
-**操作**
-- \`/stop\` — 停止当前生成
-- \`/reset\` — 重置会话
-- \`/export\` — 导出对话为 Markdown`
+        return t('agentDetailSub.slashHelp')
 
       case 'new':
         await createSession()
@@ -699,12 +669,12 @@ function ChatTab({ agentId }: { agentId: string }) {
           try {
             const detail = await invoke<any>('get_agent_detail', { agentId })
             return `${t('agentDetail.currentModel')}: **${detail?.model}**\nTemperature: ${detail?.temperature ?? 'default'}\nMax Tokens: ${detail?.maxTokens ?? 'default'}`
-          } catch (e) { return '查询失败: ' + e }
+          } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
         }
         try {
           await invoke('update_agent', { agentId, model: args.trim() })
           return `${t('agentDetail.switchedTo')} **${args.trim()}**`
-        } catch (e) { return '切换失败: ' + e }
+        } catch (e) { return t('agentDetailSub.switchFailed') + ': ' + e }
       }
 
       case 'temp': {
@@ -719,8 +689,8 @@ function ChatTab({ agentId }: { agentId: string }) {
       case 'status': {
         try {
           const h = await invoke<any>('health_check')
-          return `## 系统状态\n- 状态: ${h.status}\n- Agent: ${h.agents} 个\n- 记忆: ${h.memories} 条\n- 今日 Token: ${h.today_tokens?.toLocaleString()}\n- 响应缓存: ${h.response_cache_entries} 条`
-        } catch (e) { return '查询失败: ' + e }
+          return `## ${t('agentDetailSub.systemStatus')}\n- ${t('agentDetailSub.statusLabel')}: ${h.status}\n- ${t('agentDetailSub.agentCount')}: ${h.agents}\n- ${t('agentDetailSub.memoryCount')}: ${h.memories}\n- ${t('agentDetailSub.todayToken')}: ${h.today_tokens?.toLocaleString()}\n- ${t('agentDetailSub.responseCacheCount')}: ${h.response_cache_entries}`
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'usage': {
@@ -728,47 +698,47 @@ function ChatTab({ agentId }: { agentId: string }) {
           const stats = await invoke<any>('get_token_stats', { agentId, days: 7 })
           const total = stats?.totalTokens || 0
           const cost = stats?.estimatedCost || 0
-          return `## Token 用量（近 7 天）\n- 总计: ${total.toLocaleString()} tokens\n- 输入: ${(stats?.inputTokens || 0).toLocaleString()}\n- 输出: ${(stats?.outputTokens || 0).toLocaleString()}\n- 估计费用: $${cost.toFixed(4)}`
-        } catch (e) { return '查询失败: ' + e }
+          return `## ${t('agentDetailSub.tokenUsage')}\n- ${t('agentDetailSub.totalTokens')}: ${total.toLocaleString()} tokens\n- ${t('agentDetailSub.inputTokens')}: ${(stats?.inputTokens || 0).toLocaleString()}\n- ${t('agentDetailSub.outputTokens')}: ${(stats?.outputTokens || 0).toLocaleString()}\n- ${t('agentDetailSub.estimatedCost')}: $${cost.toFixed(4)}`
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'tools': {
         try {
           const detail = await invoke<any>('get_agent_detail', { agentId })
-          return `## 可用工具 (${detail?.toolCount || 0} 个)\n\n工具通过 API tools 参数传递给 LLM，包括内置工具 + MCP 工具 + 技能工具`
-        } catch (e) { return '查询失败: ' + e }
+          return `## ${t('agentDetailSub.availableTools')} (${detail?.toolCount || 0})\n\n${t('agentDetailSub.toolsDesc')}`
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'skills': {
         try {
           const list = await invoke<any[]>('list_skills', { agentId })
-          if (!list?.length) return '暂无已安装技能'
-          return `## 已安装技能 (${list.length} 个)\n\n${list.map((s: any) => `- **${s.name}** ${s.enabled ? '✓' : '✗'} ${s.description || ''}`).join('\n')}`
-        } catch (e) { return '查询失败: ' + e }
+          if (!list?.length) return t('agentDetailSub.noInstalledSkills')
+          return `## ${t('agentDetailSub.installedSkills')} (${list.length})\n\n${list.map((s: any) => `- **${s.name}** ${s.enabled ? '✓' : '✗'} ${s.description || ''}`).join('\n')}`
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'providers': {
         try {
           const providers = await invoke<any[]>('get_providers')
-          return `## 供应商配置 (${providers?.length || 0} 个)\n\n${(providers || []).map((p: any) => {
+          return `## ${t('agentDetailSub.providerConfig')} (${providers?.length || 0})\n\n${(providers || []).map((p: any) => {
             const hasKey = p.apiKey && p.apiKey.length > 0
             const models = (p.models || []).map((m: any) => m.name || m.id).join(', ')
-            return `- **${p.name}** (${p.apiType}) ${p.enabled ? '✓' : '✗'} Key:${hasKey ? '有' : '无'}\n  模型: ${models || '无'}\n  URL: ${p.baseUrl || '默认'}`
+            return `- **${p.name}** (${p.apiType}) ${p.enabled ? '✓' : '✗'} Key:${hasKey ? t('agentDetailSub.keyYes') : t('agentDetailSub.keyNo')}\n  ${t('agentDetailSub.modelLabel')}: ${models || t('agentDetailSub.keyNo')}\n  ${t('agentDetailSub.urlLabel')}: ${p.baseUrl || t('agentDetailSub.defaultLabel')}`
           }).join('\n')}`
-        } catch (e) { return '查询失败: ' + e }
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'memory': {
         try {
           const detail = await invoke<any>('get_agent_detail', { agentId })
-          return `## 记忆统计\n- 记忆: ${detail?.memories?.length || 0} 条\n- 向量: ${detail?.vectorCount || 0} 条\n- 嵌入缓存: ${detail?.embeddingCacheCount || 0} 条\n- 会话: ${detail?.sessionCount || 0} 个\n- 消息: ${detail?.messageCount || 0} 条`
-        } catch (e) { return '查询失败: ' + e }
+          return `## ${t('agentDetailSub.memoryStats')}\n- ${t('agentDetailSub.memoryCount')}: ${detail?.memories?.length || 0}\n- ${t('agentDetailSub.vectorCount')}: ${detail?.vectorCount || 0}\n- ${t('agentDetailSub.embeddingCacheCount')}: ${detail?.embeddingCacheCount || 0}\n- ${t('agentDetailSub.sessionCount')}: ${detail?.sessionCount || 0}\n- ${t('agentDetailSub.messageCount')}: ${detail?.messageCount || 0}`
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'sessions': {
-        return `## 会话列表 (${sessions.length} 个)\n\n${sessions.map((s) => {
-          const active = s.id === activeSession ? ' ← 当前' : ''
-          const sys = isSystemSession(s.title) ? ' [系统]' : ''
+        return `## ${t('agentDetailSub.sessionList')} (${sessions.length})\n\n${sessions.map((s) => {
+          const active = s.id === activeSession ? ' ' + t('agentDetailSub.currentSession') : ''
+          const sys = isSystemSession(s.title) ? ' ' + t('agentDetailSub.systemLabel') : ''
           return `- ${s.title}${sys}${active}`
         }).join('\n')}`
       }
@@ -799,56 +769,56 @@ function ChatTab({ agentId }: { agentId: string }) {
           if (m.role === 'tool') return `> 🔧 ${m.toolName}: ${m.content}`
           return `> ${m.content}`
         }).join('\n\n---\n\n')
-        const title = sessions.find(s => s.id === activeSession)?.title || '对话'
+        const title = sessions.find(s => s.id === activeSession)?.title || t('agentDetailSub.conversation')
         const blob = new Blob([`# ${title}\n\n${md}`], { type: 'text/markdown' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url; a.download = `${title}.md`; a.click()
         URL.revokeObjectURL(url)
-        return `已导出为 ${title}.md`
+        return t('agentDetailSub.exportedAs', { title })
       }
 
       case 'agents': {
         try {
           const list = await invoke<any[]>('list_agents')
-          if (!list?.length) return '暂无 Agent'
-          return `## Agent 列表 (${list.length} 个)\n\n${list.map((a: any) =>
+          if (!list?.length) return t('agentDetailSub.noAgents')
+          return `## ${t('agentDetailSub.agentList')} (${list.length})\n\n${list.map((a: any) =>
             `- **${a.name}** (\`${a.model}\`) ID: \`${a.id?.substring(0, 8)}...\``
           ).join('\n')}`
-        } catch (e) { return '查询失败: ' + e }
+        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
       }
 
       case 'kill': {
-        if (!args.trim()) return '用法: /kill <id|all>'
+        if (!args.trim()) return t('agentDetailSub.killUsage')
         try {
           const subagents = await invoke<any[]>('list_subagents', { agentId })
           const running = subagents?.filter((s: any) => s.status === 'Running') || []
-          if (running.length === 0) return '没有运行中的子 Agent'
+          if (running.length === 0) return t('agentDetailSub.noRunningSubagents')
           if (args.trim().toLowerCase() === 'all') {
             for (const sa of running) { await invoke('cancel_subagent', { subagentId: sa.id }) }
-            return `已终止 ${running.length} 个子 Agent`
+            return t('agentDetailSub.terminatedN', { n: running.length })
           }
           const target = running.find((s: any) => s.id.startsWith(args.trim()) || s.name === args.trim())
-          if (!target) return `未找到匹配的子 Agent: ${args.trim()}`
+          if (!target) return t('agentDetailSub.notFoundSubagent') + ': ' + args.trim()
           await invoke('cancel_subagent', { subagentId: target.id })
-          return `已终止子 Agent: ${target.name}`
-        } catch (e) { return '终止失败: ' + e }
+          return t('agentDetailSub.terminatedSubagent', { name: target.name })
+        } catch (e) { return t('agentDetailSub.terminateFailed') + ': ' + e }
       }
 
       case 'skill': {
         if (!args.trim()) {
           try {
             const list = await invoke<any[]>('list_skills', { agentId })
-            if (!list?.length) return '暂无技能。用法: /skill <名称>'
-            return `可用技能:\n${list.map((s: any) => `- ${s.name} ${s.enabled ? '✓' : '✗'}`).join('\n')}\n\n用法: /skill <名称> 来激活技能`
-          } catch (e) { return '查询失败: ' + e }
+            if (!list?.length) return t('agentDetailSub.noSkills') + '. ' + t('agentDetailSub.skillUsageHint')
+            return `${t('agentDetailSub.availableSkills')}:\n${list.map((s: any) => `- ${s.name} ${s.enabled ? '✓' : '✗'}`).join('\n')}\n\n${t('agentDetailSub.activateSkillHint')}`
+          } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
         }
         // 激活技能（发送带技能关键词的消息给 LLM）
         return null // 返回 null 让消息走正常 LLM 流程，技能会被 skill_mgr.activate_for_message 匹配
       }
 
       default:
-        return t('chatPage.unknownCommand', { cmd: `/${cmd}` })
+        return t('agentDetailSub.unknownSlashCmd', { cmd })
     }
   }
 
@@ -958,7 +928,7 @@ function ChatTab({ agentId }: { agentId: string }) {
                       const r = await invoke<any>('cleanup_system_sessions', { agentId, keepDays: 7 })
                       alert(t('agentDetailSub.cleanupDone', { sessions: r.deletedSessions, messages: r.deletedMessages }))
                       loadSessions()
-                    } catch (err) { alert('清理失败: ' + err) }
+                    } catch (err) { alert(t('agentDetailSub.cleanupFailed') + ': ' + err) }
                   }}
                   style={{ fontSize: 10, padding: '1px 6px', border: '1px solid var(--border-subtle)', borderRadius: 3, background: 'var(--bg-elevated)', cursor: 'pointer', color: 'var(--text-muted)' }}
                 >
