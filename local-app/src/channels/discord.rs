@@ -14,13 +14,22 @@ pub struct DiscordConfig {
     pub bot_token: String,
 }
 
-/// 启动 Discord Gateway（后台 tokio task）
+/// 防止重复启动
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 启动 Discord Gateway（后台 tokio task，单例）
 pub async fn start_gateway(
     config: DiscordConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
 ) {
+    // 防止重复启动（已有 Gateway 在运行则跳过）
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        log::info!("Discord: Gateway 已在运行，跳过重复启动");
+        return;
+    }
+
     let token = config.bot_token.clone();
     log::info!("Discord: 启动 Gateway 连接 (token: {}...)", &token[..token.len().min(20)]);
 
@@ -95,14 +104,16 @@ async fn run_gateway(
 
     let last_seq_hb = last_seq.clone();
     let ack_hb = ack_received.clone();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_hb = shutdown.clone();
     // write 仅由心跳任务使用（消息回复走 HTTP REST，不走 WebSocket）
-    // Mutex 用于心跳 task 和主循环之间的所有权共享
     let write = Arc::new(tokio::sync::Mutex::new(write));
     let write_hb = write.clone();
 
-    let heartbeat_handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(heartbeat_interval)).await;
+            if shutdown_hb.load(Ordering::Relaxed) { break; }
             if !ack_hb.load(Ordering::Relaxed) {
                 log::warn!("Discord: 未收到心跳 ACK，断开");
                 break;
@@ -219,7 +230,7 @@ async fn run_gateway(
         }
     }
 
-    heartbeat_handle.abort();
+    shutdown.store(true, Ordering::Relaxed);
     Err("Gateway 循环结束".into())
 }
 

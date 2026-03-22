@@ -14,13 +14,21 @@ pub struct SlackConfig {
     pub app_token: String,   // xapp-...
 }
 
-/// 启动 Slack Socket Mode（后台 tokio task）
+/// 防止重复启动
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 启动 Slack Socket Mode（后台 tokio task，单例）
 pub async fn start_socket_mode(
     config: SlackConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
 ) {
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        log::info!("Slack: Socket Mode 已在运行，跳过重复启动");
+        return;
+    }
+
     log::info!("Slack: 启动 Socket Mode");
 
     tokio::spawn(async move {
@@ -249,6 +257,9 @@ async fn handle_message(
 
     // 先发一条"思考中"消息，拿到 ts 用于后续更新
     let initial_ts = slack_post_message(bot_token, channel, thread_ts, "💭 Thinking...").await;
+    if initial_ts.is_none() {
+        log::warn!("Slack: 发送初始消息失败，流式更新将不可用");
+    }
 
     // 流式调用
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
