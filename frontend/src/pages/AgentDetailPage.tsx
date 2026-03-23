@@ -1886,6 +1886,110 @@ function SubagentsTab({ agentId }: { agentId: string }) {
           )
         })
       )}
+
+      {/* Agent 间消息 */}
+      <AgentMessagesPanel agentId={agentId} />
+    </div>
+  )
+}
+
+/** Agent 间消息面板 */
+function AgentMessagesPanel({ agentId }: { agentId: string }) {
+  const { t } = useI18n()
+  const [messages, setMessages] = useState<any[]>([])
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([])
+  const [targetId, setTargetId] = useState('')
+  const [content, setContent] = useState('')
+  const [sending, setSending] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const [msgs, agentList] = await Promise.all([
+        invoke<any[]>('get_agent_mailbox', { agentId }),
+        invoke<any[]>('list_agents'),
+      ])
+      if (msgs.length > 0) setMessages(prev => [...prev, ...msgs])
+      setAgents(agentList.filter((a: any) => a.id !== agentId))
+    } catch {}
+  }, [agentId])
+
+  useEffect(() => { load() }, [load])
+
+  // 定期拉取新消息
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const msgs = await invoke<any[]>('get_agent_mailbox', { agentId })
+        if (msgs.length > 0) setMessages(prev => [...prev, ...msgs])
+      } catch {}
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [agentId])
+
+  const handleSend = async () => {
+    if (!targetId || !content.trim()) return
+    setSending(true)
+    try {
+      await invoke('send_agent_message', { fromId: agentId, toId: targetId, content: content.trim() })
+      setMessages(prev => [...prev, { from: agentId, to: targetId, content: content.trim(), timestamp: Date.now() }])
+      setContent('')
+      toast.success(t('agentDetailSub.messageSent'))
+    } catch (e) { toast.error(String(e)) }
+    setSending(false)
+  }
+
+  const getName = (id: string) => agents.find(a => a.id === id)?.name || id.slice(0, 8)
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
+        {'\u{1F4EC}'} {t('agentDetailSub.messagesTitle')}
+      </h3>
+
+      {/* 发送消息 */}
+      <div style={{
+        display: 'flex', gap: 8, marginBottom: 16, padding: 12,
+        borderRadius: 10, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
+      }}>
+        <select value={targetId} onChange={e => setTargetId(e.target.value)}
+          style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
+          <option value="">{t('agentDetailSub.messagesSelectTarget')}</option>
+          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <input
+          value={content} onChange={e => setContent(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSend()}
+          placeholder={t('agentDetailSub.messagesPlaceholder')}
+          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+        />
+        <button onClick={handleSend} disabled={sending || !targetId || !content.trim()}
+          style={{ padding: '6px 16px', borderRadius: 6, fontSize: 13, border: 'none', backgroundColor: 'var(--accent)', color: '#fff', cursor: 'pointer' }}>
+          {t('agentDetailSub.messagesSend')}
+        </button>
+      </div>
+
+      {/* 消息列表 */}
+      {messages.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 12 }}>
+          {t('agentDetailSub.messagesEmpty')}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflow: 'auto' }}>
+          {messages.map((msg, i) => (
+            <div key={i} style={{
+              padding: '8px 12px', borderRadius: 8,
+              backgroundColor: msg.from === agentId ? 'var(--user-bubble)' : 'var(--assistant-bubble)',
+              border: '1px solid var(--border-subtle)',
+            }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                {msg.from === agentId ? `→ ${getName(msg.to)}` : `← ${getName(msg.from)}`}
+                <span style={{ marginLeft: 8 }}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-primary)' }}>{msg.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

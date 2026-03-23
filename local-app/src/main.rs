@@ -807,6 +807,47 @@ async fn approve_tool_call(
     state.orchestrator.approval_manager.approve(&request_id)
 }
 
+/// Agent 间发送消息
+#[tauri::command]
+async fn send_agent_message(
+    state: State<'_, Arc<AppState>>,
+    from_id: String,
+    to_id: String,
+    content: String,
+) -> Result<(), String> {
+    let msg = agent::subagent::AgentMessage {
+        from: from_id,
+        to: to_id,
+        content,
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    };
+    state.orchestrator.subagent_registry()
+        .send_message_checked(state.orchestrator.pool(), msg).await
+}
+
+/// 获取 Agent 邮箱消息（非阻塞，立即返回当前所有待读消息）
+#[tauri::command]
+async fn get_agent_mailbox(
+    state: State<'_, Arc<AppState>>,
+    agent_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    // 用极短超时拉取邮箱（0秒 = 只看邮箱不等待）
+    let mut messages = Vec::new();
+    loop {
+        match state.orchestrator.subagent_registry()
+            .receive_message(&agent_id, 0).await {
+            Ok(msg) => messages.push(serde_json::json!({
+                "from": msg.from,
+                "to": msg.to,
+                "content": msg.content,
+                "timestamp": msg.timestamp,
+            })),
+            Err(_) => break,
+        }
+    }
+    Ok(messages)
+}
+
 /// 拒绝工具执行
 #[tauri::command]
 async fn deny_tool_call(
@@ -3749,6 +3790,8 @@ async fn main() {
             list_subagent_runs,
             approve_tool_call,
             deny_tool_call,
+            send_agent_message,
+            get_agent_mailbox,
             send_message,
             get_conversations,
             get_session_messages,

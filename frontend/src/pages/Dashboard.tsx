@@ -30,11 +30,21 @@ interface AgentSummary {
   sessionCount: number
 }
 
+interface SchedulerStats {
+  running: boolean
+  totalJobs: number
+  enabledJobs: number
+  runningRuns: number
+  recentFailureRate: number
+}
+
 export default function Dashboard() {
   const { t } = useI18n()
   const [health, setHealth] = useState<HealthData | null>(null)
   const [cache, setCache] = useState<CacheStats | null>(null)
   const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [scheduler, setScheduler] = useState<SchedulerStats | null>(null)
+  const [subagentCount, setSubagentCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -46,11 +56,15 @@ export default function Dashboard() {
     setLoading(true)
     setError('')
     try {
-      const [h, c, a] = await Promise.all([
+      const [h, c, a, sched, subs] = await Promise.all([
         invoke('health_check').catch(() => null),
         invoke('get_cache_stats').catch(() => null),
         invoke('list_agents').catch(() => []),
+        invoke('get_scheduler_status').catch(() => null),
+        invoke('list_subagent_runs', { limit: 1 }).catch(() => []),
       ])
+      setScheduler(sched as SchedulerStats)
+      setSubagentCount((subs as any[])?.length || 0)
       setHealth(h as HealthData)
       setCache(c as CacheStats)
 
@@ -143,6 +157,20 @@ export default function Dashboard() {
           valueColor="#10b981"
           icon="embed"
           sub={t('dashboard.cacheVectors')}
+        />
+        <StatCard
+          label={t('dashboard.scheduler')}
+          value={scheduler?.running ? t('dashboard.schedulerRunning') : t('dashboard.schedulerStopped')}
+          valueColor={scheduler?.running ? 'var(--success)' : 'var(--error)'}
+          icon="cron"
+          sub={`${scheduler?.enabledJobs ?? 0} ${t('dashboard.schedulerJobs')}`}
+        />
+        <StatCard
+          label={t('dashboard.subagentRuns')}
+          value={String(subagentCount)}
+          valueColor="#a855f7"
+          icon="delegate"
+          sub={t('dashboard.subagentRunsDesc')}
         />
       </div>
 
