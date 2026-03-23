@@ -2117,7 +2117,7 @@ impl ImageGenerateTool {
     }
 }
 
-/// TTS 语音合成工具 — 通过 OpenAI TTS API 生成语音
+/// TTS 语音合成工具 — 支持本地系统 TTS + OpenAI API 双模式
 pub struct TtsTool {
     pool: sqlx::SqlitePool,
 }
@@ -2133,7 +2133,7 @@ impl Tool for TtsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tts".to_string(),
-            description: "文字转语音。将文本转换为语音文件，返回音频文件路径。支持多种声音。".to_string(),
+            description: "文字转语音。支持两种模式：local（免费，使用系统 TTS）和 api（高质量，需要 OpenAI API）。默认使用本地 TTS。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2141,15 +2141,18 @@ impl Tool for TtsTool {
                         "type": "string",
                         "description": "要转换为语音的文本"
                     },
+                    "mode": {
+                        "type": "string",
+                        "description": "TTS 模式（可选）：local（系统 TTS，免费）/ api（OpenAI TTS，高质量）",
+                        "default": "local"
+                    },
                     "voice": {
                         "type": "string",
-                        "description": "声音（可选）：alloy/echo/fable/onyx/nova/shimmer",
-                        "default": "alloy"
+                        "description": "声音（可选）。local 模式：系统语音名（如 Ting-Ting/Samantha）；api 模式：alloy/echo/fable/onyx/nova/shimmer"
                     },
                     "speed": {
                         "type": "number",
-                        "description": "语速（可选，0.25-4.0，默认1.0）",
-                        "default": 1.0
+                        "description": "语速（可选）。local: 100-300（默认200）；api: 0.25-4.0（默认1.0）"
                     }
                 },
                 "required": ["text"]
@@ -2165,17 +2168,102 @@ impl Tool for TtsTool {
         let text = arguments.get("text")
             .and_then(|t| t.as_str())
             .ok_or("缺少 text 参数")?;
-        let voice = arguments.get("voice").and_then(|v| v.as_str()).unwrap_or("alloy");
-        let speed = arguments.get("speed").and_then(|s| s.as_f64()).unwrap_or(1.0);
+        let mode = arguments.get("mode").and_then(|m| m.as_str()).unwrap_or("local");
 
         if text.len() > 4096 {
             return Err("文本过长（最多 4096 字符）".to_string());
         }
 
-        log::info!("TTS: {} 字符, voice={}, speed={}", text.len(), voice, speed);
+        match mode {
+            "api" => self.tts_api(text, &arguments).await,
+            _ => self.tts_local(text, &arguments).await,
+        }
+    }
+}
 
-        // 查找 OpenAI provider
-        let (api_key, base_url) = self.find_tts_provider().await?;
+impl TtsTool {
+    /// 本地 TTS — 使用系统命令（macOS: say, Linux: espeak, Windows: PowerShell）
+    async fn tts_local(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
+        let output_dir = dirs::home_dir()
+            .ok_or("无法获取 home 目录")?
+            .join(".yonclaw/tts");
+        let _ = std::fs::create_dir_all(&output_dir);
+        let filename = format!("tts_{}.aiff", chrono::Utc::now().timestamp_millis());
+        let output_path = output_dir.join(&filename);
+
+        #[cfg(target_os = "macos")]
+        {
+            let voice = args.get("voice").and_then(|v| v.as_str()).unwrap_or("");
+            let rate = args.get("speed").and_then(|s| s.as_u64()).unwrap_or(200);
+
+            let mut cmd = tokio::process::Command::new("say");
+            if !voice.is_empty() {
+                cmd.arg("-v").arg(voice);
+            }
+            cmd.arg("-r").arg(rate.to_string());
+            cmd.arg("-o").arg(output_path.to_str().unwrap_or(""));
+            cmd.arg(text);
+
+            let result = cmd.output().await
+                .map_err(|e| format!("say 命令执行失败: {}", e))?;
+
+            if !result.status.success() {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                return Err(format!("say 失败: {}", stderr));
+            }
+
+            let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+            Ok(format!("语音已生成（本地 TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let result = tokio::process::Command::new("espeak")
+                .arg("-w").arg(output_path.to_str().unwrap_or(""))
+                .arg(text)
+                .output().await
+                .map_err(|e| format!("espeak 执行失败: {}", e))?;
+
+            if !result.status.success() {
+                return Err("espeak 失败".to_string());
+            }
+            let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+            Ok(format!("语音已生成（espeak）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let ps_script = format!(
+                "Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.SetOutputToWaveFile('{}'); $synth.Speak('{}'); $synth.Dispose()",
+                output_path.to_str().unwrap_or("").replace("'", "''"),
+                text.replace("'", "''")
+            );
+            let result = tokio::process::Command::new("powershell")
+                .arg("-Command").arg(&ps_script)
+                .output().await
+                .map_err(|e| format!("PowerShell TTS 失败: {}", e))?;
+
+            if !result.status.success() {
+                return Err("Windows TTS 失败".to_string());
+            }
+            let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+            Ok(format!("语音已生成（Windows TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            Err("当前系统不支持本地 TTS，请使用 mode=api".to_string())
+        }
+    }
+
+    /// OpenAI TTS API
+    async fn tts_api(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
+        let voice = args.get("voice").and_then(|v| v.as_str()).unwrap_or("alloy");
+        let speed = args.get("speed").and_then(|s| s.as_f64()).unwrap_or(1.0);
+
+        log::info!("TTS API: {} 字符, voice={}, speed={}", text.len(), voice, speed);
+
+        let (api_key, base_url) = self.find_openai_provider().await?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -2183,44 +2271,34 @@ impl Tool for TtsTool {
             .map_err(|e| format!("创建客户端失败: {}", e))?;
 
         let url = format!("{}/audio/speech", base_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": "tts-1",
-            "input": text,
-            "voice": voice,
-            "speed": speed,
-        });
-
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
+            .json(&serde_json::json!({
+                "model": "tts-1",
+                "input": text,
+                "voice": voice,
+                "speed": speed,
+            }))
+            .send().await
             .map_err(|e| format!("TTS 请求失败: {}", e))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("TTS 失败 (HTTP {}): {}", status, &text[..text.len().min(200)]));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("TTS 失败 (HTTP {}): {}", status, &body[..body.len().min(200)]));
         }
 
-        // 保存音频文件到临时目录
         let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败: {}", e))?;
-        let filename = format!("tts_{}.mp3", chrono::Utc::now().timestamp_millis());
-        let output_dir = dirs::home_dir()
-            .ok_or("无法获取 home 目录")?
-            .join(".yonclaw/tts");
+        let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".yonclaw/tts");
         let _ = std::fs::create_dir_all(&output_dir);
+        let filename = format!("tts_{}.mp3", chrono::Utc::now().timestamp_millis());
         let output_path = output_dir.join(&filename);
-        std::fs::write(&output_path, &bytes)
-            .map_err(|e| format!("保存音频失败: {}", e))?;
+        std::fs::write(&output_path, &bytes).map_err(|e| format!("保存失败: {}", e))?;
 
-        Ok(format!("语音已生成: {} ({} 字节)\n文件: {}", filename, bytes.len(), output_path.display()))
+        Ok(format!("语音已生成（OpenAI TTS）: {} ({} 字节)\n文件: {}", filename, bytes.len(), output_path.display()))
     }
-}
 
-impl TtsTool {
-    async fn find_tts_provider(&self) -> Result<(String, String), String> {
+    async fn find_openai_provider(&self) -> Result<(String, String), String> {
         let json_str: Option<String> = sqlx::query_scalar(
             "SELECT value FROM settings WHERE key = 'providers'"
         ).fetch_optional(&self.pool).await.ok().flatten();
@@ -2238,7 +2316,6 @@ impl TtsTool {
                 return Ok((key.to_string(), base_url.to_string()));
             }
         }
-
-        Err("未找到支持 TTS 的 Provider（需要 OpenAI 兼容 API）".to_string())
+        Err("未找到 OpenAI Provider，请先配置。或使用 mode=local（免费）".to_string())
     }
 }
