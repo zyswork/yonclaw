@@ -210,6 +210,39 @@ fn sanitize_tool_id(id: &str) -> String {
     if clean.is_empty() { "unknown".to_string() } else { clean }
 }
 
+/// 清理消息给 OpenAI 用：把 Anthropic 格式的 content 数组转回字符串
+fn sanitize_messages_for_openai(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    messages.iter().map(|msg| {
+        let mut m = msg.clone();
+        // 如果 content 是数组（Anthropic 格式），提取文本拼为字符串
+        if let Some(arr) = msg["content"].as_array() {
+            let texts: Vec<String> = arr.iter().filter_map(|block| {
+                match block["type"].as_str() {
+                    Some("text") => block["text"].as_str().map(|s| s.to_string()),
+                    Some("tool_use") => {
+                        let name = block["name"].as_str().unwrap_or("tool");
+                        Some(format!("[Called tool: {}]", name))
+                    }
+                    Some("tool_result") => {
+                        let content = block["content"].as_str().unwrap_or("");
+                        if content.is_empty() || content == "No result provided" { None }
+                        else { Some(content.to_string()) }
+                    }
+                    _ => None,
+                }
+            }).collect();
+            m["content"] = serde_json::Value::String(texts.join("\n"));
+            // 移除 Anthropic 字段
+            m.as_object_mut().map(|o| { o.remove("tool_calls"); });
+        }
+        m
+    }).filter(|m| {
+        // 过滤空内容消息
+        let content = m["content"].as_str().unwrap_or("");
+        !content.is_empty()
+    }).collect()
+}
+
 /// 合并连续同 role 的消息（Anthropic 要求 user/assistant 严格交替）
 fn merge_consecutive_roles(messages: &mut Vec<serde_json::Value>) {
     if messages.len() < 2 { return; }
@@ -474,8 +507,10 @@ impl LlmClient {
             "openai" => {
                 let url = format!("{}/chat/completions", config.base_url.as_deref().unwrap_or("https://api.openai.com/v1"));
                 let resolved_max_tokens = config.max_tokens.filter(|&t| t > 0).unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
+                // 清理历史中可能混入的 Anthropic 格式消息
+                let clean_messages = sanitize_messages_for_openai(messages);
                 let mut body = serde_json::json!({
-                    "model": config.model, "messages": messages, "stream": true,
+                    "model": config.model, "messages": clean_messages, "stream": true,
                     "temperature": config.temperature.unwrap_or(0.7),
                     "max_tokens": resolved_max_tokens,
                     "stream_options": {"include_usage": true},
