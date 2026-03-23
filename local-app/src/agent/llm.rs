@@ -56,7 +56,12 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
                 continue;
             }
             _ => {
-                result.push(msg.clone());
+                let mut m = msg.clone();
+                // Anthropic 要求 content 是数组格式
+                if let Some(text) = m["content"].as_str().map(|s| s.to_string()) {
+                    m["content"] = serde_json::json!([{"type": "text", "text": text}]);
+                }
+                result.push(m);
             }
         }
     }
