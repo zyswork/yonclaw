@@ -177,16 +177,15 @@ async fn send_message_handler(state: &GatewayState, body: &[u8]) -> Result<serde
     let orchestrator = state.orchestrator.as_ref()
         .ok_or("编排器未初始化（API 网关需要传入 orchestrator）")?;
 
-    // 查找 provider 配置
-    let (api_type, api_key, base_url) = {
-        let rows = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT api_type, api_key, base_url FROM providers WHERE enabled = 1 AND api_key != '' LIMIT 1"
-        )
-        .fetch_optional(&state.pool).await
-        .map_err(|e| format!("查询 provider 失败: {}", e))?
-        .ok_or("没有可用的 LLM 供应商")?;
-        rows
+    // 查找 provider 配置（使用统一的 channels::find_provider）
+    let agent_model = {
+        let row: Option<(String,)> = sqlx::query_as("SELECT model FROM agents WHERE id = ?")
+            .bind(agent_id).fetch_optional(&state.pool).await.ok().flatten();
+        row.map(|r| r.0).unwrap_or_else(|| "gpt-4o".to_string())
     };
+    let (api_type, api_key, base_url) = crate::channels::find_provider(&state.pool, &agent_model)
+        .await
+        .ok_or("没有可用的 LLM 供应商")?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let output_handle = tokio::spawn(async move {

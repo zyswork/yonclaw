@@ -339,6 +339,17 @@ impl PromptSection for ToolsSection {
             format!("{}{}", base, skill_index)
         };
 
+        // 追加工具安全规则
+        let safety_rules = "\n\n## Tool Safety Rules\n\n\
+            Before executing the following actions, **always tell the user what you plan to do and ask for confirmation**:\n\
+            - `bash_exec`: Describe the command and its effect\n\
+            - `file_write` / `file_edit` / `diff_edit`: Describe what file will be changed and how\n\
+            - `cron_manage` (create/delete): Confirm the schedule and action\n\
+            - `skill_manage` (install/uninstall): Confirm the skill name\n\
+            - Any tool that modifies system state\n\n\
+            Safe tools that can be used without confirmation: `calculator`, `datetime`, `memory_read`, `file_read`, `file_list`, `code_search`, `web_search`, `web_fetch`.\n";
+        let full_content = format!("{}{}", full_content, safety_rules);
+
         // 渐进式披露：大内容只注入摘要
         if full_content.len() <= TOOLS_PROGRESSIVE_THRESHOLD {
             return Some(full_content);
