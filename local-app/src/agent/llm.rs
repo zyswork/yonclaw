@@ -249,37 +249,92 @@ fn sanitize_tool_id(id: &str) -> String {
     if clean.is_empty() { "unknown".to_string() } else { clean }
 }
 
-/// 清理消息给 OpenAI 用：把 Anthropic 格式的 content 数组转回字符串
+/// 清理消息给 OpenAI 用：
+/// - 保留原生 OpenAI 格式的 tool/tool_calls 消息
+/// - Anthropic 格式的 tool_use/tool_result → 提取文本，剥离工具调用
+/// - 确保 tool role 消息有对应的 assistant tool_calls
 fn sanitize_messages_for_openai(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    messages.iter().map(|msg| {
-        let mut m = msg.clone();
-        // 如果 content 是数组（Anthropic 格式），提取文本拼为字符串
-        if let Some(arr) = msg["content"].as_array() {
-            let texts: Vec<String> = arr.iter().filter_map(|block| {
-                match block["type"].as_str() {
-                    Some("text") => block["text"].as_str().map(|s| s.to_string()),
-                    Some("tool_use") => {
-                        let name = block["name"].as_str().unwrap_or("tool");
-                        Some(format!("[Called tool: {}]", name))
-                    }
-                    Some("tool_result") => {
-                        let content = block["content"].as_str().unwrap_or("");
-                        if content.is_empty() || content == "No result provided" { None }
-                        else { Some(content.to_string()) }
-                    }
-                    _ => None,
+    let mut result = Vec::new();
+
+    for msg in messages {
+        let role = msg["role"].as_str().unwrap_or("");
+
+        // 跳过 OpenAI tool role 如果对应的 assistant tool_calls 不存在
+        // （可能是从 Anthropic 会话带过来的）
+        if role == "tool" {
+            // 检查是否有对应的 assistant tool_calls（往前找）
+            let call_id = msg["tool_call_id"].as_str().unwrap_or("");
+            let has_matching_call = result.iter().rev().any(|prev: &serde_json::Value| {
+                if let Some(calls) = prev["tool_calls"].as_array() {
+                    calls.iter().any(|tc: &serde_json::Value| tc["id"].as_str() == Some(call_id))
+                } else { false }
+            });
+            if !has_matching_call {
+                // 没有匹配的 tool_call，转为普通 user 消息
+                let content = msg["content"].as_str().unwrap_or("");
+                if !content.is_empty() && content != "[context compacted]" {
+                    result.push(serde_json::json!({"role": "user", "content": content}));
                 }
-            }).collect();
-            m["content"] = serde_json::Value::String(texts.join("\n"));
-            // 移除 Anthropic 字段
-            m.as_object_mut().map(|o| { o.remove("tool_calls"); });
+                continue;
+            }
+            result.push(msg.clone());
+            continue;
         }
-        m
-    }).filter(|m| {
-        // 过滤空内容消息
-        let content = m["content"].as_str().unwrap_or("");
-        !content.is_empty()
-    }).collect()
+
+        // assistant 消息
+        if role == "assistant" {
+            // Anthropic 数组 content（含 tool_use）→ 提取纯文本
+            if let Some(arr) = msg["content"].as_array() {
+                let has_tool_use = arr.iter().any(|b| b["type"].as_str() == Some("tool_use"));
+                if has_tool_use {
+                    // 只提取文本部分，丢弃 tool_use
+                    let text: String = arr.iter().filter_map(|b| {
+                        if b["type"].as_str() == Some("text") { b["text"].as_str().map(|s| s.to_string()) }
+                        else { None }
+                    }).collect::<Vec<_>>().join("\n");
+                    if !text.is_empty() {
+                        result.push(serde_json::json!({"role": "assistant", "content": text}));
+                    }
+                    continue;
+                }
+                // 纯文本数组 → 拼字符串
+                let text: String = arr.iter()
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>().join("\n");
+                if !text.is_empty() {
+                    result.push(serde_json::json!({"role": "assistant", "content": text}));
+                }
+                continue;
+            }
+            // 有 tool_calls 的 assistant 消息 → 保留（OpenAI 原生格式）
+            result.push(msg.clone());
+            continue;
+        }
+
+        // user 消息
+        if let Some(arr) = msg["content"].as_array() {
+            // Anthropic 格式 tool_result 数组 → 跳过（对应的 tool_use 已被剥离）
+            if arr.iter().any(|b| b["type"].as_str() == Some("tool_result")) {
+                continue;
+            }
+            // 其他数组 → 提取文本
+            let text: String = arr.iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>().join("\n");
+            if !text.is_empty() {
+                result.push(serde_json::json!({"role": "user", "content": text}));
+            }
+            continue;
+        }
+
+        // 纯字符串消息 → 直接保留
+        let content = msg["content"].as_str().unwrap_or("");
+        if !content.is_empty() {
+            result.push(msg.clone());
+        }
+    }
+
+    result
 }
 
 /// 合并连续同 role 的消息（Anthropic 要求 user/assistant 严格交替）
