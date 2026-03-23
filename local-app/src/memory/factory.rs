@@ -55,14 +55,14 @@ impl Default for MemoryFactoryConfig {
 /// 创建 Memory 实现
 ///
 /// 当前仅支持 SQLite，其他后端返回 Err 提示未实现。
-pub fn create_memory(
+pub async fn create_memory(
     config: &MemoryFactoryConfig,
     sqlite_pool: SqlitePool,
 ) -> Result<Box<dyn Memory>, String> {
     match config.backend {
         MemoryBackend::Sqlite => {
             let mem = if let Some(ref emb) = config.embedding {
-                SqliteMemory::with_embedding(sqlite_pool, emb.clone())
+                SqliteMemory::with_embedding(sqlite_pool, emb.clone()).await
             } else {
                 SqliteMemory::new(sqlite_pool)
             };

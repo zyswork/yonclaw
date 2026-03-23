@@ -411,7 +411,7 @@ impl Orchestrator {
         // 3. MemoryLoader 注入记忆（三层存储：Hot LRU → Warm SQLite → Cold 归档）
         {
             let sqlite_mem = if let Some(emb_config) = SqliteMemory::try_load_embedding_config(&self.pool).await {
-                SqliteMemory::with_embedding(self.pool.clone(), emb_config)
+                SqliteMemory::with_embedding(self.pool.clone(), emb_config).await
             } else {
                 SqliteMemory::new(self.pool.clone())
             };

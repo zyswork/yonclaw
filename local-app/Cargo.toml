@@ -37,6 +37,9 @@ prost = "0.13"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
+lancedb = "0.15"
+arrow-array = "53"
+arrow-schema = "53"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

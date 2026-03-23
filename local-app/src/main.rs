@@ -2983,7 +2983,7 @@ async fn extract_memories_from_history(
     // 7. 通过 SqliteMemory 管线写入（自动 FTS + 向量）
     use memory::Memory;
     let mem = if let Some(emb_config) = memory::SqliteMemory::try_load_embedding_config(pool).await {
-        memory::SqliteMemory::with_embedding(pool.clone(), emb_config)
+        memory::SqliteMemory::with_embedding(pool.clone(), emb_config).await
     } else {
         memory::SqliteMemory::new(pool.clone())
     };

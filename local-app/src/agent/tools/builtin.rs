@@ -144,7 +144,7 @@ impl Tool for MemoryReadTool {
         // 通过 SqliteMemory 管线检索（自动走 RRF 混合搜索）
         use crate::memory::{SqliteMemory, Memory, MemoryCategory};
         let mem = if let Some(emb_config) = SqliteMemory::try_load_embedding_config(&self.pool).await {
-            SqliteMemory::with_embedding(self.pool.clone(), emb_config)
+            SqliteMemory::with_embedding(self.pool.clone(), emb_config).await
         } else {
             SqliteMemory::new(self.pool.clone())
         };
@@ -253,7 +253,7 @@ impl Tool for MemoryWriteTool {
         // 通过 SqliteMemory 管线存储（自动写 FTS5 + 嵌入向量）
         use crate::memory::{SqliteMemory, Memory, MemoryCategory, MemoryPriority};
         let mem = if let Some(emb_config) = SqliteMemory::try_load_embedding_config(&self.pool).await {
-            SqliteMemory::with_embedding(self.pool.clone(), emb_config)
+            SqliteMemory::with_embedding(self.pool.clone(), emb_config).await
         } else {
             SqliteMemory::new(self.pool.clone())
         };
