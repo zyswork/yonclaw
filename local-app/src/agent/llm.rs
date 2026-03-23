@@ -55,9 +55,37 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
                 // 跳过 system 消息（Anthropic 用顶层 system 字段）
                 continue;
             }
+            "assistant" => {
+                let mut m = msg.clone();
+                // 转换 assistant 的 tool_calls（OpenAI 格式 → Anthropic content 数组）
+                if let Some(tool_calls) = msg["tool_calls"].as_array() {
+                    let mut content_blocks = Vec::new();
+                    // 先加文本内容
+                    if let Some(text) = msg["content"].as_str() {
+                        if !text.is_empty() {
+                            content_blocks.push(serde_json::json!({"type": "text", "text": text}));
+                        }
+                    }
+                    // 转换每个 tool_call 为 tool_use block
+                    for tc in tool_calls {
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let id = tc["id"].as_str().unwrap_or("unknown");
+                        let input: serde_json::Value = tc["function"]["arguments"].as_str()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or(serde_json::json!({}));
+                        content_blocks.push(serde_json::json!({
+                            "type": "tool_use", "id": id, "name": name, "input": input
+                        }));
+                    }
+                    m["content"] = serde_json::Value::Array(content_blocks);
+                    m.as_object_mut().map(|o| o.remove("tool_calls"));
+                } else if let Some(text) = m["content"].as_str().map(|s| s.to_string()) {
+                    m["content"] = serde_json::json!([{"type": "text", "text": text}]);
+                }
+                result.push(m);
+            }
             _ => {
                 let mut m = msg.clone();
-                // Anthropic 要求 content 是数组格式
                 if let Some(text) = m["content"].as_str().map(|s| s.to_string()) {
                     m["content"] = serde_json::json!([{"type": "text", "text": text}]);
                 }
