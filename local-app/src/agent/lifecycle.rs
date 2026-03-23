@@ -6,21 +6,48 @@
 use async_trait::async_trait;
 use serde::Serialize;
 
-/// 6 个生命周期钩子点
+/// 生命周期钩子点（参考 OpenClaw 25+ hooks 精简版）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookPoint {
+    // ─── 消息流 ───
     /// 用户消息进入系统前（可修改/拒绝）
     BeforeInbound,
+    /// 回复发出前（可修改内容）
+    BeforeOutbound,
+
+    // ─── Prompt 构建 ───
+    /// System prompt 构建前（可注入额外上下文）
+    BeforePromptBuild,
+
+    // ─── LLM 调用 ───
     /// LLM 调用前（可修改 messages/tools）
     BeforeLlmCall,
     /// LLM 调用后（可观察 response）
     AfterLlmCall,
+
+    // ─── 工具执行 ───
     /// 工具执行前（可修改参数/拒绝）
     BeforeToolCall,
     /// 工具执行后（可观察结果）
     AfterToolCall,
-    /// 回复发出前（可修改内容）
-    BeforeOutbound,
+
+    // ─── 会话 ───
+    /// 会话开始
+    SessionStart,
+    /// 会话结束
+    SessionEnd,
+
+    // ─── 上下文管理 ───
+    /// 上下文压缩前
+    BeforeCompaction,
+    /// 上下文压缩后
+    AfterCompaction,
+
+    // ─── 子代理 ───
+    /// 子代理派发
+    SubagentSpawned,
+    /// 子代理完成
+    SubagentCompleted,
 }
 
 /// 钩子事件数据

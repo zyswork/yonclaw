@@ -8,7 +8,7 @@ use super::skill_tool::SkillTool;
 use super::media::MediaProvider; // 导入 trait 使 describe_image 可用
 use super::skills::SkillManager;
 use super::soul::{SoulEngine, SectionBudget};
-use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, BashExecTool, CodeSearchTool, WebFetchTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, Tool};
+use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, Tool};
 use super::tools::{parse_tools_config, is_tool_enabled};
 use super::workspace::AgentWorkspace;
 use super::subagent::SubagentRegistry;
@@ -93,6 +93,8 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(DiffEditTool));
         tool_manager.register_tool(Box::new(CodeSearchTool));
         tool_manager.register_tool(Box::new(WebFetchTool));
+        tool_manager.register_tool(Box::new(WebSearchTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(ImageGenerateTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(MemoryReadTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(MemoryWriteTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(SettingsTool::new(pool.clone())));
@@ -397,7 +399,26 @@ impl Orchestrator {
             let workspace = AgentWorkspace::from_path(std::path::PathBuf::from(wp), agent_id);
             log::info!("Workspace root: {:?}, exists: {}", workspace.root(), workspace.exists());
             if workspace.exists() {
-                let engine = SoulEngine::with_defaults();
+                let mut engine = SoulEngine::with_defaults();
+
+                // 从 Agent config 加载自定义 PromptSection
+                if let Some(ref config_str) = agent.config {
+                    if let Ok(config) = serde_json::from_str::<serde_json::Value>(config_str) {
+                        if let Some(sections) = config.get("customSections").and_then(|s| s.as_array()) {
+                            for s in sections {
+                                let name = s["name"].as_str().unwrap_or("custom");
+                                let file = s["file"].as_str().unwrap_or("");
+                                let content = s["content"].as_str().unwrap_or("");
+                                if !file.is_empty() {
+                                    engine.add_section(Box::new(super::soul::DynamicSection::new(name, file)));
+                                } else if !content.is_empty() {
+                                    engine.add_section(Box::new(super::soul::InlineSection::new(name, content.to_string())));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let budget = SectionBudget::default();
                 let mut prompt = engine.build_system_prompt_with_budget(&workspace, &budget);
                 // 注入工作区环境信息
@@ -415,6 +436,22 @@ impl Orchestrator {
             log::warn!("Agent 没有 workspace_path，使用 agent.system_prompt (长度: {})", agent.system_prompt.len());
             agent.system_prompt.clone()
         };
+        // Hook: BeforePromptBuild — 允许插件注入额外上下文
+        {
+            let hook_event = super::lifecycle::HookEvent {
+                point: "before_prompt_build".to_string(),
+                agent_id: agent_id.to_string(),
+                session_id: session_id.to_string(),
+                payload: serde_json::json!({ "prompt_length": system_prompt.len() }),
+            };
+            if let Ok(Some(extra)) = self.lifecycle.emit(super::lifecycle::HookPoint::BeforePromptBuild, &hook_event).await {
+                if let Some(append) = extra.get("append_context").and_then(|v| v.as_str()) {
+                    system_prompt.push_str("\n\n---\n\n");
+                    system_prompt.push_str(append);
+                    log::info!("BeforePromptBuild hook 注入了 {} 字节上下文", append.len());
+                }
+            }
+        }
         log::info!("最终 system_prompt 长度: {} 字节", system_prompt.len());
 
         // 3. MemoryLoader 注入记忆（三层存储：Hot LRU → Warm SQLite → Cold 归档）

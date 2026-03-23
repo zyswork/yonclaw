@@ -419,6 +419,74 @@ impl PromptSection for ReflectionsSection {
     }
 }
 
+/// 动态 Section — 从指定文件加载内容（插件/配置可注册）
+///
+/// 用于实现 Memory Plugin 可插拔的 system prompt section。
+/// 通过 `DynamicSection::new("name", "FILE.md")` 创建。
+pub struct DynamicSection {
+    section_name: String,
+    file_name: String,
+    prefix: Option<String>,
+}
+
+impl DynamicSection {
+    pub fn new(name: &str, file_name: &str) -> Self {
+        Self {
+            section_name: name.to_string(),
+            file_name: file_name.to_string(),
+            prefix: None,
+        }
+    }
+
+    pub fn with_prefix(mut self, prefix: &str) -> Self {
+        self.prefix = Some(prefix.to_string());
+        self
+    }
+}
+
+impl PromptSection for DynamicSection {
+    fn name(&self) -> &str {
+        &self.section_name
+    }
+
+    fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
+        let content = workspace.read(&self.file_name).filter(|c| !c.trim().is_empty())?;
+        if let Some(ref prefix) = self.prefix {
+            Some(format!("{}\n\n{}", prefix, content.trim()))
+        } else {
+            Some(content)
+        }
+    }
+}
+
+/// 内联 Section — 直接持有内容（不从文件读取）
+///
+/// 用于 BeforePromptBuild hook 注入的动态内容。
+pub struct InlineSection {
+    section_name: String,
+    content: String,
+}
+
+impl InlineSection {
+    pub fn new(name: &str, content: String) -> Self {
+        Self { section_name: name.to_string(), content }
+    }
+}
+
+impl PromptSection for InlineSection {
+    fn name(&self) -> &str {
+        &self.section_name
+    }
+
+    fn render(&self, _workspace: &AgentWorkspace) -> Option<String> {
+        if self.content.trim().is_empty() {
+            None
+        } else {
+            Some(self.content.clone())
+        }
+    }
+}
+
 /// Focus Items Section — 从 FOCUS.md 加载结构化工作记忆
 ///
 /// 格式：

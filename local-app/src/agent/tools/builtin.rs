@@ -336,13 +336,20 @@ impl Tool for FileReadTool {
 
 /// 网络搜索工具（占位）
 pub struct WebSearchTool {
-    #[allow(dead_code)]
-    api_key: String,
+    pool: sqlx::SqlitePool,
 }
 
 impl WebSearchTool {
-    pub fn new(api_key: String) -> Self {
-        Self { api_key }
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// 从 DB 读取用户配置的搜索引擎偏好
+    async fn get_preferred_provider(pool: &sqlx::SqlitePool) -> String {
+        let result: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'web_search_provider'"
+        ).fetch_optional(pool).await.ok().flatten();
+        result.unwrap_or_else(|| "auto".to_string())
     }
 }
 
@@ -351,13 +358,17 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "在网络上搜索信息".to_string(),
+            description: "在网络上搜索信息。支持多个搜索引擎：Serper(Google)、DuckDuckGo、Tavily。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
                         "description": "搜索查询"
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "搜索引擎（可选）：serper/duckduckgo/tavily/auto。不填则使用系统默认。"
                     }
                 },
                 "required": ["query"]
@@ -375,30 +386,51 @@ impl Tool for WebSearchTool {
             .and_then(|q| q.as_str())
             .ok_or("缺少 query 参数")?;
 
-        log::info!("执行网络搜索: {}", query);
+        let explicit_provider = arguments.get("provider").and_then(|p| p.as_str()).unwrap_or("");
+        let preferred = if explicit_provider.is_empty() {
+            Self::get_preferred_provider(&self.pool).await
+        } else {
+            explicit_provider.to_string()
+        };
+
+        log::info!("执行网络搜索: {} (provider={})", query, preferred);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        // 策略 1：Serper API（如果配置了 key）
-        if let Ok(serper_key) = std::env::var("SERPER_API_KEY") {
-            if !serper_key.is_empty() {
-                match search_serper(&client, &serper_key, query).await {
-                    Ok(results) => return Ok(results),
-                    Err(e) => log::warn!("Serper 搜索失败，尝试备用: {}", e),
-                }
+        // 按指定 provider 或 auto fallback 链执行
+        match preferred.as_str() {
+            "serper" => {
+                let key = std::env::var("SERPER_API_KEY").unwrap_or_default();
+                if key.is_empty() { return Err("SERPER_API_KEY 未配置".to_string()); }
+                search_serper(&client, &key, query).await
             }
-        }
-
-        // 策略 2：DuckDuckGo HTML 搜索（免费，无需 API key）
-        match search_duckduckgo(&client, query).await {
-            Ok(results) => Ok(results),
-            Err(e) => {
-                log::warn!("DuckDuckGo 搜索失败: {}", e);
-                // 策略 3：最终回退 — 提示用户使用 web_fetch 手动搜索
-                Ok(format!("搜索暂不可用（{}）。你可以用 web_fetch 工具访问特定网页获取信息。", e))
+            "tavily" => {
+                let key = std::env::var("TAVILY_API_KEY").unwrap_or_default();
+                if key.is_empty() { return Err("TAVILY_API_KEY 未配置".to_string()); }
+                search_tavily(&client, &key, query).await
+            }
+            "duckduckgo" => {
+                search_duckduckgo(&client, query).await
+            }
+            _ => {
+                // auto: Serper → Tavily → DuckDuckGo → fallback
+                if let Ok(key) = std::env::var("SERPER_API_KEY") {
+                    if !key.is_empty() {
+                        if let Ok(r) = search_serper(&client, &key, query).await { return Ok(r); }
+                    }
+                }
+                if let Ok(key) = std::env::var("TAVILY_API_KEY") {
+                    if !key.is_empty() {
+                        if let Ok(r) = search_tavily(&client, &key, query).await { return Ok(r); }
+                    }
+                }
+                match search_duckduckgo(&client, query).await {
+                    Ok(r) => Ok(r),
+                    Err(e) => Ok(format!("搜索暂不可用（{}）。可用 web_fetch 访问特定网页。", e)),
+                }
             }
         }
     }
@@ -494,6 +526,52 @@ async fn search_duckduckgo(client: &reqwest::Client, query: &str) -> Result<Stri
 }
 
 /// DuckDuckGo Lite HTML 爬取（备用方案）
+/// Tavily AI 搜索 API
+async fn search_tavily(client: &reqwest::Client, api_key: &str, query: &str) -> Result<String, String> {
+    let resp = client
+        .post("https://api.tavily.com/search")
+        .json(&serde_json::json!({
+            "api_key": api_key,
+            "query": query,
+            "max_results": 5,
+            "include_answer": true,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Tavily 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Tavily 返回 {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+
+    // AI 回答摘要
+    if let Some(answer) = data["answer"].as_str() {
+        if !answer.is_empty() {
+            results.push(format!("**AI 摘要:** {}", answer));
+        }
+    }
+
+    // 搜索结果
+    if let Some(items) = data["results"].as_array() {
+        for item in items.iter().take(5) {
+            let title = item["title"].as_str().unwrap_or("");
+            let url = item["url"].as_str().unwrap_or("");
+            let content = item["content"].as_str().unwrap_or("");
+            results.push(format!("**{}**\n{}\n{}", title, url, content));
+        }
+    }
+
+    if results.is_empty() {
+        Err("Tavily 无结果".to_string())
+    } else {
+        Ok(results.join("\n\n"))
+    }
+}
+
 async fn search_duckduckgo_lite(client: &reqwest::Client, query: &str) -> Result<String, String> {
     let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
     let resp = client.get(&url)
@@ -1894,5 +1972,147 @@ impl Tool for PluginManageTool {
             }
             _ => Err(format!("未知操作: {}", action)),
         }
+    }
+}
+
+/// 图片生成工具 — 支持 DALL-E 3 和 OpenAI 兼容接口
+pub struct ImageGenerateTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl ImageGenerateTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl Tool for ImageGenerateTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "image_generate".to_string(),
+            description: "生成图片。根据文字描述生成图片，支持 DALL-E 3。返回图片 URL。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "图片描述（英文效果更好）"
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "图片尺寸（可选）：1024x1024 / 1792x1024 / 1024x1792",
+                        "default": "1024x1024"
+                    },
+                    "quality": {
+                        "type": "string",
+                        "description": "质量（可选）：standard / hd",
+                        "default": "standard"
+                    }
+                },
+                "required": ["prompt"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel {
+        ToolSafetyLevel::Guarded
+    }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let prompt = arguments.get("prompt")
+            .and_then(|p| p.as_str())
+            .ok_or("缺少 prompt 参数")?;
+        let size = arguments.get("size").and_then(|s| s.as_str()).unwrap_or("1024x1024");
+        let quality = arguments.get("quality").and_then(|q| q.as_str()).unwrap_or("standard");
+
+        log::info!("生成图片: {} (size={}, quality={})", &prompt[..prompt.len().min(50)], size, quality);
+
+        // 从 provider 配置中查找 OpenAI 兼容的图片生成端点
+        let (api_key, base_url) = self.find_image_provider().await?;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("创建客户端失败: {}", e))?;
+
+        let url = format!("{}/images/generations", base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "quality": quality,
+        });
+
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("图片生成失败 (HTTP {}): {}", status, &text[..text.len().min(200)]));
+        }
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+
+        if let Some(url) = data["data"][0]["url"].as_str() {
+            let revised_prompt = data["data"][0]["revised_prompt"].as_str().unwrap_or("");
+            let mut result = format!("![Generated Image]({})", url);
+            if !revised_prompt.is_empty() {
+                result.push_str(&format!("\n\n*Revised prompt: {}*", revised_prompt));
+            }
+            Ok(result)
+        } else {
+            Err("图片生成返回格式异常".to_string())
+        }
+    }
+}
+
+impl ImageGenerateTool {
+    /// 从 DB 查找支持图片生成的 provider（优先 OpenAI）
+    async fn find_image_provider(&self) -> Result<(String, String), String> {
+        let json_str: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'providers'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+
+        let providers: Vec<serde_json::Value> = json_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        // 优先找 OpenAI（原生支持 DALL-E）
+        for p in &providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            let key = p["apiKey"].as_str().unwrap_or("");
+            if key.is_empty() { continue; }
+            let api_type = p["apiType"].as_str().unwrap_or("");
+            let base_url = p["baseUrl"].as_str().unwrap_or("");
+
+            // OpenAI 原生或兼容端点
+            if api_type == "openai" && (base_url.contains("openai.com") || base_url.is_empty()) {
+                return Ok((
+                    key.to_string(),
+                    if base_url.is_empty() { "https://api.openai.com/v1".to_string() } else { base_url.to_string() },
+                ));
+            }
+        }
+
+        // 回退：任何有 apiKey 的 OpenAI 兼容 provider
+        for p in &providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            let key = p["apiKey"].as_str().unwrap_or("");
+            if key.is_empty() { continue; }
+            if p["apiType"].as_str() == Some("openai") {
+                let base_url = p["baseUrl"].as_str().unwrap_or("https://api.openai.com/v1");
+                return Ok((key.to_string(), base_url.to_string()));
+            }
+        }
+
+        Err("未找到支持图片生成的 Provider（需要 OpenAI 或兼容 API）".to_string())
     }
 }

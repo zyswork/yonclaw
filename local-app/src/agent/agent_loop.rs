@@ -413,6 +413,19 @@ pub async fn run_agent_loop(
             for (i, tc) in &parallel_tasks {
                 log::info!("执行工具 {}/{}: {} (id={})", i + 1, total_tools, tc.name, tc.id);
 
+                // Hook: BeforeToolCall
+                let before_tool_event = super::lifecycle::HookEvent {
+                    point: "before_tool_call".to_string(),
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    payload: serde_json::json!({ "tool": tc.name, "arguments": tc.arguments }),
+                };
+                if let Err(e) = deps.lifecycle.emit(super::lifecycle::HookPoint::BeforeToolCall, &before_tool_event).await {
+                    log::warn!("BeforeToolCall hook 拒绝工具 {}: {}", tc.name, e);
+                    messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &format!("Hook 拒绝: {}", e)));
+                    continue;
+                }
+
                 let is_skill = skill_tools.contains_key(&tc.name);
                 let is_builtin = deps.tool_manager.get_safety_level(&tc.name).is_some();
                 let (result_text, success, source, duration_ms) = if is_skill {
@@ -422,6 +435,14 @@ pub async fn run_agent_loop(
                 } else {
                     execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
                 };
+
+                // Hook: AfterToolCall
+                deps.lifecycle.notify(super::lifecycle::HookPoint::AfterToolCall, &super::lifecycle::HookEvent {
+                    point: "after_tool_call".to_string(),
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    payload: serde_json::json!({ "tool": tc.name, "success": success, "duration_ms": duration_ms }),
+                }).await;
 
                 if let Some(es) = deps.evolution_state { es.on_tool_call(); }
                 let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc.name, &tc.arguments.to_string(), Some(&result_text), success, "allowed", source, duration_ms).await;
