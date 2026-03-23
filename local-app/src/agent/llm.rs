@@ -9,6 +9,27 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
+/// 构建 Anthropic API URL
+/// - 无 base_url → 官方 https://api.anthropic.com/v1/messages
+/// - base_url 含 /v1 → 拼 /messages（如 https://api.anthropic.com/v1）
+/// - base_url 是第三方完整路径 → 直接用，不拼后缀（如 https://api.aicodewith.com）
+fn build_anthropic_url(base_url: Option<&str>) -> String {
+    match base_url {
+        None => "https://api.anthropic.com/v1/messages".to_string(),
+        Some(url) => {
+            let url = url.trim_end_matches('/');
+            if url.ends_with("/v1") {
+                format!("{}/messages", url)
+            } else if url.contains("/v1/") || url.ends_with("/messages") {
+                url.to_string()
+            } else {
+                // 第三方代理：直接用完整 URL，不拼后缀
+                url.to_string()
+            }
+        }
+    }
+}
+
 /// LLM 提供商
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
@@ -146,7 +167,7 @@ impl LlmClient {
     }
 
     pub async fn call_anthropic(&self, messages: Vec<AnthropicMessage>, system: String, temperature: f64, max_tokens: i32) -> Result<String, Box<dyn std::error::Error>> {
-        let url = format!("{}/messages", self.config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1"));
+        let url = build_anthropic_url(self.config.base_url.as_deref());
         let request = AnthropicRequest { model: self.config.model.clone(), messages, system, temperature, max_tokens };
         let response = self.client.post(&url).header("x-api-key", &self.config.api_key).header("anthropic-version", "2023-06-01").json(&request).send().await?;
         let data: AnthropicResponse = response.json().await?;
@@ -243,7 +264,7 @@ impl LlmClient {
                 (url, body)
             }
             "anthropic" => {
-                let url = format!("{}/messages", config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1"));
+                let url = build_anthropic_url(config.base_url.as_deref());
                 let resolved_max_tokens = config.max_tokens.unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
                 let mut body = serde_json::json!({
                     "model": config.model, "messages": messages, "stream": true,
