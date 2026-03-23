@@ -9,6 +9,7 @@ pub mod chunker;
 pub mod conversation;
 pub mod embedding;
 pub mod factory;
+#[cfg(feature = "lancedb")]
 pub mod lance;
 pub mod loader;
 pub mod long_term;
@@ -132,12 +133,13 @@ pub trait Memory: Send + Sync {
     }
 }
 
-/// 基于 SQLite 的记忆实现（向量存储使用 LanceDB）
+/// 基于 SQLite 的记忆实现（可选 LanceDB 向量存储）
 pub struct SqliteMemory {
     pool: SqlitePool,
     /// 嵌入客户端（可选，配置了 API key 才启用向量检索）
     embedder: Option<embedding::EmbeddingClient>,
-    /// LanceDB 向量存储（可选，嵌入启用时自动初始化）
+    /// LanceDB 向量存储（可选，需启用 lancedb feature）
+    #[cfg(feature = "lancedb")]
     lance_store: Option<Arc<lance::LanceVectorStore>>,
 }
 
@@ -146,30 +148,44 @@ use std::sync::Arc;
 impl SqliteMemory {
     /// 创建 SQLite 记忆实例（纯 FTS5，无向量）
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool, embedder: None, lance_store: None }
+        Self {
+            pool, embedder: None,
+            #[cfg(feature = "lancedb")]
+            lance_store: None,
+        }
     }
 
-    /// 创建带嵌入能力的记忆实例（LanceDB 向量 + FTS5 关键词 + 嵌入缓存）
+    /// 创建带嵌入能力的记忆实例（FTS5 关键词 + 嵌入缓存 + 可选 LanceDB 向量）
     pub async fn with_embedding(pool: SqlitePool, config: embedding::EmbeddingConfig) -> Self {
         if config.api_key.is_empty() {
             log::info!("嵌入 API 未配置，使用纯 FTS5 检索");
-            return Self { pool, embedder: None, lance_store: None };
+            return Self {
+                pool, embedder: None,
+                #[cfg(feature = "lancedb")]
+                lance_store: None,
+            };
         }
-        let dims = config.dimensions;
-        log::info!("嵌入已启用: model={}, dimensions={}, 缓存=SQLite, 向量=LanceDB", config.model, dims);
+        let _dims = config.dimensions;
 
-        // 初始化 LanceDB
-        let lance = match lance::LanceVectorStore::new(&lance::LanceVectorStore::default_path(), dims).await {
-            Ok(store) => Some(Arc::new(store)),
-            Err(e) => {
-                log::warn!("LanceDB 初始化失败，回退到 SQLite 向量: {}", e);
-                None
+        #[cfg(feature = "lancedb")]
+        let lance = {
+            log::info!("嵌入已启用: model={}, dimensions={}, 缓存=SQLite, 向量=LanceDB", config.model, _dims);
+            match lance::LanceVectorStore::new(&lance::LanceVectorStore::default_path(), _dims).await {
+                Ok(store) => Some(Arc::new(store)),
+                Err(e) => {
+                    log::warn!("LanceDB 初始化失败，回退到 SQLite 向量: {}", e);
+                    None
+                }
             }
         };
+
+        #[cfg(not(feature = "lancedb"))]
+        log::info!("嵌入已启用: model={}, dimensions={}, 缓存=SQLite, 向量=SQLite", config.model, _dims);
 
         Self {
             embedder: Some(embedding::EmbeddingClient::with_cache(config, pool.clone())),
             pool,
+            #[cfg(feature = "lancedb")]
             lance_store: lance,
         }
     }
@@ -268,15 +284,19 @@ impl Memory for SqliteMemory {
             for chunk_text in &texts_to_embed {
                 match embedder.embed(chunk_text).await {
                     Ok(emb) => {
-                        // 优先存入 LanceDB，回退到 SQLite
-                        let chunk_id = uuid::Uuid::new_v4().to_string();
+                        let _chunk_id = uuid::Uuid::new_v4().to_string();
+                        let mut _stored = false;
+
+                        #[cfg(feature = "lancedb")]
                         if let Some(ref lance) = self.lance_store {
-                            if let Err(e) = lance.insert(&chunk_id, agent_id, chunk_text, &emb, &cat_str).await {
+                            if let Err(e) = lance.insert(&_chunk_id, agent_id, chunk_text, &emb, &cat_str).await {
                                 log::warn!("LanceDB 存储失败，回退 SQLite: {}", e);
-                                let emb_bytes = embedding::embedding_to_bytes(&emb);
-                                let _ = vector::save_vector(&self.pool, agent_id, chunk_text, emb_bytes).await;
+                            } else {
+                                _stored = true;
                             }
-                        } else {
+                        }
+
+                        if !_stored {
                             let emb_bytes = embedding::embedding_to_bytes(&emb);
                             if let Err(e) = vector::save_vector(&self.pool, agent_id, chunk_text, emb_bytes).await {
                                 log::warn!("向量存储失败（FTS5 已保存）: {}", e);
@@ -290,7 +310,10 @@ impl Memory for SqliteMemory {
                     }
                 }
             }
+            #[cfg(feature = "lancedb")]
             let store_type = if self.lance_store.is_some() { "LanceDB" } else { "SQLite" };
+            #[cfg(not(feature = "lancedb"))]
+            let store_type = "SQLite";
             if success_count > 0 {
                 log::debug!("向量已生成并存储({}): {} 块, dim={}", store_type, success_count, self.embedder.as_ref().map(|e| e.config().dimensions).unwrap_or(0));
             }
@@ -307,21 +330,30 @@ impl Memory for SqliteMemory {
         // 有嵌入配置时：RRF 混合搜索（Reciprocal Rank Fusion）
         if let Some(ref embedder) = self.embedder {
             if let Ok(query_emb) = embedder.embed(query).await {
-                // 向量搜索：优先 LanceDB ANN，回退 SQLite 全表扫描
-                let vector_results = if let Some(ref lance) = self.lance_store {
-                    match lance.search(agent_id, &query_emb, limit * 3, None).await {
-                        Ok(results) => results.into_iter()
-                            .map(|r| (r.id, r.content, r.score))
-                            .collect::<Vec<_>>(),
-                        Err(e) => {
-                            log::warn!("LanceDB 搜索失败，回退 SQLite: {}", e);
-                            vector::hybrid_search(&self.pool, agent_id, query, Some(&query_emb), (limit * 3) as i64)
-                                .await.unwrap_or_default()
+                // 向量搜索
+                let vector_results = {
+                    #[cfg(feature = "lancedb")]
+                    if let Some(ref lance) = self.lance_store {
+                        match lance.search(agent_id, &query_emb, limit * 3, None).await {
+                            Ok(results) => results.into_iter()
+                                .map(|r| (r.id, r.content, r.score))
+                                .collect::<Vec<_>>(),
+                            Err(e) => {
+                                log::warn!("LanceDB 搜索失败，回退 SQLite: {}", e);
+                                vector::hybrid_search(&self.pool, agent_id, query, Some(&query_emb), (limit * 3) as i64)
+                                    .await.unwrap_or_default()
+                            }
                         }
+                    } else {
+                        vector::hybrid_search(&self.pool, agent_id, query, Some(&query_emb), (limit * 3) as i64)
+                            .await.unwrap_or_default()
                     }
-                } else {
-                    vector::hybrid_search(&self.pool, agent_id, query, Some(&query_emb), (limit * 3) as i64)
-                        .await.unwrap_or_default()
+
+                    #[cfg(not(feature = "lancedb"))]
+                    {
+                        vector::hybrid_search(&self.pool, agent_id, query, Some(&query_emb), (limit * 3) as i64)
+                            .await.unwrap_or_default()
+                    }
                 };
 
                 // FTS5 关键词搜索（使用扩展查询）

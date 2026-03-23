@@ -37,12 +37,13 @@ prost = "0.13"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
-lancedb = "0.15"
-arrow-array = "53"
-arrow-schema = "53"
+lancedb = { version = "0.15", optional = true }
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+lancedb = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
 
 [build-dependencies]
 tauri-build = { version = "1.5", features = [] }
