@@ -45,6 +45,7 @@ impl SoulEngine {
         engine.add_section(Box::new(MemorySection));
         engine.add_section(Box::new(UserSection));
         engine.add_section(Box::new(ReflectionsSection));
+        engine.add_section(Box::new(FocusSection));
         engine.add_section(Box::new(DateTimeSection));
         engine
     }
@@ -162,6 +163,7 @@ impl Default for SectionBudget {
             ("memory".into(), 3_000),
             ("user".into(), 1_500),
             ("datetime".into(), 200),
+            ("focus".into(), 1_500),
             ("bootstrap".into(), 1_000),
         ]);
         Self {
@@ -403,10 +405,8 @@ impl PromptSection for ReflectionsSection {
 
     fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
         let content = workspace.read("reflections.md").filter(|c| !c.trim().is_empty())?;
-        // 只取最近的反思（末尾 500 字符），避免占用太多 token
         let trimmed = if content.len() > 500 {
             let start = content.len() - 500;
-            // 找到最近的 "---" 分隔符
             if let Some(pos) = content[start..].find("---") {
                 &content[start + pos..]
             } else {
@@ -416,6 +416,49 @@ impl PromptSection for ReflectionsSection {
             &content
         };
         Some(format!("# Recent Reflections\n\n{}", trimmed.trim()))
+    }
+}
+
+/// Focus Items Section — 从 FOCUS.md 加载结构化工作记忆
+///
+/// 格式：
+/// - [ ] 待办项
+/// - [/] 进行中
+/// - [x] 已完成
+///
+/// 只注入未完成的 items（[ ] 和 [/]），跳过已完成的。
+pub struct FocusSection;
+
+impl PromptSection for FocusSection {
+    fn name(&self) -> &str {
+        "focus"
+    }
+
+    fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
+        let content = workspace.read("FOCUS.md").filter(|c| !c.trim().is_empty())?;
+
+        // 提取未完成的 focus items
+        let active_items: Vec<&str> = content.lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("- [ ]") || trimmed.starts_with("- [/]")
+            })
+            .collect();
+
+        if active_items.is_empty() {
+            return None;
+        }
+
+        let mut result = String::from(
+            "# Active Focus Items\n\n\
+             以下是你当前需要关注的事项。在执行任务和对话时，优先考虑这些焦点：\n\n"
+        );
+        for item in &active_items {
+            result.push_str(item.trim());
+            result.push('\n');
+        }
+
+        Some(result)
     }
 }
 

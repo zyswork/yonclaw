@@ -118,8 +118,37 @@ impl JobRunner {
 
         let base_url_opt = if base_url.is_empty() { None } else { Some(base_url.as_str()) };
 
+        // 注入 Focus Items 上下文（如果 Agent 有 FOCUS.md）
+        let enriched_prompt = {
+            let wp: Option<String> = sqlx::query_scalar(
+                "SELECT workspace_path FROM agents WHERE id = ?"
+            ).bind(&agent_id).fetch_optional(&self.pool).await.ok().flatten();
+
+            if let Some(wp) = wp {
+                let focus_path = std::path::PathBuf::from(&wp).join("FOCUS.md");
+                if focus_path.exists() {
+                    if let Ok(focus_content) = tokio::fs::read_to_string(&focus_path).await {
+                        let active: Vec<&str> = focus_content.lines()
+                            .filter(|l| l.trim().starts_with("- [ ]") || l.trim().starts_with("- [/]"))
+                            .collect();
+                        if !active.is_empty() {
+                            format!("[当前焦点]\n{}\n\n[任务]\n{}", active.join("\n"), prompt)
+                        } else {
+                            prompt.to_string()
+                        }
+                    } else {
+                        prompt.to_string()
+                    }
+                } else {
+                    prompt.to_string()
+                }
+            } else {
+                prompt.to_string()
+            }
+        };
+
         match self.orchestrator.send_message_stream(
-            &agent_id, &session_id, prompt,
+            &agent_id, &session_id, &enriched_prompt,
             &api_key, &api_type, base_url_opt, tx, None,
         ).await {
             Ok(_) => {
