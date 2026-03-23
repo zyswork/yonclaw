@@ -216,24 +216,7 @@ async fn handle_message(
     let session_id = get_or_create_session(pool, &agent.id, channel, &session_title).await;
 
     // Provider 查找
-    let providers_json: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM settings WHERE key = 'providers'"
-    ).fetch_optional(pool).await.ok().flatten();
-
-    let provider_info = providers_json.and_then(|pj| {
-        let providers: Vec<serde_json::Value> = serde_json::from_str(&pj).ok()?;
-        for p in &providers {
-            if p["enabled"].as_bool() != Some(true) { continue; }
-            let key = p["apiKey"].as_str().unwrap_or("");
-            if key.is_empty() { continue; }
-            let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
-            let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
-            return Some((api_type, key.to_string(), base_url));
-        }
-        None
-    });
-
-    let (api_type, api_key, base_url) = match provider_info {
+    let (api_type, api_key, base_url) = match super::find_provider(pool, &agent.model).await {
         Some(info) => info,
         None => {
             slack_post_message(bot_token, channel, thread_ts, "⚠️ No LLM provider configured.").await;
