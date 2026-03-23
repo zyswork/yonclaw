@@ -409,7 +409,9 @@ pub struct LlmClient {
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
             .timeout(std::time::Duration::from_secs(120))
+            .pool_max_idle_per_host(0) // 不复用连接，避免被上一个卡住的连接阻塞
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { config, client }
