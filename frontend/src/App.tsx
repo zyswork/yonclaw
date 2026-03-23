@@ -1,5 +1,5 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { lazy, Suspense, useState, useEffect } from 'react'
+import React, { lazy, Suspense, useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useBackendConnection } from './hooks/useBackendConnection'
 import { useI18n } from './i18n'
@@ -32,12 +32,38 @@ function PageLoader() {
   )
 }
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 40, color: '#dc2626' }}>
+          <h2>页面出错了</h2>
+          <pre style={{ fontSize: 13, whiteSpace: 'pre-wrap', background: '#fef2f2', padding: 16, borderRadius: 8 }}>
+            {this.state.error.message}
+            {'\n\n'}
+            {this.state.error.stack}
+          </pre>
+          <button onClick={() => { this.setState({ error: null }); window.location.hash = '#/agents' }}
+            style={{ marginTop: 16, padding: '8px 20px', cursor: 'pointer' }}>
+            返回首页
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function ProtectedPage({ children }: { children: React.ReactNode }) {
   return (
     <Layout>
-      <Suspense fallback={<PageLoader />}>
-        {children}
-      </Suspense>
+      <ErrorBoundary>
+        <Suspense fallback={<PageLoader />}>
+          {children}
+        </Suspense>
+      </ErrorBoundary>
     </Layout>
   )
 }

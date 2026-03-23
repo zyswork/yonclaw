@@ -337,6 +337,12 @@ impl LlmClient {
                 let resolved_max_tokens = config.max_tokens.unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
                 // 转换 OpenAI 格式的 tool 消息为 Anthropic 格式
                 let clean_messages = sanitize_messages_for_anthropic(messages);
+                // 调试：检查是否还有非数组 content
+                for (i, m) in clean_messages.iter().enumerate() {
+                    if !m["content"].is_array() {
+                        log::warn!("Anthropic 消息 [{}] content 不是数组: role={}, content={}", i, m["role"], &m["content"].to_string()[..m["content"].to_string().len().min(100)]);
+                    }
+                }
                 let mut body = serde_json::json!({
                     "model": config.model, "messages": clean_messages, "stream": true,
                     "temperature": config.temperature.unwrap_or(1.0),

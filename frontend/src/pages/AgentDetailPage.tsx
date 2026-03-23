@@ -1055,7 +1055,7 @@ function ChatTab({ agentId }: { agentId: string }) {
                 }
 
                 // assistant 消息：分离内嵌的 [工具: xxx] 标记
-                if (msg.role === 'assistant' && msg.content) {
+                if (msg.role === 'assistant' && msg.content && typeof msg.content === 'string') {
                   const toolPattern = /\n?\[(?:工具|MCP 工具|技能工具): (.+?) 执行中\.\.\.\]\n?/g
                   const parts: Array<{ type: 'text' | 'tool'; content: string }> = []
                   let lastIdx = 0
@@ -1137,12 +1137,12 @@ function ChatTab({ agentId }: { agentId: string }) {
                     }}>
                       {(msg.role === 'assistant' || isSystem) ? (
                         msg.content
-                          ? renderMd(msg.content)
+                          ? renderMd(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content))
                           : streaming && i === messages.length - 1
                             ? <ThinkingIndicator />
                             : null
                       ) : (
-                        <UserMessageContent content={msg.content || ''} />
+                        <UserMessageContent content={typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '')} />
                       )}
                     </div>
                     {/* 右侧头像（用户） */}
