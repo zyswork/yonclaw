@@ -33,108 +33,184 @@ fn build_anthropic_url(base_url: Option<&str>) -> String {
 /// 将 OpenAI 格式的 tool 消息转为 Anthropic 兼容格式
 /// - role: "tool" → role: "user" + tool_result content block
 /// - role: "system" → 移除（Anthropic 用顶层 system 字段）
+/// 清理 Anthropic 消息：确保 tool_use/tool_result 配对，格式正确
+/// 参考 OpenClaw 的 transformMessages + convertMessages
 fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    // 分离：当前轮消息 vs 历史消息
-    // 历史中的 tool_use/tool_result 简化为文本摘要（避免代理兼容性问题）
-    // 当前轮的 tool 消息保持 Anthropic 原生格式
     let mut result = Vec::with_capacity(messages.len());
 
+    // 第一步：转换消息格式
     for msg in messages {
         let role = msg["role"].as_str().unwrap_or("");
         match role {
+            "system" => continue, // Anthropic 用顶层 system 字段
             "tool" => {
-                // OpenAI tool result → 简化为 user 文本
-                let name = msg["name"].as_str().unwrap_or("tool");
-                let content = msg["content"].as_str().unwrap_or("").chars().take(500).collect::<String>();
+                // OpenAI tool result → Anthropic user + tool_result
+                let raw_id = msg["tool_call_id"].as_str().unwrap_or("unknown");
+                let id = sanitize_tool_id(raw_id);
+                let content = msg["content"].as_str().unwrap_or("");
                 result.push(serde_json::json!({
                     "role": "user",
-                    "content": format!("[Tool result from {}]: {}", name, content)
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": id,
+                        "content": content
+                    }]
                 }));
             }
-            "system" => continue,
             "assistant" => {
-                // 如果 content 是 Anthropic 数组（含 tool_use），提取文本部分
                 if let Some(arr) = msg["content"].as_array() {
-                    let has_tool_use = arr.iter().any(|b| b["type"].as_str() == Some("tool_use"));
-                    if has_tool_use {
-                        // 提取文本 + 工具名摘要
-                        let mut parts = Vec::new();
-                        for block in arr {
-                            match block["type"].as_str() {
-                                Some("text") => {
-                                    if let Some(t) = block["text"].as_str() {
-                                        if !t.is_empty() { parts.push(t.to_string()); }
-                                    }
-                                }
-                                Some("tool_use") => {
-                                    let name = block["name"].as_str().unwrap_or("tool");
-                                    parts.push(format!("[Used tool: {}]", name));
-                                }
-                                _ => {}
+                    // 已是 Anthropic 数组格式
+                    let blocks: Vec<serde_json::Value> = arr.iter().filter_map(|b| {
+                        match b["type"].as_str() {
+                            Some("text") => {
+                                let text = b["text"].as_str().unwrap_or("");
+                                if text.is_empty() { None } else { Some(b.clone()) }
                             }
+                            Some("tool_use") => {
+                                let mut block = b.clone();
+                                // 清理 tool_use id
+                                if let Some(id) = b["id"].as_str() {
+                                    block["id"] = serde_json::Value::String(sanitize_tool_id(id));
+                                }
+                                Some(block)
+                            }
+                            _ => Some(b.clone()),
                         }
-                        if !parts.is_empty() {
-                            result.push(serde_json::json!({"role": "assistant", "content": parts.join("\n")}));
-                        }
-                        continue;
+                    }).collect();
+                    if !blocks.is_empty() {
+                        result.push(serde_json::json!({"role": "assistant", "content": blocks}));
                     }
-                    // 纯文本数组 → 拼为字符串
-                    let text: String = arr.iter()
-                        .filter_map(|b| b["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if !text.is_empty() {
-                        result.push(serde_json::json!({"role": "assistant", "content": text}));
-                    }
-                    continue;
-                }
-                // OpenAI tool_calls 格式
-                if let Some(tool_calls) = msg["tool_calls"].as_array() {
-                    let mut parts = Vec::new();
+                } else if let Some(tool_calls) = msg["tool_calls"].as_array() {
+                    // OpenAI tool_calls → Anthropic content 数组
+                    let mut blocks = Vec::new();
                     if let Some(text) = msg["content"].as_str() {
-                        if !text.is_empty() { parts.push(text.to_string()); }
+                        if !text.is_empty() {
+                            blocks.push(serde_json::json!({"type": "text", "text": text}));
+                        }
                     }
                     for tc in tool_calls {
-                        let name = tc["function"]["name"].as_str().unwrap_or("tool");
-                        parts.push(format!("[Used tool: {}]", name));
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let id = sanitize_tool_id(tc["id"].as_str().unwrap_or("unknown"));
+                        let input: serde_json::Value = if let Some(obj) = tc["function"]["arguments"].as_object() {
+                            serde_json::Value::Object(obj.clone())
+                        } else {
+                            tc["function"]["arguments"].as_str()
+                                .and_then(|s| serde_json::from_str(s).ok())
+                                .unwrap_or(serde_json::json!({}))
+                        };
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use", "id": id, "name": name, "input": input
+                        }));
                     }
-                    if !parts.is_empty() {
-                        result.push(serde_json::json!({"role": "assistant", "content": parts.join("\n")}));
+                    if !blocks.is_empty() {
+                        result.push(serde_json::json!({"role": "assistant", "content": blocks}));
                     }
-                    continue;
+                } else {
+                    // 纯文本 assistant — 保持字符串
+                    result.push(msg.clone());
                 }
-                // 纯文本 assistant
-                result.push(msg.clone());
             }
             _ => {
-                // user 消息：保持原格式（字符串或数组）
-                // 如果是 tool_result 数组，简化为文本
+                // user 消息
                 if let Some(arr) = msg["content"].as_array() {
-                    if arr.iter().any(|b| b["type"].as_str() == Some("tool_result")) {
-                        let texts: Vec<String> = arr.iter().filter_map(|b| {
-                            if b["type"].as_str() == Some("tool_result") {
-                                let c = b["content"].as_str().unwrap_or("").chars().take(500).collect::<String>();
-                                Some(format!("[Tool result]: {}", c))
-                            } else if b["type"].as_str() == Some("text") {
-                                b["text"].as_str().map(|t| t.to_string())
-                            } else { None }
-                        }).collect();
-                        if !texts.is_empty() {
-                            result.push(serde_json::json!({"role": "user", "content": texts.join("\n")}));
-                        }
-                        continue;
-                    }
+                    // 已是数组（可能含 tool_result）
+                    result.push(msg.clone());
+                } else {
+                    // 纯文本 user — 保持字符串
+                    result.push(msg.clone());
                 }
-                result.push(msg.clone());
             }
         }
     }
-    // 合并连续同 role 消息
+
+    // 第二步：确保每个 tool_use 都有对应的 tool_result（参考 OpenClaw transformMessages）
+    ensure_tool_use_result_pairing(&mut result);
+
+    // 第三步：合并连续同 role 消息
     merge_consecutive_roles(&mut result);
+
+    // 第四步：确保第一条消息是 user（Anthropic 要求）
+    if let Some(first) = result.first() {
+        if first["role"].as_str() != Some("user") {
+            result.insert(0, serde_json::json!({"role": "user", "content": "Continue."}));
+        }
+    }
+
     result
 }
 
-/// 合并连续同 role 的消息（Anthropic 要求 user/assistant 交替）
+/// 确保每个 tool_use 都有对应的 tool_result
+/// 参考 OpenClaw: transformMessages 行 78-147
+fn ensure_tool_use_result_pairing(messages: &mut Vec<serde_json::Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i]["role"].as_str() == Some("assistant") {
+            // 收集这条 assistant 消息里的所有 tool_use id
+            let tool_use_ids: Vec<String> = messages[i]["content"].as_array()
+                .map(|arr| arr.iter()
+                    .filter(|b| b["type"].as_str() == Some("tool_use"))
+                    .filter_map(|b| b["id"].as_str().map(|s| s.to_string()))
+                    .collect()
+                ).unwrap_or_default();
+
+            if !tool_use_ids.is_empty() {
+                // 检查后续消息是否有对应的 tool_result
+                let mut found_results: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut j = i + 1;
+                while j < messages.len() {
+                    let next_role = messages[j]["role"].as_str().unwrap_or("");
+                    if next_role == "assistant" { break; } // 下一个 assistant 消息，停止搜索
+                    if let Some(arr) = messages[j]["content"].as_array() {
+                        for block in arr {
+                            if block["type"].as_str() == Some("tool_result") {
+                                if let Some(tid) = block["tool_use_id"].as_str() {
+                                    found_results.insert(tid.to_string());
+                                }
+                            }
+                        }
+                    }
+                    j += 1;
+                }
+
+                // 为缺失的 tool_result 插入合成结果
+                let missing: Vec<String> = tool_use_ids.into_iter()
+                    .filter(|id| !found_results.contains(id))
+                    .collect();
+
+                if !missing.is_empty() {
+                    let synthetic_blocks: Vec<serde_json::Value> = missing.iter().map(|id| {
+                        serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": "No result provided",
+                            "is_error": true
+                        })
+                    }).collect();
+
+                    // 在 assistant 消息后面插入合成的 user+tool_result
+                    let insert_pos = i + 1;
+                    messages.insert(insert_pos, serde_json::json!({
+                        "role": "user",
+                        "content": synthetic_blocks
+                    }));
+                    log::info!("Anthropic: 插入 {} 个合成 tool_result（孤儿 tool_use 修复）", missing.len());
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// 清理 tool ID（Anthropic 要求 ^[a-zA-Z0-9_-]{1,64}$）
+fn sanitize_tool_id(id: &str) -> String {
+    let clean: String = id.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .take(64)
+        .collect();
+    if clean.is_empty() { "unknown".to_string() } else { clean }
+}
+
+/// 合并连续同 role 的消息（Anthropic 要求 user/assistant 严格交替）
 fn merge_consecutive_roles(messages: &mut Vec<serde_json::Value>) {
     if messages.len() < 2 { return; }
     let mut i = 0;
@@ -144,29 +220,28 @@ fn merge_consecutive_roles(messages: &mut Vec<serde_json::Value>) {
         if role_a == role_b {
             let content_b = messages[i + 1]["content"].clone();
             let content_a = &mut messages[i]["content"];
-            if let Some(arr_a) = content_a.as_array_mut() {
-                if let Some(arr_b) = content_b.as_array() {
-                    // 合并时去重 tool_result（同一个 tool_use_id 只保留第一个）
-                    let existing_ids: std::collections::HashSet<String> = arr_a.iter()
-                        .filter_map(|b| b["tool_use_id"].as_str().map(|s| s.to_string()))
-                        .collect();
-                    for block in arr_b {
-                        if let Some(tid) = block["tool_use_id"].as_str() {
-                            if existing_ids.contains(tid) { continue; } // 跳过重复
-                        }
-                        // 跳过空内容的 tool_result
-                        if block["type"].as_str() == Some("tool_result") {
-                            let content = block["content"].as_str().unwrap_or("");
-                            if content.is_empty() || content == "[context compacted]" { continue; }
-                        }
-                        arr_a.push(block.clone());
+            // 两个都是数组：合并
+            if let (Some(arr_a), Some(arr_b)) = (content_a.as_array_mut(), content_b.as_array()) {
+                arr_a.extend(arr_b.iter().cloned());
+            }
+            // 数组 + 字符串
+            else if let Some(arr_a) = content_a.as_array_mut() {
+                if let Some(text) = content_b.as_str() {
+                    if !text.is_empty() {
+                        arr_a.push(serde_json::json!({"type": "text", "text": text}));
                     }
-                } else if let Some(text) = content_b.as_str() {
-                    arr_a.push(serde_json::json!({"type": "text", "text": text}));
                 }
-            } else if let Some(text_a) = content_a.as_str().map(|s| s.to_string()) {
-                if let Some(text_b) = content_b.as_str() {
-                    *content_a = serde_json::Value::String(format!("{}\n{}", text_a, text_b));
+            }
+            // 两个都是字符串
+            else if let (Some(text_a), Some(text_b)) = (content_a.as_str().map(|s| s.to_string()), content_b.as_str()) {
+                *content_a = serde_json::Value::String(format!("{}\n{}", text_a, text_b));
+            }
+            // 字符串 + 数组：转为数组
+            else if let Some(text_a) = content_a.as_str().map(|s| s.to_string()) {
+                if let Some(arr_b) = content_b.as_array() {
+                    let mut new_arr = vec![serde_json::json!({"type": "text", "text": text_a})];
+                    new_arr.extend(arr_b.iter().cloned());
+                    *content_a = serde_json::Value::Array(new_arr);
                 }
             }
             messages.remove(i + 1);
@@ -175,7 +250,6 @@ fn merge_consecutive_roles(messages: &mut Vec<serde_json::Value>) {
         }
     }
 }
-
 /// LLM 提供商
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
@@ -418,6 +492,7 @@ impl LlmClient {
                 let resolved_max_tokens = config.max_tokens.filter(|&t| t > 0).unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
                 // 转换 OpenAI 格式的 tool 消息为 Anthropic 格式
                 let clean_messages = sanitize_messages_for_anthropic(messages);
+                log::info!("sanitize 完成: {} 条消息", clean_messages.len());
                 // 调试：打印每条消息的结构
                 for (i, m) in clean_messages.iter().enumerate() {
                     let role = m["role"].as_str().unwrap_or("?");
@@ -431,11 +506,12 @@ impl LlmClient {
                     "temperature": config.temperature.unwrap_or(1.0),
                     "max_tokens": resolved_max_tokens,
                 });
-                // 调试：保存请求 body 到文件（临时）
-                let _ = std::fs::write("/tmp/anthropic-debug.json", serde_json::to_string_pretty(&body).unwrap_or_default());
-                log::info!("Anthropic 请求 body 已保存到 /tmp/anthropic-debug.json");
+                log::info!("body 构建完成，添加 system+tools...");
                 if let Some(sp) = system_prompt { body["system"] = Self::build_anthropic_system_blocks(sp); }
                 if let Some(t) = tools { if !t.is_empty() { body["tools"] = Self::build_anthropic_tools(t); } }
+                // 调试：保存请求 body 到文件（临时）
+                let _ = std::fs::write("/tmp/anthropic-debug.json", serde_json::to_string_pretty(&body).unwrap_or_default());
+                log::info!("Anthropic 请求 body 已保存到 /tmp/anthropic-debug.json (size={})", body.to_string().len());
                 (url, body)
             }
             _ => return Err("不支持的 LLM 提供商".to_string()),
