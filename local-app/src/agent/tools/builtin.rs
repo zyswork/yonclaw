@@ -376,8 +376,169 @@ impl Tool for WebSearchTool {
             .ok_or("缺少 query 参数")?;
 
         log::info!("执行网络搜索: {}", query);
-        // 占位实现
-        Ok(format!("搜索结果: {}", query))
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // 策略 1：Serper API（如果配置了 key）
+        if let Ok(serper_key) = std::env::var("SERPER_API_KEY") {
+            if !serper_key.is_empty() {
+                match search_serper(&client, &serper_key, query).await {
+                    Ok(results) => return Ok(results),
+                    Err(e) => log::warn!("Serper 搜索失败，尝试备用: {}", e),
+                }
+            }
+        }
+
+        // 策略 2：DuckDuckGo HTML 搜索（免费，无需 API key）
+        match search_duckduckgo(&client, query).await {
+            Ok(results) => Ok(results),
+            Err(e) => {
+                log::warn!("DuckDuckGo 搜索失败: {}", e);
+                // 策略 3：最终回退 — 提示用户使用 web_fetch 手动搜索
+                Ok(format!("搜索暂不可用（{}）。你可以用 web_fetch 工具访问特定网页获取信息。", e))
+            }
+        }
+    }
+}
+
+/// Serper.dev Google 搜索 API
+async fn search_serper(client: &reqwest::Client, api_key: &str, query: &str) -> Result<String, String> {
+    let resp = client.post("https://google.serper.dev/search")
+        .header("X-API-KEY", api_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({"q": query, "num": 5}))
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+
+    // 精选摘要
+    if let Some(answer) = data["answerBox"]["answer"].as_str() {
+        results.push(format!("**精选答案:** {}", answer));
+    } else if let Some(snippet) = data["answerBox"]["snippet"].as_str() {
+        results.push(format!("**精选摘要:** {}", snippet));
+    }
+
+    // 知识面板
+    if let Some(kg) = data["knowledgeGraph"].as_object() {
+        if let (Some(title), Some(desc)) = (kg.get("title").and_then(|t| t.as_str()), kg.get("description").and_then(|d| d.as_str())) {
+            results.push(format!("**{}:** {}", title, desc));
+        }
+    }
+
+    // 搜索结果
+    if let Some(organic) = data["organic"].as_array() {
+        for (i, item) in organic.iter().take(5).enumerate() {
+            let title = item["title"].as_str().unwrap_or("");
+            let snippet = item["snippet"].as_str().unwrap_or("");
+            let link = item["link"].as_str().unwrap_or("");
+            results.push(format!("{}. **{}**\n   {}\n   {}", i + 1, title, snippet, link));
+        }
+    }
+
+    if results.is_empty() {
+        Ok(format!("搜索 \"{}\" 无结果。", query))
+    } else {
+        Ok(format!("搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
+    }
+}
+
+/// DuckDuckGo Instant Answer API（免费）
+async fn search_duckduckgo(client: &reqwest::Client, query: &str) -> Result<String, String> {
+    // DuckDuckGo Instant Answer API
+    let url = format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1", urlencoding::encode(query));
+    let resp = client.get(&url)
+        .header("User-Agent", "YonClaw/0.2 (AI Assistant)")
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+
+    // 摘要答案
+    if let Some(abstract_text) = data["AbstractText"].as_str() {
+        if !abstract_text.is_empty() {
+            let source = data["AbstractSource"].as_str().unwrap_or("");
+            let url = data["AbstractURL"].as_str().unwrap_or("");
+            results.push(format!("**{}:** {}\n{}", source, abstract_text, url));
+        }
+    }
+
+    // 相关话题
+    if let Some(topics) = data["RelatedTopics"].as_array() {
+        for (i, topic) in topics.iter().take(5).enumerate() {
+            if let Some(text) = topic["Text"].as_str() {
+                let url = topic["FirstURL"].as_str().unwrap_or("");
+                results.push(format!("{}. {}\n   {}", i + 1, text, url));
+            }
+        }
+    }
+
+    // Infobox
+    if let Some(answer) = data["Answer"].as_str() {
+        if !answer.is_empty() {
+            results.insert(0, format!("**答案:** {}", answer));
+        }
+    }
+
+    if results.is_empty() {
+        // DuckDuckGo Instant Answer 可能无结果，尝试 DuckDuckGo Lite HTML
+        search_duckduckgo_lite(client, query).await
+    } else {
+        Ok(format!("搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
+    }
+}
+
+/// DuckDuckGo Lite HTML 爬取（备用方案）
+async fn search_duckduckgo_lite(client: &reqwest::Client, query: &str) -> Result<String, String> {
+    let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
+    let resp = client.get(&url)
+        .header("User-Agent", "YonClaw/0.2 (AI Assistant)")
+        .send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+    let html = resp.text().await.map_err(|e| format!("读取失败: {}", e))?;
+
+    // 简单提取搜索结果（从 <a class="result-link"> 或 <td> 中）
+    let mut results = Vec::new();
+    let mut in_result = false;
+    let mut current_title = String::new();
+    let mut current_snippet = String::new();
+    let mut count = 0;
+
+    for line in html.lines() {
+        let trimmed = line.trim();
+        // 提取链接标题
+        if trimmed.contains("result-link") || (trimmed.starts_with("<a") && trimmed.contains("rel=\"nofollow\"")) {
+            // 提取 href 和文本
+            if let Some(start) = trimmed.find('>') {
+                if let Some(end) = trimmed[start..].find("</a>") {
+                    current_title = trimmed[start + 1..start + end].to_string();
+                    in_result = true;
+                }
+            }
+        }
+        // 提取摘要
+        if in_result && trimmed.starts_with("<td>") && !trimmed.contains("<a") {
+            current_snippet = trimmed.replace("<td>", "").replace("</td>", "").trim().to_string();
+            if !current_title.is_empty() && !current_snippet.is_empty() {
+                count += 1;
+                results.push(format!("{}. **{}**\n   {}", count, current_title, current_snippet));
+                current_title.clear();
+                current_snippet.clear();
+                in_result = false;
+                if count >= 5 { break; }
+            }
+        }
+    }
+
+    if results.is_empty() {
+        Err("无搜索结果".into())
+    } else {
+        Ok(format!("搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
     }
 }
 
