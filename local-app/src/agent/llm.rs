@@ -61,8 +61,8 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
             }
             "assistant" => {
                 let mut m = msg.clone();
-                // 如果 content 已经是数组（Anthropic 格式），直接用
-                if msg["content"].is_array() {
+                // 如果 content 已经是 Anthropic 数组格式，直接用
+                if msg["content"].is_array() && msg.get("tool_calls").is_none() {
                     result.push(m);
                     continue;
                 }
@@ -98,20 +98,17 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
                     }
                     m["content"] = serde_json::Value::Array(content_blocks);
                     m.as_object_mut().map(|o| o.remove("tool_calls"));
-                } else if let Some(text) = m["content"].as_str().map(|s| s.to_string()) {
-                    m["content"] = serde_json::json!([{"type": "text", "text": text}]);
+                } else {
+                    // 纯文本 assistant 消息保持字符串格式
+                    result.push(m);
+                    continue;
                 }
                 result.push(m);
             }
             _ => {
-                let mut m = msg.clone();
-                // 已经是数组格式则保留
-                if !m["content"].is_array() {
-                    if let Some(text) = m["content"].as_str().map(|s| s.to_string()) {
-                        m["content"] = serde_json::json!([{"type": "text", "text": text}]);
-                    }
-                }
-                result.push(m);
+                // user 消息：字符串 content 保持字符串（OpenClaw 也这样做）
+                // 数组 content（已是 Anthropic 格式）保持不变
+                result.push(msg.clone());
             }
         }
     }
