@@ -1,0 +1,48 @@
+import { create } from 'zustand'
+
+export type Theme = 'light' | 'dark' | 'system'
+
+function getSystemTheme(): 'light' | 'dark' {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function resolveInitial(): Theme {
+  const saved = localStorage.getItem('yonclaw.theme') as Theme | null
+  if (saved && ['light', 'dark', 'system'].includes(saved)) return saved
+  return 'light' // 默认浅色（当前主题）
+}
+
+function applyTheme(theme: Theme) {
+  const resolved = theme === 'system' ? getSystemTheme() : theme
+  document.documentElement.setAttribute('data-theme', resolved)
+}
+
+interface ThemeState {
+  theme: Theme
+  setTheme: (t: Theme) => void
+  resolvedTheme: () => 'light' | 'dark'
+}
+
+export const useTheme = create<ThemeState>((set, get) => {
+  // 初始化时应用主题
+  const initial = resolveInitial()
+  setTimeout(() => applyTheme(initial), 0)
+
+  // 监听系统主题变化
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (get().theme === 'system') applyTheme('system')
+  })
+
+  return {
+    theme: initial,
+    setTheme: (t: Theme) => {
+      localStorage.setItem('yonclaw.theme', t)
+      applyTheme(t)
+      set({ theme: t })
+    },
+    resolvedTheme: () => {
+      const { theme } = get()
+      return theme === 'system' ? getSystemTheme() : theme
+    },
+  }
+})

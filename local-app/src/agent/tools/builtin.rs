@@ -506,7 +506,7 @@ async fn search_duckduckgo_lite(client: &reqwest::Client, query: &str) -> Result
     let mut results = Vec::new();
     let mut in_result = false;
     let mut current_title = String::new();
-    let mut current_snippet = String::new();
+    let mut current_snippet;
     let mut count = 0;
 
     for line in html.lines() {

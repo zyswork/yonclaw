@@ -1,7 +1,7 @@
 //! 子 Agent 系统
 //!
-//! 支持主 Agent 派生子 Agent 执行子任务
-//! 包含：SubagentRegistry（状态跟踪）、spawn/send/yield 逻辑
+//! 支持主 Agent 派生子 Agent 执行子任务。
+//! SubagentRegistry 统一管理内存状态（邮箱/等待者）+ DB 持久化（subagent_runs 表）。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,26 +18,30 @@ pub enum SubagentStatus {
     Cancelled,
 }
 
+impl SubagentStatus {
+    /// 转为 DB 状态字符串
+    pub fn to_db_str(&self) -> &str {
+        match self {
+            SubagentStatus::Running => "running",
+            SubagentStatus::Completed => "success",
+            SubagentStatus::Failed(_) => "failed",
+            SubagentStatus::Timeout => "timeout",
+            SubagentStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
 /// 子 Agent 记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentRecord {
-    /// 子 Agent ID
     pub id: String,
-    /// 父 Agent ID
     pub parent_id: String,
-    /// 子 Agent 名称
     pub name: String,
-    /// 分配的任务描述
     pub task: String,
-    /// 当前状态
     pub status: SubagentStatus,
-    /// 结果（完成后填充）
     pub result: Option<String>,
-    /// 创建时间
     pub created_at: i64,
-    /// 完成时间
     pub finished_at: Option<i64>,
-    /// 超时时间（秒）
     pub timeout_secs: u64,
 }
 
@@ -52,14 +56,16 @@ pub struct AgentMessage {
 
 /// 子 Agent 注册表
 ///
-/// 跟踪所有子 Agent 的生命周期
+/// 内存状态（邮箱/等待者）+ DB 持久化（subagent_runs 表）双写。
 pub struct SubagentRegistry {
-    /// 活跃的子 Agent 记录
+    /// 活跃的子 Agent 记录（内存缓存，DB 为主）
     records: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    /// 消息邮箱：agent_id → 待接收消息队列
+    /// 消息邮箱
     mailboxes: Arc<Mutex<HashMap<String, Vec<AgentMessage>>>>,
-    /// 等待回复的 channel：agent_id → oneshot sender
+    /// 等待回复的 channel
     waiters: Arc<Mutex<HashMap<String, oneshot::Sender<AgentMessage>>>>,
+    /// DB 连接池（用于持久化）
+    pool: Option<sqlx::SqlitePool>,
 }
 
 impl SubagentRegistry {
@@ -68,30 +74,82 @@ impl SubagentRegistry {
             records: Arc::new(Mutex::new(HashMap::new())),
             mailboxes: Arc::new(Mutex::new(HashMap::new())),
             waiters: Arc::new(Mutex::new(HashMap::new())),
+            pool: None,
         }
     }
 
-    /// 注册新的子 Agent
+    /// 带 DB 连接的构造（推荐）
+    pub fn with_pool(pool: sqlx::SqlitePool) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(HashMap::new())),
+            mailboxes: Arc::new(Mutex::new(HashMap::new())),
+            waiters: Arc::new(Mutex::new(HashMap::new())),
+            pool: Some(pool),
+        }
+    }
+
+    /// 注册新的子 Agent（双写内存 + DB）
     pub async fn register(&self, record: SubagentRecord) {
         let id = record.id.clone();
+
+        // 写 DB（INSERT OR IGNORE 避免与 delegate.rs 的 save_run 冲突）
+        if let Some(ref pool) = self.pool {
+            let now = chrono::Utc::now().timestamp_millis();
+            if let Err(e) = sqlx::query(
+                "INSERT OR IGNORE INTO subagent_runs (id, parent_agent_id, parent_session_id, task_index, goal, model, status, depth, created_at) VALUES (?, ?, NULL, 0, ?, 'default', 'running', 0, ?)"
+            )
+            .bind(&record.id)
+            .bind(&record.parent_id)
+            .bind(&record.task)
+            .bind(now)
+            .execute(pool)
+            .await {
+                log::warn!("SubagentRegistry DB 写入失败: {}", e);
+            }
+        }
+
+        // 写内存
         let should_cleanup = {
             let mut records = self.records.lock().await;
             records.insert(id.clone(), record);
             records.len() > 100
         };
         self.mailboxes.lock().await.insert(id, Vec::new());
-        // 自动清理：超过 100 条记录时触发
+
         if should_cleanup {
             self.cleanup().await;
         }
     }
 
-    /// 更新子 Agent 状态
+    /// 更新子 Agent 状态（双写内存 + DB）
     pub async fn update_status(&self, id: &str, status: SubagentStatus, result: Option<String>) {
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // 更新内存
         if let Some(record) = self.records.lock().await.get_mut(id) {
-            record.status = status;
-            record.result = result;
-            record.finished_at = Some(chrono::Utc::now().timestamp_millis());
+            record.status = status.clone();
+            record.result = result.clone();
+            record.finished_at = Some(now);
+        }
+
+        // 更新 DB
+        if let Some(ref pool) = self.pool {
+            let error_msg = match &status {
+                SubagentStatus::Failed(e) => Some(e.as_str()),
+                _ => None,
+            };
+            if let Err(e) = sqlx::query(
+                "UPDATE subagent_runs SET status = ?, result = ?, error = ?, finished_at = ? WHERE id = ?"
+            )
+            .bind(status.to_db_str())
+            .bind(&result)
+            .bind(error_msg)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await {
+                log::warn!("SubagentRegistry DB 更新失败: {}", e);
+            }
         }
     }
 
@@ -100,27 +158,85 @@ impl SubagentRegistry {
         self.records.lock().await.get(id).cloned()
     }
 
-    /// 列出某个父 Agent 的所有子 Agent
+    /// 列出某个父 Agent 的所有子 Agent（内存 + DB 合并）
     pub async fn list_children(&self, parent_id: &str) -> Vec<SubagentRecord> {
-        self.records.lock().await.values()
+        // 优先从内存获取活跃记录
+        let mut results: Vec<SubagentRecord> = self.records.lock().await.values()
             .filter(|r| r.parent_id == parent_id)
             .cloned()
-            .collect()
+            .collect();
+
+        // 如果内存为空，从 DB 加载最近的
+        if results.is_empty() {
+            if let Some(ref pool) = self.pool {
+                if let Ok(rows) = sqlx::query_as::<_, (String, String, String, String, Option<String>, i64, Option<i64>)>(
+                    "SELECT id, parent_agent_id, goal, status, result, created_at, finished_at FROM subagent_runs WHERE parent_agent_id = ? ORDER BY created_at DESC LIMIT 50"
+                )
+                .bind(parent_id)
+                .fetch_all(pool)
+                .await {
+                    results = rows.into_iter().map(|(id, parent, goal, status, result, created_at, finished_at)| {
+                        SubagentRecord {
+                            id,
+                            parent_id: parent,
+                            name: String::new(),
+                            task: goal,
+                            status: match status.as_str() {
+                                "running" => SubagentStatus::Running,
+                                "success" => SubagentStatus::Completed,
+                                "failed" => SubagentStatus::Failed(String::new()),
+                                "timeout" => SubagentStatus::Timeout,
+                                "cancelled" => SubagentStatus::Cancelled,
+                                _ => SubagentStatus::Failed(format!("unknown: {}", status)),
+                            },
+                            result,
+                            created_at,
+                            finished_at,
+                            timeout_secs: 0,
+                        }
+                    }).collect();
+                }
+            }
+        }
+
+        results
     }
 
-    /// 取消子 Agent
+    /// 取消子 Agent（双写）
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
         let mut records = self.records.lock().await;
         if let Some(record) = records.get_mut(id) {
             if record.status == SubagentStatus::Running {
                 record.status = SubagentStatus::Cancelled;
                 record.finished_at = Some(chrono::Utc::now().timestamp_millis());
+                drop(records);
+
+                // 同步到 DB
+                if let Some(ref pool) = self.pool {
+                    let now = chrono::Utc::now().timestamp_millis();
+                    let _ = sqlx::query("UPDATE subagent_runs SET status = 'cancelled', finished_at = ? WHERE id = ?")
+                        .bind(now).bind(id)
+                        .execute(pool).await;
+                }
                 Ok(())
             } else {
                 Err(format!("子 Agent {} 不在运行状态", id))
             }
         } else {
-            Err(format!("子 Agent {} 不存在", id))
+            // 尝试从 DB 取消
+            if let Some(ref pool) = self.pool {
+                let now = chrono::Utc::now().timestamp_millis();
+                let result = sqlx::query("UPDATE subagent_runs SET status = 'cancelled', finished_at = ? WHERE id = ? AND status = 'running'")
+                    .bind(now).bind(id)
+                    .execute(pool).await;
+                match result {
+                    Ok(r) if r.rows_affected() > 0 => Ok(()),
+                    Ok(_) => Err(format!("子 Agent {} 不存在或不在运行状态", id)),
+                    Err(e) => Err(format!("取消失败: {}", e)),
+                }
+            } else {
+                Err(format!("子 Agent {} 不存在", id))
+            }
         }
     }
 
@@ -130,7 +246,6 @@ impl SubagentRegistry {
         pool: &sqlx::SqlitePool,
         msg: AgentMessage,
     ) -> Result<(), String> {
-        // 检查通信权限
         let can_comm = super::relations::RelationManager::can_communicate(pool, &msg.from, &msg.to).await?;
         if !can_comm {
             return Err(format!(
@@ -145,7 +260,6 @@ impl SubagentRegistry {
     pub(crate) async fn send_message(&self, msg: AgentMessage) -> Result<(), String> {
         let to = msg.to.clone();
 
-        // 如果有等待者，直接发送给它
         {
             let mut waiters = self.waiters.lock().await;
             if let Some(waiter) = waiters.remove(&to) {
@@ -154,16 +268,13 @@ impl SubagentRegistry {
             }
         }
 
-        // 没有等待者，放入邮箱
         let mut mailboxes = self.mailboxes.lock().await;
         mailboxes.entry(to).or_default().push(msg);
-
         Ok(())
     }
 
     /// 等待接收消息（带超时）
     pub async fn receive_message(&self, agent_id: &str, timeout_secs: u64) -> Result<AgentMessage, String> {
-        // 先检查邮箱
         {
             let mut mailboxes = self.mailboxes.lock().await;
             if let Some(mailbox) = mailboxes.get_mut(agent_id) {
@@ -173,11 +284,9 @@ impl SubagentRegistry {
             }
         }
 
-        // 没有消息，注册等待
         let (tx, rx) = oneshot::channel();
         self.waiters.lock().await.insert(agent_id.to_string(), tx);
 
-        // 带超时等待
         match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             rx,
@@ -185,14 +294,13 @@ impl SubagentRegistry {
             Ok(Ok(msg)) => Ok(msg),
             Ok(Err(_)) => Err("消息通道已关闭".to_string()),
             Err(_) => {
-                // 超时，移除等待者
                 self.waiters.lock().await.remove(agent_id);
                 Err("等待消息超时".to_string())
             }
         }
     }
 
-    /// 清理已完成的子 Agent 记录（保留最近 100 条）
+    /// 清理已完成的记录（内存，DB 保留）
     pub async fn cleanup(&self) {
         let mut records = self.records.lock().await;
         let mut finished: Vec<(String, i64)> = records.iter()
@@ -201,12 +309,10 @@ impl SubagentRegistry {
             .collect();
         finished.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // 保留最近 100 条，删除更早的
         let to_remove: Vec<String> = finished.iter().skip(100).map(|(id, _)| id.clone()).collect();
         for id in &to_remove {
             records.remove(id);
         }
-        // 释放 records 锁后再清理 mailboxes
         drop(records);
         let mut mailboxes = self.mailboxes.lock().await;
         for id in &to_remove {
@@ -218,12 +324,70 @@ impl SubagentRegistry {
 /// 子 Agent 派生配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnConfig {
-    /// 子 Agent 名称
     pub name: String,
-    /// 任务描述（作为子 Agent 的 system prompt 补充）
     pub task: String,
-    /// 使用的模型（默认继承父 Agent）
     pub model: Option<String>,
-    /// 超时时间（秒，默认 300）
     pub timeout_secs: Option<u64>,
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+/// 从 DB 查询子代理运行记录
+pub async fn list_subagent_runs(
+    pool: &sqlx::SqlitePool,
+    parent_agent_id: Option<&str>,
+    session_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut sql = String::from(
+        "SELECT id, parent_agent_id, parent_session_id, task_index, goal, model, status, result, error, depth, allowed_tools, duration_ms, created_at, finished_at FROM subagent_runs WHERE 1=1"
+    );
+    let mut binds: Vec<String> = Vec::new();
+
+    if let Some(aid) = parent_agent_id {
+        sql.push_str(" AND parent_agent_id = ?");
+        binds.push(aid.to_string());
+    }
+    if let Some(sid) = session_id {
+        sql.push_str(" AND parent_session_id = ?");
+        binds.push(sid.to_string());
+    }
+    sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+
+    let rows = if binds.is_empty() {
+        sqlx::query_as::<_, (String, String, Option<String>, i64, String, String, String, Option<String>, Option<String>, i64, Option<String>, Option<i64>, i64, Option<i64>)>(&sql)
+            .bind(limit)
+            .fetch_all(pool).await
+    } else if binds.len() == 1 {
+        sqlx::query_as::<_, (String, String, Option<String>, i64, String, String, String, Option<String>, Option<String>, i64, Option<String>, Option<i64>, i64, Option<i64>)>(&sql)
+            .bind(&binds[0])
+            .bind(limit)
+            .fetch_all(pool).await
+    } else {
+        sqlx::query_as::<_, (String, String, Option<String>, i64, String, String, String, Option<String>, Option<String>, i64, Option<String>, Option<i64>, i64, Option<i64>)>(&sql)
+            .bind(&binds[0])
+            .bind(&binds[1])
+            .bind(limit)
+            .fetch_all(pool).await
+    };
+
+    let rows = rows.map_err(|e| format!("查询子代理记录失败: {}", e))?;
+
+    Ok(rows.into_iter().map(|(id, parent_agent_id, parent_session_id, task_index, goal, model, status, result, error, depth, allowed_tools, duration_ms, created_at, finished_at)| {
+        serde_json::json!({
+            "id": id,
+            "parentAgentId": parent_agent_id,
+            "parentSessionId": parent_session_id,
+            "taskIndex": task_index,
+            "goal": goal,
+            "model": model,
+            "status": status,
+            "result": result,
+            "error": error,
+            "depth": depth,
+            "allowedTools": allowed_tools.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()),
+            "durationMs": duration_ms,
+            "createdAt": created_at,
+            "finishedAt": finished_at,
+        })
+    }).collect())
 }

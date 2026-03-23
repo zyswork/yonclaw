@@ -143,8 +143,6 @@ pub struct SqliteMemory {
     lance_store: Option<Arc<lance::LanceVectorStore>>,
 }
 
-use std::sync::Arc;
-
 impl SqliteMemory {
     /// 创建 SQLite 记忆实例（纯 FTS5，无向量）
     pub fn new(pool: SqlitePool) -> Self {

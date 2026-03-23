@@ -6,6 +6,7 @@ import { useI18n } from './i18n'
 import SplashScreen from './components/SplashScreen'
 import { ToastContainer } from './hooks/useToast'
 import { ConfirmDialog } from './hooks/useConfirm'
+import { ApprovalDialog } from './hooks/useApproval'
 import SetupPage from './pages/SetupPage'
 import Layout from './components/Layout'
 
@@ -114,6 +115,7 @@ export default function App() {
     <HashRouter>
       <ToastContainer />
       <ConfirmDialog />
+      <ApprovalDialog />
       <Routes>
         <Route path="/" element={<Navigate to="/agents" replace />} />
         <Route path="/agents" element={<ProtectedPage><AgentListPage /></ProtectedPage>} />

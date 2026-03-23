@@ -16,10 +16,13 @@ pub async fn add_job(pool: &SqlitePool, req: &CreateJobRequest) -> Result<CronJo
     let payload_json = serde_json::to_string(&req.action_payload)
         .map_err(|e| format!("序列化 payload 失败: {}", e))?;
 
-    let (schedule_kind, cron_expr, every_secs, at_ts, timezone) = match &req.schedule {
-        Schedule::Cron { expr, tz } => ("cron", Some(expr.clone()), None, None, tz.clone()),
-        Schedule::Every { secs } => ("every", None, Some(*secs as i64), None, "UTC".to_string()),
-        Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string()),
+    // 解构 schedule，提取扩展字段
+    let (schedule_kind, cron_expr, every_secs, at_ts, timezone, webhook_secret, poll_json_path) = match &req.schedule {
+        Schedule::Cron { expr, tz } => ("cron", Some(expr.clone()), None, None, tz.clone(), None, None),
+        Schedule::Every { secs } => ("every", None, Some(*secs as i64), None, "UTC".to_string(), None, None),
+        Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string(), None, None),
+        Schedule::Webhook { token, secret } => ("webhook", Some(token.clone()), None, None, "UTC".to_string(), secret.clone(), None),
+        Schedule::Poll { url, interval_secs, json_path, .. } => ("poll", Some(url.clone()), Some(*interval_secs as i64), None, "UTC".to_string(), None, json_path.clone()),
     };
 
     // 计算首次执行时间
@@ -31,8 +34,8 @@ pub async fn add_job(pool: &SqlitePool, req: &CreateJobRequest) -> Result<CronJo
          every_secs, at_ts, timezone, action_payload, timeout_secs, max_concurrent,
          cooldown_secs, max_daily_runs, max_consecutive_failures, retry_max,
          retry_base_delay_ms, retry_backoff_factor, misfire_policy, catch_up_limit,
-         delete_after_run, created_at, updated_at, next_run_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         delete_after_run, created_at, updated_at, next_run_at, webhook_secret, poll_json_path)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )
     .bind(&id).bind(&req.name).bind(&req.agent_id).bind(&job_type_str)
     .bind(schedule_kind).bind(&cron_expr).bind(every_secs).bind(at_ts)
@@ -44,6 +47,7 @@ pub async fn add_job(pool: &SqlitePool, req: &CreateJobRequest) -> Result<CronJo
     .bind(req.retry.backoff_factor).bind(&req.misfire_policy)
     .bind(req.catch_up_limit as i64).bind(req.delete_after_run as i64)
     .bind(now).bind(now).bind(next_run)
+    .bind(&webhook_secret).bind(&poll_json_path)
     .execute(pool).await.map_err(|e| format!("插入任务失败: {}", e))?;
 
     get_job(pool, &id).await
@@ -62,6 +66,18 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<CronJob, String> {
         },
         "at" => Schedule::At {
             ts: row.try_get("at_ts").map_err(|e| e.to_string())?,
+        },
+        "webhook" => {
+            let token: String = row.try_get("cron_expr").map_err(|e| e.to_string())?;
+            let secret: Option<String> = row.try_get("webhook_secret").unwrap_or(None);
+            Schedule::Webhook { token, secret }
+        },
+        "poll" => {
+            let url: String = row.try_get("cron_expr").map_err(|e| e.to_string())?;
+            let interval_secs = row.try_get::<i64, _>("every_secs").map_err(|e| e.to_string())? as u64;
+            let json_path: Option<String> = row.try_get("poll_json_path").unwrap_or(None);
+            let last_hash: Option<String> = row.try_get("poll_last_hash").unwrap_or(None);
+            Schedule::Poll { url, interval_secs, json_path, last_hash }
         },
         _ => return Err(format!("未知 schedule_kind: {}", schedule_kind)),
     };
@@ -160,10 +176,12 @@ pub async fn update_job(pool: &SqlitePool, job_id: &str, patch: &UpdateJobReques
     let enabled = patch.enabled.unwrap_or(existing.enabled);
 
     let schedule = patch.schedule.as_ref().unwrap_or(&existing.schedule);
-    let (schedule_kind, cron_expr, every_secs, at_ts, timezone) = match schedule {
-        Schedule::Cron { expr, tz } => ("cron", Some(expr.clone()), None, None, tz.clone()),
-        Schedule::Every { secs } => ("every", None, Some(*secs as i64), None, "UTC".to_string()),
-        Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string()),
+    let (schedule_kind, cron_expr, every_secs, at_ts, timezone, webhook_secret, poll_json_path) = match schedule {
+        Schedule::Cron { expr, tz } => ("cron", Some(expr.clone()), None, None, tz.clone(), None, None),
+        Schedule::Every { secs } => ("every", None, Some(*secs as i64), None, "UTC".to_string(), None, None),
+        Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string(), None, None),
+        Schedule::Webhook { token, secret } => ("webhook", Some(token.clone()), None, None, "UTC".to_string(), secret.clone(), None),
+        Schedule::Poll { url, interval_secs, json_path, .. } => ("poll", Some(url.clone()), Some(*interval_secs as i64), None, "UTC".to_string(), None, json_path.clone()),
     };
 
     if patch.schedule.is_some() { need_reschedule = true; }
@@ -185,7 +203,7 @@ pub async fn update_job(pool: &SqlitePool, job_id: &str, patch: &UpdateJobReques
          timezone=?, action_payload=?, timeout_secs=?, max_concurrent=?, cooldown_secs=?,
          max_daily_runs=?, max_consecutive_failures=?, retry_max=?, retry_base_delay_ms=?,
          retry_backoff_factor=?, misfire_policy=?, catch_up_limit=?, enabled=?,
-         next_run_at=?, updated_at=? WHERE id=?"
+         next_run_at=?, updated_at=?, webhook_secret=?, poll_json_path=? WHERE id=?"
     )
     .bind(name).bind(schedule_kind).bind(&cron_expr).bind(every_secs).bind(at_ts)
     .bind(&timezone).bind(&payload_json).bind(timeout as i64)
@@ -194,7 +212,8 @@ pub async fn update_job(pool: &SqlitePool, job_id: &str, patch: &UpdateJobReques
     .bind(guardrails.max_consecutive_failures as i64)
     .bind(retry.max_attempts as i64).bind(retry.base_delay_ms as i64)
     .bind(retry.backoff_factor).bind(misfire).bind(catch_up as i64)
-    .bind(enabled as i64).bind(next_run).bind(now).bind(job_id)
+    .bind(enabled as i64).bind(next_run).bind(now)
+    .bind(&webhook_secret).bind(&poll_json_path).bind(job_id)
     .execute(pool).await.map_err(|e| format!("更新任务失败: {}", e))?;
 
     get_job(pool, job_id).await

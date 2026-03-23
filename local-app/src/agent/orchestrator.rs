@@ -62,7 +62,7 @@ pub struct Orchestrator {
     /// 速率限制器
     rate_limiter: super::rate_limiter::RateLimiter,
     /// 事件广播器
-    pub event_broadcaster: super::observer::EventBroadcaster,
+    pub event_broadcaster: std::sync::Arc<super::observer::EventBroadcaster>,
     /// 工具钩子运行器
     hook_runner: std::sync::Mutex<super::hooks::HookRunner>,
     /// 生命周期事件管理器（替代 hooks/observer）
@@ -75,6 +75,8 @@ pub struct Orchestrator {
     pub evolution_state: std::sync::Arc<super::self_evolution::EvolutionState>,
     /// 自我进化配置
     evolution_config: super::self_evolution::EvolutionConfig,
+    /// 工具审批管理器
+    pub approval_manager: super::approval::ApprovalManager,
 }
 
 impl Orchestrator {
@@ -99,24 +101,26 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(SkillManageTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(CronManageTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(PluginManageTool::new(pool.clone())));
-        tool_manager.register_tool(Box::new(super::delegate::DelegateTaskTool::new(pool.clone())));
+        let event_broadcaster = std::sync::Arc::new(super::observer::EventBroadcaster::default());
+        tool_manager.register_tool(Box::new(super::delegate::DelegateTaskTool::new(pool.clone(), event_broadcaster.clone())));
         let mcp_manager = McpManager::new(pool.clone());
         // 初始化钩子运行器（注册默认日志钩子）
         let mut hook_runner = super::hooks::HookRunner::new();
         hook_runner.register(Box::new(super::hooks::LoggingHook));
 
+        let subagent_registry = SubagentRegistry::with_pool(pool.clone());
         Self {
             agent_store: super::agent_store::AgentStore::new(pool.clone()),
             pool, tool_manager, mcp_manager,
             policy_engine: std::sync::Mutex::new(ToolPolicyEngine::new()),
             skill_cache: std::sync::Mutex::new(HashMap::new()),
-            subagent_registry: SubagentRegistry::new(),
+            subagent_registry,
             session_locks: std::sync::Mutex::new(HashMap::new()),
             session_msg_cache: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(SESSION_CACHE_MAX).unwrap()
             )),
             rate_limiter: super::rate_limiter::RateLimiter::new(super::rate_limiter::RateLimitConfig::default()),
-            event_broadcaster: super::observer::EventBroadcaster::default(),
+            event_broadcaster: event_broadcaster,
             hook_runner: std::sync::Mutex::new(hook_runner),
             lifecycle: {
                 let mut lm = super::lifecycle::LifecycleManager::new();
@@ -128,6 +132,7 @@ impl Orchestrator {
             provider_registry: crate::plugin_system::create_default_registry(),
             evolution_state: std::sync::Arc::new(super::self_evolution::EvolutionState::new()),
             evolution_config: super::self_evolution::EvolutionConfig::default(),
+            approval_manager: super::approval::ApprovalManager::new(),
         }
     }
 
@@ -723,6 +728,8 @@ impl Orchestrator {
             agent_config: agent.config.clone(),
             provider_registry: Some(&self.provider_registry),
             evolution_state: Some(&self.evolution_state),
+            approval_manager: Some(&self.approval_manager),
+            app_handle: None, // 由调用方注入（send_message 时传入）
         };
         let response = match super::agent_loop::run_agent_loop(&loop_deps, &config, final_messages, system_prompt_opt, provider, &tx, &final_tool_defs, &skill_tools, agent_id, session_id, &cancel_token, dispatcher.as_ref()).await {
             Ok(resp) => resp,

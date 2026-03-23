@@ -126,7 +126,7 @@ function formatSchedule(s: CronJob['schedule'], t: (key: string, params?: Record
   return JSON.stringify(s)
 }
 
-type TabId = 'chat' | 'soul' | 'tools' | 'mcp' | 'skills' | 'cron' | 'autonomy' | 'plugins' | 'settings' | 'subagents' | 'audit'
+type TabId = 'chat' | 'soul' | 'tools' | 'mcp' | 'skills' | 'cron' | 'autonomy' | 'plugins' | 'relations' | 'settings' | 'subagents' | 'audit'
 
 const TAB_KEYS: { id: TabId; labelKey: string }[] = [
   { id: 'chat', labelKey: 'agentDetail.tabChat' },
@@ -137,6 +137,7 @@ const TAB_KEYS: { id: TabId; labelKey: string }[] = [
   { id: 'cron', labelKey: 'agentDetail.tabCron' },
   { id: 'autonomy', labelKey: 'agentDetail.tabAutonomy' },
   { id: 'plugins', labelKey: 'agentDetail.tabPlugins' },
+  { id: 'relations', labelKey: 'agentDetail.tabRelations' },
   { id: 'subagents', labelKey: 'agentDetail.tabSubagents' },
   { id: 'settings', labelKey: 'agentDetail.tabSettings' },
   { id: 'audit', labelKey: 'agentDetail.tabAudit' },
@@ -220,6 +221,7 @@ export default function AgentDetailPage() {
         {activeTab === 'cron' && <CronTab agentId={agentId} />}
         {activeTab === 'autonomy' && <AutonomyTab agentId={agentId} />}
         {activeTab === 'plugins' && <PluginsTab />}
+        {activeTab === 'relations' && <RelationsTab agentId={agentId} />}
         {activeTab === 'subagents' && <SubagentsTab agentId={agentId} />}
         {activeTab === 'audit' && <AuditTab agentId={agentId} />}
         {activeTab === 'settings' && <SettingsTab agentId={agentId} agent={agent} onUpdate={setAgent} onDelete={() => navigate('/agents')} />}
@@ -1601,6 +1603,114 @@ interface AuditEntry {
   policySource: string
   durationMs: number
   createdAt: number
+}
+
+function RelationsTab({ agentId }: { agentId: string }) {
+  const { t } = useI18n()
+  const [relations, setRelations] = useState<any[]>([])
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([])
+  const [targetId, setTargetId] = useState('')
+  const [relType, setRelType] = useState('collaborator')
+  const [loading, setLoading] = useState(true)
+
+  const load = async () => {
+    try {
+      const [rels, agentList] = await Promise.all([
+        invoke<any[]>('get_agent_relations', { agentId }),
+        invoke<any[]>('list_agents'),
+      ])
+      setRelations(rels)
+      setAgents(agentList.filter((a: any) => a.id !== agentId))
+    } catch {}
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [agentId])
+
+  const handleAdd = async () => {
+    if (!targetId) return
+    try {
+      await invoke('create_agent_relation', { fromId: agentId, toId: targetId, relationType: relType })
+      await load()
+      setTargetId('')
+    } catch (e) { toast.error(String(e)) }
+  }
+
+  const handleDelete = async (id: string) => {
+    try {
+      await invoke('delete_agent_relation', { relationId: id })
+      await load()
+    } catch (e) { toast.error(String(e)) }
+  }
+
+  const RELATION_TYPES = [
+    { value: 'collaborator', label: t('agentDetail.relCollaborator') },
+    { value: 'supervisor', label: t('agentDetail.relSupervisor') },
+    { value: 'subordinate', label: t('agentDetail.relSubordinate') },
+    { value: 'peer', label: t('agentDetail.relPeer') },
+  ]
+
+  const getAgentName = (id: string) => agents.find(a => a.id === id)?.name || id.slice(0, 8)
+
+  if (loading) return <div style={{ padding: 20, color: 'var(--text-muted)' }}>{t('common.loading')}</div>
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h3 style={{ margin: '0 0 16px', fontSize: 16, fontWeight: 600 }}>{t('agentDetail.relTitle')}</h3>
+
+      {/* 添加关系 */}
+      <div style={{
+        display: 'flex', gap: 8, marginBottom: 20, padding: 12,
+        borderRadius: 10, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
+      }}>
+        <select value={targetId} onChange={e => setTargetId(e.target.value)}
+          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
+          <option value="">{t('agentDetail.relSelectAgent')}</option>
+          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <select value={relType} onChange={e => setRelType(e.target.value)}
+          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
+          {RELATION_TYPES.map(rt => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
+        </select>
+        <button onClick={handleAdd} disabled={!targetId}
+          style={{ padding: '6px 16px', borderRadius: 6, fontSize: 13, border: 'none', backgroundColor: 'var(--accent)', color: '#fff', cursor: 'pointer' }}>
+          {t('agentDetail.relAdd')}
+        </button>
+      </div>
+
+      {/* 关系列表 */}
+      {relations.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 13 }}>
+          {t('agentDetail.relEmpty')}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {relations.map(r => (
+            <div key={r.id} style={{
+              display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+              borderRadius: 8, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)',
+            }}>
+              <span style={{ fontSize: 18 }}>{'\u{1F517}'}</span>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>
+                {r.fromId === agentId ? getAgentName(r.toId) : getAgentName(r.fromId)}
+              </span>
+              <span style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                backgroundColor: 'var(--accent-bg)', color: 'var(--text-accent)',
+              }}>
+                {r.relationType}
+              </span>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => handleDelete(r.id)}
+                style={{ fontSize: 11, color: 'var(--error)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                {t('common.delete')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function AuditTab({ agentId }: { agentId: string }) {

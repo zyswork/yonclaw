@@ -170,14 +170,8 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value], current_provi
                 }
             }
             _ => {
-                // user 消息
-                if let Some(arr) = msg["content"].as_array() {
-                    // 已是数组（可能含 tool_result）
-                    result.push(msg.clone());
-                } else {
-                    // 纯文本 user — 保持字符串
-                    result.push(msg.clone());
-                }
+                // user 消息（无论内容是数组还是字符串，直接透传）
+                result.push(msg.clone());
             }
         }
     }

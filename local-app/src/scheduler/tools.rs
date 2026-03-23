@@ -100,6 +100,8 @@ impl Tool for CronListTool {
                 Schedule::Cron { expr, .. } => format!("cron: {}", expr),
                 Schedule::Every { secs } => format!("每 {}s", secs),
                 Schedule::At { ts } => format!("定时: {}", ts),
+                Schedule::Webhook { token, .. } => format!("webhook: {}", &token[..token.len().min(8)]),
+                Schedule::Poll { url, interval_secs, .. } => format!("poll: {} (每 {}s)", url, interval_secs),
             };
             output.push_str(&format!(
                 "\n[{}] {} [{}] {} (ID: {})",

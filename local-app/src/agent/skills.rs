@@ -40,6 +40,9 @@ pub struct SkillIndex {
     pub description: String,
     #[serde(default)]
     pub trigger_keywords: Vec<String>,
+    /// 目录名（用于安装/卸载，区别于显示名 name）
+    #[serde(default)]
+    pub dir_name: String,
 }
 
 /// 完整技能清单（含权限/工具/依赖）
@@ -144,6 +147,7 @@ impl SkillManifest {
             name: self.name.clone(),
             description: self.description.clone(),
             trigger_keywords: self.trigger_keywords.clone(),
+            dir_name: String::new(), // 由 scan() 填充
         }
     }
 
@@ -201,8 +205,15 @@ impl SkillManager {
             };
 
             if let Some(manifest) = Self::parse_manifest(&skill_md_path) {
-                log::info!("发现技能: {} - {} (工具: {})", manifest.name, manifest.description, manifest.tools.len());
-                index.push(manifest.to_index());
+                // 获取目录名（文件系统名，非 SKILL.md 中的显示名）
+                let dir_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&manifest.name)
+                    .to_string();
+                log::info!("发现技能: {} (dir={}) - {} (工具: {})", manifest.name, dir_name, manifest.description, manifest.tools.len());
+                let mut idx = manifest.to_index();
+                idx.dir_name = dir_name;
+                index.push(idx);
                 manifests.push(manifest);
             }
         }

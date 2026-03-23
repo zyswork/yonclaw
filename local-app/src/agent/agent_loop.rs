@@ -10,6 +10,7 @@ use super::llm::{LlmClient, LlmConfig, LlmResponse};
 use super::tools::{Tool, ToolDefinition, ToolManager, ToolSafetyLevel};
 use super::agent_store::estimate_cost;
 use crate::memory;
+use tauri::Manager;
 use tokio::sync::mpsc;
 use sqlx::SqlitePool;
 
@@ -40,6 +41,10 @@ pub struct AgentLoopDeps<'a> {
     pub provider_registry: Option<&'a crate::plugin_system::ProviderRegistry>,
     /// 进化引擎状态（跟踪工具调用次数）
     pub evolution_state: Option<&'a std::sync::Arc<super::self_evolution::EvolutionState>>,
+    /// 工具审批管理器
+    pub approval_manager: Option<&'a super::approval::ApprovalManager>,
+    /// Tauri app handle（用于发送事件到前端）
+    pub app_handle: Option<&'a tauri::AppHandle>,
 }
 
 /// 多轮工具调用循环
@@ -308,21 +313,21 @@ pub async fn run_agent_loop(
             let _ = memory::conversation::save_chat_message(deps.pool, session_id, agent_id, &asst_msg).await;
         }
 
-        // 执行工具
+        // 执行工具（支持并行）
         let mut seen_sigs: HashSet<String> = HashSet::new();
         let total_tools = llm_response.tool_calls.len();
+
+        // 第一遍：策略检查 + 去重，分为可并行和需串行两组
+        let mut parallel_tasks: Vec<(usize, super::tools::ParsedToolCall)> = Vec::new();
+        let mut denied_results: Vec<(String, String, String)> = Vec::new(); // (id, name, reason)
+
         for (i, tc) in llm_response.tool_calls.iter().enumerate() {
-            // 去重
             let sig = format!("{}:{}", tc.name, tc.arguments);
             if !seen_sigs.insert(sig) {
-                let msg = dispatcher.format_tool_result(&tc.id, &tc.name, &format!("工具 {} 已在本轮执行过", tc.name));
-                messages.push(msg);
+                denied_results.push((tc.id.clone(), tc.name.clone(), format!("工具 {} 已在本轮执行过", tc.name)));
                 continue;
             }
 
-            log::info!("执行工具 {}/{}: {} (id={})", i + 1, total_tools, tc.name, tc.id);
-
-            // 策略检查
             let safety = if tc.name.contains('.') {
                 ToolSafetyLevel::Approval
             } else {
@@ -334,57 +339,108 @@ pub async fn run_agent_loop(
             };
             if !decision.allowed {
                 log::warn!("策略拒绝工具 {}: {}", tc.name, decision.reason);
+                deps.event_broadcaster.emit(super::observer::AgentEvent::ToolBlocked {
+                    tool_name: tc.name.clone(),
+                    reason: decision.reason.clone(),
+                    agent_id: agent_id.to_string(),
+                });
                 let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc.name, &tc.arguments.to_string(), Some(&decision.reason), false, "denied", &format!("{:?}", decision.source), 0).await;
-                messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &decision.reason));
+                denied_results.push((tc.id.clone(), tc.name.clone(), decision.reason));
                 continue;
             }
 
             // 自治检查
             let autonomy_config = super::autonomy::load_autonomy_config(deps.agent_config.as_deref());
-            let auto_decision = super::autonomy::evaluate_autonomy(&autonomy_config, &tc.name);
-            if auto_decision.requires_confirmation {
-                log::info!("自治 L1: {} 需要确认（当前自动放行）", tc.name);
+            let _auto_decision = super::autonomy::evaluate_autonomy(&autonomy_config, &tc.name);
+
+            parallel_tasks.push((i, tc.clone()));
+        }
+
+        // 先追加被拒绝的结果
+        for (id, name, reason) in &denied_results {
+            messages.push(dispatcher.format_tool_result(id, name, reason));
+        }
+
+        // 判断是否可以并行执行
+        let can_parallel = parallel_tasks.len() > 1
+            && parallel_tasks.iter().all(|(_, tc)| {
+                let safety = deps.tool_manager.get_safety_level(&tc.name).unwrap_or(ToolSafetyLevel::Safe);
+                // 只有 Safe/Guarded 才能并行，Sandboxed/Approval 需串行
+                matches!(safety, ToolSafetyLevel::Safe | ToolSafetyLevel::Guarded)
+            });
+
+        if can_parallel {
+            log::info!("并行执行 {} 个工具", parallel_tasks.len());
+            // 并行执行
+            let mut futures = Vec::new();
+            for (i, tc) in &parallel_tasks {
+                let is_skill = skill_tools.contains_key(&tc.name);
+                let is_builtin = deps.tool_manager.get_safety_level(&tc.name).is_some();
+                let tc_name = tc.name.clone();
+                let tc_args = tc.arguments.clone();
+                let tc_id = tc.id.clone();
+                let idx = *i;
+
+                log::info!("执行工具 {}/{}: {} (id={}) [并行]", idx + 1, total_tools, tc_name, tc_id);
+
+                futures.push(async move {
+                    let (result_text, success, source, duration_ms) = if is_skill {
+                        execute_external_tool(deps, &tc_name, &tc_args, skill_tools, tx).await
+                    } else if is_builtin || !tc_name.contains('-') {
+                        execute_builtin_tool(deps, &tc_name, &tc_args, tx, agent_id, session_id).await
+                    } else {
+                        execute_external_tool(deps, &tc_name, &tc_args, skill_tools, tx).await
+                    };
+                    (tc_id, tc_name, tc_args, result_text, success, source, duration_ms, is_builtin)
+                });
             }
 
-            let is_skill = skill_tools.contains_key(&tc.name);
-            let is_builtin = deps.tool_manager.get_safety_level(&tc.name).is_some();
-            let (result_text, success, source, duration_ms) = if is_skill {
-                execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
-            } else if is_builtin || !tc.name.contains('-') {
-                execute_builtin_tool(deps, &tc.name, &tc.arguments, tx).await
-            } else {
-                // 尝试外部工具（MCP 等）
-                execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
-            };
+            // 等待所有完成
+            let results = futures::future::join_all(futures).await;
 
-            // 记录工具调用到进化引擎
-            if let Some(es) = deps.evolution_state {
-                es.on_tool_call();
-            }
-
-            // 审计
-            let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc.name, &tc.arguments.to_string(), Some(&result_text), success, "allowed", source, duration_ms).await;
-
-            // Observer
-            if is_builtin {
-                deps.event_broadcaster.emit(super::observer::AgentEvent::ToolStart { tool_name: tc.name.clone(), round });
-                deps.event_broadcaster.emit(super::observer::AgentEvent::ToolDone { tool_name: tc.name.clone(), success, duration_ms: duration_ms as u64 });
-            }
-
-            // 如果工具执行可能安装了新技能（clawhub install / npm install），刷新技能缓存
-            if tc.name == "bash_exec" {
-                let cmd_str = tc.arguments.get("command").and_then(|c| c.as_str()).unwrap_or("");
-                if cmd_str.contains("clawhub install") || cmd_str.contains("clawhub update") || cmd_str.contains("skill") {
-                    if let Some(reg) = deps.provider_registry {
-                        let _ = reg; // provider_registry 存在说明 orchestrator 可用
-                    }
-                    // 通过一个简单标记通知外层刷新（下一轮循环会重新扫描 skills 目录）
-                    log::info!("检测到可能的技能安装操作，技能缓存将在下次对话自动刷新");
+            for (tc_id, tc_name, tc_args, result_text, success, source, duration_ms, is_builtin) in results {
+                if let Some(es) = deps.evolution_state { es.on_tool_call(); }
+                let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc_name, &tc_args.to_string(), Some(&result_text), success, "allowed", source, duration_ms).await;
+                if is_builtin {
+                    deps.event_broadcaster.emit(super::observer::AgentEvent::ToolStart { tool_name: tc_name.clone(), round });
+                    deps.event_broadcaster.emit(super::observer::AgentEvent::ToolDone { tool_name: tc_name.clone(), success, duration_ms: duration_ms as u64 });
                 }
+                let scrubbed = scrub_credentials(&result_text);
+                messages.push(dispatcher.format_tool_result(&tc_id, &tc_name, &scrubbed));
             }
+        } else {
+            // 串行执行
+            for (i, tc) in &parallel_tasks {
+                log::info!("执行工具 {}/{}: {} (id={})", i + 1, total_tools, tc.name, tc.id);
 
-            let scrubbed = scrub_credentials(&result_text);
-            messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &scrubbed));
+                let is_skill = skill_tools.contains_key(&tc.name);
+                let is_builtin = deps.tool_manager.get_safety_level(&tc.name).is_some();
+                let (result_text, success, source, duration_ms) = if is_skill {
+                    execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
+                } else if is_builtin || !tc.name.contains('-') {
+                    execute_builtin_tool(deps, &tc.name, &tc.arguments, tx, agent_id, session_id).await
+                } else {
+                    execute_external_tool(deps, &tc.name, &tc.arguments, skill_tools, tx).await
+                };
+
+                if let Some(es) = deps.evolution_state { es.on_tool_call(); }
+                let _ = crate::db::audit::log_tool_call(deps.pool, agent_id, session_id, &tc.name, &tc.arguments.to_string(), Some(&result_text), success, "allowed", source, duration_ms).await;
+                if is_builtin {
+                    deps.event_broadcaster.emit(super::observer::AgentEvent::ToolStart { tool_name: tc.name.clone(), round });
+                    deps.event_broadcaster.emit(super::observer::AgentEvent::ToolDone { tool_name: tc.name.clone(), success, duration_ms: duration_ms as u64 });
+                }
+
+                // 刷新技能缓存检测
+                if tc.name == "bash_exec" {
+                    let cmd_str = tc.arguments.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                    if cmd_str.contains("clawhub install") || cmd_str.contains("clawhub update") || cmd_str.contains("skill") {
+                        log::info!("检测到可能的技能安装操作，技能缓存将在下次对话自动刷新");
+                    }
+                }
+
+                let scrubbed = scrub_credentials(&result_text);
+                messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &scrubbed));
+            }
         }
 
         // 持久化工具结果
@@ -449,11 +505,53 @@ async fn execute_builtin_tool(
     name: &str,
     args: &serde_json::Value,
     tx: &mpsc::UnboundedSender<String>,
+    agent_id: &str,
+    session_id: &str,
 ) -> (String, bool, &'static str, i64) {
     let safety = deps.tool_manager.get_safety_level(name);
     match safety {
         Some(ToolSafetyLevel::Approval) => {
-            return (format!("工具 {} 需要用户审批", name), false, "safety_level", 0);
+            // 尝试通过审批管理器请求用户确认
+            if let (Some(mgr), Some(handle)) = (deps.approval_manager, deps.app_handle) {
+                let req_id = uuid::Uuid::new_v4().to_string();
+                let request = super::approval::ApprovalRequest {
+                    request_id: req_id.clone(),
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    tool_name: name.to_string(),
+                    arguments: args.clone(),
+                    safety_level: "approval".to_string(),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+
+                // 发送审批事件到前端
+                let _ = handle.emit_all("tool-approval-request", &request);
+                let _ = tx.send(format!("\n[等待审批: {} ...]\n", name));
+
+                let rx = mgr.request(&req_id);
+
+                // 等待审批（最多 60 秒）
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    rx,
+                ).await {
+                    Ok(Ok(super::approval::ApprovalResult::Approved)) => {
+                        log::info!("工具 {} 已获批准", name);
+                        let _ = tx.send(format!("\n[已批准: {}]\n", name));
+                        // 继续执行（不 return）
+                    }
+                    Ok(Ok(super::approval::ApprovalResult::Denied(reason))) => {
+                        let msg = format!("用户拒绝执行: {}", if reason.is_empty() { "无原因" } else { &reason });
+                        return (msg, false, "user_denied", 0);
+                    }
+                    _ => {
+                        return ("审批超时（60秒），自动拒绝".to_string(), false, "approval_timeout", 0);
+                    }
+                }
+            } else {
+                // 无审批管理器，直接拒绝
+                return (format!("工具 {} 需要用户审批，但审批系统未初始化", name), false, "safety_level", 0);
+            }
         }
         None => {
             return (format!("工具不存在: {}", name), false, "not_found", 0);
@@ -461,14 +559,24 @@ async fn execute_builtin_tool(
         _ => {}
     }
 
+    // 为 delegate_task 注入父上下文
+    let mut final_args = args.clone();
+    if name == "delegate_task" {
+        if let Some(obj) = final_args.as_object_mut() {
+            obj.insert("_parent_agent_id".to_string(), serde_json::json!(agent_id));
+            obj.insert("_parent_session_id".to_string(), serde_json::json!(session_id));
+        }
+    }
+
     let _ = tx.send(format!("\n[工具: {} 执行中...]\n", name));
     let timeout = match name {
         "bash_exec" => std::time::Duration::from_secs(120),
         "web_fetch" => std::time::Duration::from_secs(30),
+        "delegate_task" => std::time::Duration::from_secs(300), // 子代理需要更长超时
         _ => std::time::Duration::from_secs(60),
     };
     let start = std::time::Instant::now();
-    let result = match tokio::time::timeout(timeout, deps.tool_manager.execute_tool(name, args.clone())).await {
+    let result = match tokio::time::timeout(timeout, deps.tool_manager.execute_tool(name, final_args)).await {
         Ok(r) => r,
         Err(_) => super::tools::ToolCallResult {
             tool_name: name.to_string(), success: false, result: String::new(),

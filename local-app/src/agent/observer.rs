@@ -53,6 +53,44 @@ pub enum AgentEvent {
         accumulated: u64,
         budget: u64,
     },
+    /// 工具被策略拒绝
+    #[serde(rename = "tool_blocked")]
+    ToolBlocked {
+        tool_name: String,
+        reason: String,
+        agent_id: String,
+    },
+    /// 子代理已派发
+    #[serde(rename = "subagent_spawned")]
+    SubagentSpawned {
+        batch_id: String,
+        parent_agent_id: String,
+        task_count: usize,
+        model: String,
+    },
+    /// 子代理完成通知（异步模式）
+    #[serde(rename = "subagent_complete")]
+    SubagentComplete {
+        batch_id: String,
+        parent_agent_id: String,
+        parent_session_id: Option<String>,
+        success_count: usize,
+        fail_count: usize,
+        summary: String,
+    },
+    /// Webhook 触发
+    #[serde(rename = "webhook_received")]
+    WebhookReceived {
+        job_id: String,
+        job_name: String,
+        payload_bytes: usize,
+    },
+    /// Poll 检测到变化
+    #[serde(rename = "poll_changed")]
+    PollChanged {
+        job_id: String,
+        job_name: String,
+    },
     /// 错误
     #[serde(rename = "error")]
     Error {

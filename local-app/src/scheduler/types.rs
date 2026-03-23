@@ -12,6 +12,27 @@ pub enum Schedule {
     Every { secs: u64 },
     /// 一次性定时（unix 时间戳）
     At { ts: i64 },
+    /// Webhook 触发（HTTP POST 到 /webhook/{token}）
+    Webhook {
+        /// 唯一 token（自动生成）
+        token: String,
+        /// 可选的 secret（用于验证签名）
+        #[serde(default)]
+        secret: Option<String>,
+    },
+    /// 轮询触发（定期检查 URL，内容变化时执行）
+    Poll {
+        /// 目标 URL
+        url: String,
+        /// 轮询间隔（秒）
+        interval_secs: u64,
+        /// JSON Path 提取（如 "$.data.status"），为空则比较完整 body
+        #[serde(default)]
+        json_path: Option<String>,
+        /// 上次内容摘要（内部状态，用于变化检测）
+        #[serde(default)]
+        last_hash: Option<String>,
+    },
 }
 
 /// 任务执行类型

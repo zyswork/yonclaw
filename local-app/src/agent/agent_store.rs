@@ -40,6 +40,12 @@ pub fn estimate_cost(model: &str, input_tokens: u64, output_tokens: u64) -> f64 
         (0.14, 0.28)
     } else if m.starts_with("qwen") {
         (0.5, 2.0)
+    } else if m.starts_with("gemini-2.5-pro") {
+        (1.25, 10.0)
+    } else if m.starts_with("gemini") {
+        (0.075, 0.3)
+    } else if m.starts_with("llama") || m.starts_with("mixtral") {
+        (0.05, 0.1) // Groq 免费/极低价
     } else {
         (1.0, 3.0)
     };

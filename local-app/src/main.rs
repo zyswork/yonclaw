@@ -798,6 +798,41 @@ async fn cancel_subagent(
     state.orchestrator.subagent_registry().cancel(&subagent_id).await
 }
 
+/// 批准工具执行
+#[tauri::command]
+async fn approve_tool_call(
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+) -> Result<(), String> {
+    state.orchestrator.approval_manager.approve(&request_id)
+}
+
+/// 拒绝工具执行
+#[tauri::command]
+async fn deny_tool_call(
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    reason: Option<String>,
+) -> Result<(), String> {
+    state.orchestrator.approval_manager.deny(&request_id, reason.as_deref().unwrap_or(""))
+}
+
+/// 查询子代理执行历史（DB 持久化记录）
+#[tauri::command]
+async fn list_subagent_runs(
+    state: State<'_, Arc<AppState>>,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    crate::agent::subagent::list_subagent_runs(
+        state.orchestrator.pool(),
+        agent_id.as_deref(),
+        session_id.as_deref(),
+        limit.unwrap_or(50),
+    ).await
+}
+
 /// 发送消息并通过事件流推送 token（支持 Failover）
 ///
 /// 流程：
@@ -1793,6 +1828,7 @@ async fn list_marketplace_skills() -> Result<Vec<serde_json::Value>, String> {
         let tools_count = manifest.map_or(0, |m| m.tools.len());
         result.push(serde_json::json!({
             "name": skill.name,
+            "dir_name": if skill.dir_name.is_empty() { &skill.name } else { &skill.dir_name },
             "description": skill.description,
             "tools_count": tools_count,
             "trigger_keywords": skill.trigger_keywords,
@@ -1801,15 +1837,12 @@ async fn list_marketplace_skills() -> Result<Vec<serde_json::Value>, String> {
     Ok(result)
 }
 
-/// 从云端技能市场下载并安装到本地 marketplace
-#[tauri::command]
-async fn download_skill_from_hub(
-    slug: String,
-) -> Result<String, String> {
+/// 从云端下载技能到本地 marketplace（内部函数）
+async fn download_skill_from_hub_inner(slug: &str) -> Result<String, String> {
     let marketplace_dir = dirs::home_dir()
         .ok_or("无法获取 home 目录")?
         .join(".yonclaw/marketplace");
-    let dest = marketplace_dir.join(&slug);
+    let dest = marketplace_dir.join(slug);
 
     if dest.exists() {
         return Ok(format!("技能 {} 已存在于本地 marketplace", slug));
@@ -1825,7 +1858,7 @@ async fn download_skill_from_hub(
         .map_err(|e| format!("解析技能信息失败: {}", e))?;
 
     if meta.get("error").is_some() {
-        return Err(format!("技能不存在: {}", slug));
+        return Err(format!("云端技能不存在: {}", slug));
     }
 
     // 2. 尝试下载技能包
@@ -1834,7 +1867,6 @@ async fn download_skill_from_hub(
 
     let has_package = if let Ok(resp) = dl_resp {
         if resp.status().is_success() {
-            // 解压 tar.gz 到 marketplace
             let bytes = resp.bytes().await.map_err(|e| format!("下载失败: {}", e))?;
             let gz = flate2::read::GzDecoder::new(&bytes[..]);
             let mut archive = tar::Archive::new(gz);
@@ -1851,7 +1883,7 @@ async fn download_skill_from_hub(
     // 3. 如果没有包文件，从元数据生成一个基本的 SKILL.md
     if !has_package {
         let _ = std::fs::create_dir_all(&dest);
-        let name = meta["name"].as_str().unwrap_or(&slug);
+        let name = meta["name"].as_str().unwrap_or(slug);
         let desc = meta["description"].as_str().unwrap_or("");
         let _category = meta["category"].as_str().unwrap_or("general");
         let tags: Vec<String> = meta["tags"].as_array()
@@ -1870,6 +1902,12 @@ async fn download_skill_from_hub(
 
     log::info!("云端技能下载完成: {} → {}", slug, dest.display());
     Ok(format!("技能 {} 已下载到本地", slug))
+}
+
+/// 从云端技能市场下载并安装到本地 marketplace（Tauri command）
+#[tauri::command]
+async fn download_skill_from_hub(slug: String) -> Result<String, String> {
+    download_skill_from_hub_inner(&slug).await
 }
 
 /// 将本地技能发布到云端技能市场
@@ -1922,14 +1960,41 @@ async fn publish_skill_to_hub(
         return Err(format!("发布失败: {}", result["error"].as_str().unwrap_or("?")));
     }
 
-    // 2. 打包并上传技能包（tar.gz）
+    // 2. 打包并上传技能包（tar.gz）— 排除敏感文件
     let tar_path = std::env::temp_dir().join(format!("{}.tar.gz", skill_name));
     {
         let tar_file = std::fs::File::create(&tar_path)
             .map_err(|e| format!("创建打包文件失败: {}", e))?;
         let enc = flate2::write::GzEncoder::new(tar_file, flate2::Compression::default());
         let mut tar_builder = tar::Builder::new(enc);
-        tar_builder.append_dir_all(".", &skill_dir)
+
+        // 敏感文件排除列表
+        let excluded = ["cookie.txt", "config.txt", ".env", "token.txt", "credentials.json"];
+
+        fn add_dir_filtered(builder: &mut tar::Builder<flate2::write::GzEncoder<std::fs::File>>, dir: &std::path::Path, prefix: &std::path::Path, excluded: &[&str]) -> Result<(), String> {
+            for entry in std::fs::read_dir(dir).map_err(|e| format!("读取目录失败: {}", e))? {
+                let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                // 跳过敏感文件
+                if excluded.iter().any(|&e| file_name == e) {
+                    log::info!("发布跳过敏感文件: {}", file_name);
+                    continue;
+                }
+
+                let archive_name = prefix.join(&file_name);
+                if path.is_dir() {
+                    add_dir_filtered(builder, &path, &archive_name, excluded)?;
+                } else {
+                    builder.append_path_with_name(&path, &archive_name)
+                        .map_err(|e| format!("添加文件失败: {}", e))?;
+                }
+            }
+            Ok(())
+        }
+
+        add_dir_filtered(&mut tar_builder, &skill_dir, std::path::Path::new("."), &excluded)
             .map_err(|e| format!("打包失败: {}", e))?;
         tar_builder.finish().map_err(|e| format!("完成打包失败: {}", e))?;
     }
@@ -1986,13 +2051,22 @@ async fn install_skill_to_agent(
     state: State<'_, Arc<AppState>>,
     agent_id: String,
     skill_name: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let marketplace_dir = dirs::home_dir()
         .ok_or("无法获取 home 目录")?
         .join(".yonclaw/marketplace");
     let src = marketplace_dir.join(&skill_name);
+
+    // 如果本地 marketplace 没有该技能，自动从云端下载
     if !src.exists() {
-        return Err(format!("技能不存在: {}", skill_name));
+        log::info!("技能 {} 不在本地，尝试从云端下载...", skill_name);
+        match download_skill_from_hub_inner(&skill_name).await {
+            Ok(msg) => log::info!("技能下载完成: {}", msg),
+            Err(e) => return Err(format!("技能不存在或下载失败: {}", e)),
+        }
+        if !src.exists() {
+            return Err(format!("技能下载后仍未找到: {}", skill_name));
+        }
     }
 
     let workspace = ensure_agent_workspace(state.orchestrator.pool(), &agent_id).await?;
@@ -2020,7 +2094,33 @@ async fn install_skill_to_agent(
     state.orchestrator.invalidate_skill_cache();
 
     log::info!("技能已安装: {} -> agent {}（缓存已失效，下次对话立即生效）", skill_name, agent_id);
-    Ok(())
+
+    // 检测是否有 .example 配置文件需要用户手动配置
+    let mut setup_hints = Vec::new();
+    let example_files = ["cookie.txt.example", "config.txt.example", ".env.example", "token.txt.example"];
+    for ef in &example_files {
+        if dest.join(ef).exists() {
+            let target_name = ef.trim_end_matches(".example");
+            if !dest.join(target_name).exists() {
+                setup_hints.push(format!("请配置 {}", target_name));
+            }
+        }
+    }
+    // 检查依赖技能（如 oa-common）
+    if let Ok(content) = std::fs::read_to_string(dest.join("SKILL.md")) {
+        if content.contains("oa-common") && skill_name != "oa-common" {
+            let common_dir = workspace.root().join("skills/oa-common");
+            if !common_dir.exists() {
+                setup_hints.push("依赖技能 oa-公共层 未安装，请先安装".to_string());
+            }
+        }
+    }
+
+    if setup_hints.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!("安装成功！配置提示：{}", setup_hints.join("；")))
+    }
 }
 
 /// 从 Agent 卸载技能
@@ -3300,6 +3400,9 @@ async fn main() {
     // 包装编排器为 Arc（工具注册已完成）
     let orchestrator = Arc::new(orchestrator);
 
+    // 注入 Orchestrator 到 DelegateTaskTool（解决循环依赖）
+    agent::delegate::inject_orchestrator(orchestrator.clone());
+
     // 构建应用共享状态
     let app_state = Arc::new(AppState { db, orchestrator: orchestrator.clone(), scheduler: std::sync::OnceLock::new() });
 
@@ -3331,6 +3434,7 @@ async fn main() {
                 config: gw_config,
                 pool: pool_clone.clone(),
                 orchestrator: Some(orchestrator.clone()),
+                scheduler_notify: Some(scheduler_notify.clone()),
             });
             tokio::spawn(async move {
                 if let Err(e) = gateway::api::start_api_gateway(gw_state).await {
@@ -3642,6 +3746,9 @@ async fn main() {
             delete_agent_relation,
             list_subagents,
             cancel_subagent,
+            list_subagent_runs,
+            approve_tool_call,
+            deny_tool_call,
             send_message,
             get_conversations,
             get_session_messages,

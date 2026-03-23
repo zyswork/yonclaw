@@ -30,6 +30,8 @@ pub struct GatewayState {
     pub pool: sqlx::SqlitePool,
     /// Agent 编排器（可选，用于 /message 端点）
     pub orchestrator: Option<std::sync::Arc<crate::agent::Orchestrator>>,
+    /// 调度器唤醒信号（用于 webhook 触发）
+    pub scheduler_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
 /// 启动 API 网关
@@ -114,6 +116,16 @@ async fn handle_request(
             }
         }
 
+        // Webhook 触发端点：POST /webhook/{token}
+        (Method::POST, p) if p.starts_with("/webhook/") => {
+            let token = p.strip_prefix("/webhook/").unwrap_or("");
+            let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap_or_default();
+            match webhook_trigger_handler(&state, token, &body_bytes).await {
+                Ok(data) => Ok(json_response(StatusCode::OK, data)),
+                Err(e) => Ok(json_response(StatusCode::BAD_REQUEST, serde_json::json!({"error": e}))),
+            }
+        }
+
         _ => {
             Ok(json_response(StatusCode::NOT_FOUND, serde_json::json!({
                 "error": "Not Found",
@@ -123,6 +135,7 @@ async fn handle_request(
                     "GET  /api/v1/agents",
                     "POST /api/v1/message",
                     "GET  /api/v1/token-stats/:agentId",
+                    "POST /webhook/:token",
                 ]
             })))
         }
@@ -224,4 +237,80 @@ async fn token_stats_handler(state: &GatewayState, agent_id: &str) -> Result<ser
     }).collect();
 
     Ok(serde_json::json!({"agent_id": agent_id, "days": 7, "models": models}))
+}
+
+/// POST /webhook/{token} — Webhook 触发器
+///
+/// 通过 token 匹配 cron_jobs 中 schedule_kind='webhook' 的任务，
+/// 手动触发执行。webhook body 作为上下文注入。
+async fn webhook_trigger_handler(
+    state: &GatewayState,
+    token: &str,
+    body: &[u8],
+) -> Result<serde_json::Value, String> {
+    if token.is_empty() {
+        return Err("缺少 webhook token".to_string());
+    }
+
+    // 查找匹配的 webhook 任务
+    let job_row: Option<(String, String)> = sqlx::query_as(
+        "SELECT id, name FROM cron_jobs WHERE schedule_kind = 'webhook' AND cron_expr = ? AND enabled = 1"
+    )
+    .bind(token)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| format!("查询 webhook 任务失败: {}", e))?;
+
+    let (job_id, job_name) = job_row.ok_or("未找到匹配的 webhook 任务或任务已禁用")?;
+
+    // 解析 webhook payload
+    let webhook_payload = if body.is_empty() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(body).to_string()
+    };
+
+    log::info!("Webhook 触发: {} ({}), payload {}字节", job_name, job_id, webhook_payload.len());
+
+    // 创建手动触发 run 记录
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    if let Err(e) = sqlx::query(
+        "INSERT INTO cron_runs (id, job_id, scheduled_at, started_at, status, trigger_source, attempt) VALUES (?, ?, ?, ?, 'queued', 'manual', 1)"
+    )
+    .bind(&run_id)
+    .bind(&job_id)
+    .bind(now)
+    .bind(now)
+    .execute(&state.pool)
+    .await {
+        log::error!("Webhook 创建 run 记录失败: {}", e);
+    }
+
+    // 更新 last_run_at + next_run_at（设为当前时间，让调度器立即执行）
+    if let Err(e) = sqlx::query(
+        "UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?"
+    )
+    .bind(now).bind(now).bind(now).bind(&job_id)
+    .execute(&state.pool)
+    .await {
+        log::error!("Webhook 更新任务状态失败: {}", e);
+    }
+
+    // 唤醒调度引擎执行
+    if let Some(ref notify) = state.scheduler_notify {
+        notify.notify_one();
+        log::info!("Webhook 已唤醒调度引擎");
+    } else {
+        log::warn!("Webhook: 调度引擎未连接，任务已排队但可能延迟执行");
+    }
+
+    Ok(serde_json::json!({
+        "status": "triggered",
+        "jobId": job_id,
+        "jobName": job_name,
+        "runId": run_id,
+        "webhookPayloadBytes": webhook_payload.len(),
+    }))
 }

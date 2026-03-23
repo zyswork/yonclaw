@@ -18,6 +18,7 @@ pub struct SchedulerEngine {
     semaphore: Arc<Semaphore>,
     shutdown: CancellationToken,
     app_handle: tauri::AppHandle,
+    orchestrator: Option<Arc<crate::agent::Orchestrator>>,
 }
 
 impl SchedulerEngine {
@@ -35,7 +36,13 @@ impl SchedulerEngine {
             semaphore: Arc::new(Semaphore::new(3)),
             shutdown,
             app_handle,
+            orchestrator: None,
         }
+    }
+
+    /// 注入 Orchestrator（在 engine 启动后调用）
+    pub fn set_orchestrator(&mut self, orch: Arc<crate::agent::Orchestrator>) {
+        self.orchestrator = Some(orch);
     }
 
     /// 启动调度循环
@@ -98,12 +105,36 @@ impl SchedulerEngine {
                     self.reschedule_job(&job).await;
                     continue;
                 }
+
+                // Poll 类型：检查 URL 内容变化，无变化则跳过
+                if let Schedule::Poll { ref url, ref json_path, ref last_hash, .. } = job.schedule {
+                    match self.check_poll_change(url, json_path.as_deref(), last_hash.as_deref(), &job.id).await {
+                        Ok(true) => { /* 内容有变化，继续执行 */ }
+                        Ok(false) => {
+                            // 无变化，只重新调度
+                            self.reschedule_job(&job).await;
+                            continue;
+                        }
+                        Err(e) => {
+                            log::warn!("Poll 检查失败 ({}): {}", job.name, e);
+                            self.reschedule_job(&job).await;
+                            continue;
+                        }
+                    }
+                }
+
                 self.spawn_job(job).await;
             }
 
-            // 6. 定期健康检查
+            // 6. 定期健康检查 + LLM 心跳
             if last_health_check.elapsed() > Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS) {
                 self.health_check().await;
+
+                // LLM 智能心跳（如果 orchestrator 已注入且 heartbeat 已启用）
+                if let Some(ref orch) = self.orchestrator {
+                    self.run_heartbeat_for_agents(orch).await;
+                }
+
                 last_health_check = Instant::now();
             }
 
@@ -296,6 +327,124 @@ impl SchedulerEngine {
             log::warn!("健康检查发现问题: stuck={}, high_fail={}, disabled={}",
                 report.stuck_runs.len(), report.high_fail_jobs.len(), report.auto_disabled_jobs.len());
             let _ = self.app_handle.emit_all("heartbeat-alert", &report);
+        }
+    }
+
+    /// Poll 变化检测：请求 URL，比较内容 hash
+    async fn check_poll_change(
+        &self,
+        url: &str,
+        json_path: Option<&str>,
+        last_hash: Option<&str>,
+        job_id: &str,
+    ) -> Result<bool, String> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+        let resp = client.get(url).send().await
+            .map_err(|e| format!("请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+
+        let body = resp.text().await
+            .map_err(|e| format!("读取响应失败: {}", e))?;
+
+        // 提取关注的内容
+        let content = if let Some(path) = json_path {
+            // 简单的 JSON path 支持：$.key.subkey 格式
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                let parts: Vec<&str> = path.trim_start_matches("$.").split('.').collect();
+                let mut current = &json;
+                for part in &parts {
+                    if current.is_null() { break; }
+                    current = &current[*part];
+                }
+                if current.is_null() {
+                    log::warn!("Poll JSON path '{}' 未找到，使用完整 body", path);
+                    body.clone()
+                } else {
+                    current.to_string()
+                }
+            } else {
+                body.clone()
+            }
+        } else {
+            body
+        };
+
+        // 计算 hash
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        let new_hash = format!("{:x}", hasher.finish());
+
+        // 从 DB 读取上次 hash（优先使用 poll_last_hash 列）
+        let db_last_hash: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+            "SELECT poll_last_hash FROM cron_jobs WHERE id = ?"
+        ).bind(job_id).fetch_optional(&self.pool).await {
+            Ok(row) => row.flatten(),
+            Err(e) => {
+                log::warn!("Poll 读取 last_hash 失败: {}，视为首次检测", e);
+                None
+            }
+        };
+
+        let effective_last = db_last_hash.as_deref().or(last_hash);
+        let changed = effective_last.map_or(true, |old| old != new_hash);
+
+        // 始终更新 hash 到 DB（无论是否有变化，确保状态一致）
+        if let Err(e) = sqlx::query("UPDATE cron_jobs SET poll_last_hash = ? WHERE id = ?")
+            .bind(&new_hash).bind(job_id)
+            .execute(&self.pool).await
+        {
+            log::warn!("Poll 更新 hash 失败: {}", e);
+        }
+
+        if changed {
+            log::info!("Poll 检测到变化: job={}, hash {} → {}", job_id, effective_last.unwrap_or("(none)"), new_hash);
+        }
+
+        Ok(changed)
+    }
+
+    /// 为每个启用心跳的 Agent 运行 LLM 心跳
+    async fn run_heartbeat_for_agents(&self, orchestrator: &Arc<crate::agent::Orchestrator>) {
+        // 从 DB 读取全局心跳配置
+        let config_json: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'heartbeat_config'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+
+        let config: HeartbeatConfig = config_json
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        if !config.enabled {
+            return;
+        }
+
+        // 获取所有 Agent，对每个有 workspace 的 Agent 运行心跳
+        let agents = orchestrator.list_agents().await.unwrap_or_default();
+        for agent in &agents {
+            // 从 DB 获取 workspace_path
+            let wp: Option<String> = sqlx::query_scalar(
+                "SELECT workspace_path FROM agents WHERE id = ?"
+            ).bind(&agent.id).fetch_optional(&self.pool).await.ok().flatten();
+
+            if let Some(wp) = wp {
+                let workspace_dir = std::path::PathBuf::from(&wp);
+                if workspace_dir.join("HEARTBEAT.md").exists() {
+                    log::debug!("运行 Agent {} 的 LLM 心跳", agent.name);
+                    if let Err(e) = super::heartbeat::llm_heartbeat(
+                        &self.pool, orchestrator, &workspace_dir, &config, &self.app_handle,
+                    ).await {
+                        log::warn!("Agent {} LLM 心跳失败: {}", agent.name, e);
+                    }
+                }
+            }
         }
     }
 

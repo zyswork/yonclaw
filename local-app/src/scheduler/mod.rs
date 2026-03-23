@@ -39,16 +39,17 @@ impl SchedulerManager {
 
         let runner = Arc::new(JobRunner::new(
             pool.clone(),
-            orchestrator,
+            orchestrator.clone(),
         ));
 
-        let engine = SchedulerEngine::new(
+        let mut engine = SchedulerEngine::new(
             pool.clone(),
             notify.clone(),
             runner,
             shutdown.clone(),
             app_handle,
         );
+        engine.set_orchestrator(orchestrator);
 
         tokio::spawn(async move {
             engine.run().await;

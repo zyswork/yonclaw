@@ -239,7 +239,7 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             name TEXT NOT NULL,
             agent_id TEXT,
             job_type TEXT NOT NULL CHECK(job_type IN ('agent','shell','mcp_tool')),
-            schedule_kind TEXT NOT NULL CHECK(schedule_kind IN ('cron','every','at')),
+            schedule_kind TEXT NOT NULL CHECK(schedule_kind IN ('cron','every','at','webhook','poll')),
             cron_expr TEXT,
             every_secs INTEGER,
             at_ts INTEGER,
@@ -282,6 +282,14 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             FOREIGN KEY(job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
         )"
     ).execute(pool).await?;
+
+    // 兼容：webhook/poll 扩展列
+    let _ = sqlx::query("ALTER TABLE cron_jobs ADD COLUMN poll_last_hash TEXT")
+        .execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE cron_jobs ADD COLUMN webhook_secret TEXT")
+        .execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE cron_jobs ADD COLUMN poll_json_path TEXT")
+        .execute(pool).await;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_due ON cron_jobs(enabled, next_run_at)")
         .execute(pool).await?;
@@ -437,6 +445,38 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         )
         "#,
     ).execute(pool).await?;
+
+    // 子代理执行记录表（持久化 delegate_task 结果）
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS subagent_runs (
+            id TEXT PRIMARY KEY,
+            parent_agent_id TEXT NOT NULL,
+            parent_session_id TEXT,
+            task_index INTEGER NOT NULL DEFAULT 0,
+            goal TEXT NOT NULL,
+            context TEXT,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','success','failed','timeout','cancelled')),
+            result TEXT,
+            error TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
+            allowed_tools TEXT,
+            duration_ms INTEGER,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            finished_at INTEGER
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_agent_id, created_at DESC)")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_subagent_runs_session ON subagent_runs(parent_session_id, created_at DESC)")
+        .execute(pool).await?;
 
     log::info!("数据库 schema 初始化完成");
 

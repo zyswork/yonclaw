@@ -35,6 +35,14 @@ pub fn next_run_after(schedule: &Schedule, after: i64) -> Result<Option<i64>, St
                 Ok(None)
             }
         }
+        Schedule::Webhook { .. } => {
+            // Webhook 不需要定时调度，由外部 HTTP 触发
+            Ok(None)
+        }
+        Schedule::Poll { interval_secs, .. } => {
+            // 按间隔轮询
+            Ok(Some(after + *interval_secs as i64))
+        }
     }
 }
 
@@ -73,6 +81,31 @@ pub fn validate_schedule(schedule: &Schedule) -> Result<(), String> {
             } else {
                 Ok(())
             }
+        }
+        Schedule::Webhook { token, .. } => {
+            if token.is_empty() {
+                Err("Webhook token 不能为空".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        Schedule::Poll { url, interval_secs, .. } => {
+            if url.is_empty() {
+                return Err("Poll URL 不能为空".to_string());
+            }
+            if *interval_secs < 60 {
+                return Err("Poll 间隔不能小于 60 秒".to_string());
+            }
+            // SSRF 防护：禁止内网地址
+            let url_lower = url.to_lowercase();
+            if url_lower.contains("localhost") || url_lower.contains("127.0.0.1")
+                || url_lower.contains("0.0.0.0") || url_lower.contains("[::1]")
+                || url_lower.starts_with("http://10.") || url_lower.starts_with("http://172.")
+                || url_lower.starts_with("http://192.168.")
+            {
+                return Err("安全限制：Poll URL 不能指向内网地址".to_string());
+            }
+            Ok(())
         }
     }
 }

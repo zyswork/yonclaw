@@ -72,6 +72,7 @@ pub mod response_cache;
 pub mod router;
 
 // ── 扩展 ──
+pub mod approval;
 pub mod plugin;
 pub mod relations;
 pub mod subagent;

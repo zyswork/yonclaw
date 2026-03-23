@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n, SUPPORTED_LOCALES, LOCALE_LABELS } from '../i18n'
 import { toast } from '../hooks/useToast'
+import { useTheme, type Theme } from '../hooks/useTheme'
 import type { Locale } from '../i18n'
 
 interface ProviderModel {
@@ -100,6 +101,29 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
       { id: 'moonshot-v1-8k', name: 'Moonshot v1 8K' },
       { id: 'moonshot-v1-32k', name: 'Moonshot v1 32K' },
       { id: 'moonshot-v1-128k', name: 'Moonshot v1 128K' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    apiType: 'openai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    models: [
+      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+      { id: 'gemini-2.5-pro-preview-06-05', name: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.5-flash-preview-05-20', name: 'Gemini 2.5 Flash' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'groq',
+    name: 'Groq',
+    apiType: 'openai',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    models: [
+      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B' },
+      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B' },
     ],
     enabled: true,
   },
@@ -605,8 +629,103 @@ export DEEPSEEK_API_KEY="sk-..."`}
       {/* 语言设置 */}
       <LanguageSettings />
 
+      {/* 主题设置 */}
+      <ThemeSettings />
+
+      {/* 心跳自治 */}
+      <HeartbeatSettings />
+
       {/* 高级设置 */}
       <AdvancedSettings />
+    </div>
+  )
+}
+
+/** 心跳自治设置 */
+function HeartbeatSettings() {
+  const { t } = useI18n()
+  const [config, setConfig] = useState({
+    enabled: false,
+    interval_secs: 1800,
+    quiet_hours_start: 23,
+    quiet_hours_end: 7,
+    suppress_ok: true,
+  })
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    invoke<string>('get_setting', { key: 'heartbeat_config' }).then(json => {
+      if (json) {
+        try { setConfig(prev => ({ ...prev, ...JSON.parse(json) })) } catch {}
+      }
+      setLoaded(true)
+    }).catch(() => setLoaded(true))
+  }, [])
+
+  const save = async (patch: Partial<typeof config>) => {
+    const updated = { ...config, ...patch }
+    setConfig(updated)
+    try {
+      await invoke('set_setting', { key: 'heartbeat_config', value: JSON.stringify(updated) })
+      toast.success(t('common.saved'))
+    } catch (e) { toast.error(String(e)) }
+  }
+
+  if (!loaded) return null
+
+  return (
+    <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
+      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
+        {'\u{1F49A}'} {t('settings.sectionHeartbeat')}
+      </h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>
+        {t('settings.heartbeatDesc')}
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* 启用开关 */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={config.enabled} onChange={e => save({ enabled: e.target.checked })} />
+          {t('settings.heartbeatEnabled')}
+        </label>
+
+        {config.enabled && (<>
+          {/* 间隔 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)', minWidth: 80 }}>{t('settings.heartbeatInterval')}</span>
+            <select
+              value={config.interval_secs}
+              onChange={e => save({ interval_secs: Number(e.target.value) })}
+              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+            >
+              <option value={600}>10 min</option>
+              <option value={1800}>30 min</option>
+              <option value={3600}>1 hour</option>
+              <option value={7200}>2 hours</option>
+            </select>
+          </div>
+
+          {/* 静默时段 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)', minWidth: 80 }}>{t('settings.heartbeatQuiet')}</span>
+            <input type="number" min={0} max={23} value={config.quiet_hours_start}
+              onChange={e => save({ quiet_hours_start: Number(e.target.value) })}
+              style={{ width: 50, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+            />
+            <span style={{ fontSize: 13 }}>—</span>
+            <input type="number" min={0} max={23} value={config.quiet_hours_end}
+              onChange={e => save({ quiet_hours_end: Number(e.target.value) })}
+              style={{ width: 50, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+            />
+          </div>
+
+          {/* 抑制正常结果 */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={config.suppress_ok} onChange={e => save({ suppress_ok: e.target.checked })} />
+            {t('settings.heartbeatSuppressOk')}
+          </label>
+        </>)}
+      </div>
     </div>
   )
 }
@@ -789,6 +908,51 @@ function LanguageSettings() {
             <option key={loc} value={loc}>{LOCALE_LABELS[loc]}</option>
           ))}
         </select>
+      </div>
+    </div>
+  )
+}
+
+function ThemeSettings() {
+  const { t } = useI18n()
+  const { theme, setTheme } = useTheme()
+
+  const themes: { value: Theme; label: string; icon: string }[] = [
+    { value: 'light', label: t('settings.themeLight'), icon: '\u2600\uFE0F' },
+    { value: 'dark', label: t('settings.themeDark'), icon: '\u{1F319}' },
+    { value: 'system', label: t('settings.themeSystem'), icon: '\u{1F4BB}' },
+  ]
+
+  return (
+    <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
+      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
+        {'\u{1F3A8}'}  {t('settings.sectionTheme')}
+      </h3>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {themes.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => setTheme(opt.value)}
+            style={{
+              flex: 1,
+              padding: '10px 12px',
+              borderRadius: 8,
+              border: theme === opt.value ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
+              backgroundColor: theme === opt.value ? 'var(--accent-bg)' : 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: theme === opt.value ? 600 : 400,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+            }}
+          >
+            <span>{opt.icon}</span>
+            <span>{opt.label}</span>
+          </button>
+        ))}
       </div>
     </div>
   )

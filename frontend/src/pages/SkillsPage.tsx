@@ -14,6 +14,7 @@ import { useConfirm } from '../hooks/useConfirm'
 
 interface MarketplaceSkill {
   name: string
+  dir_name?: string
   description: string
   tools_count: number
   trigger_keywords: string[]
@@ -114,6 +115,7 @@ export default function SkillsPage() {
   const [onlineLoading, setOnlineLoading] = useState(false)
   const [downloading, setDownloading] = useState('')
   const [publishing, setPublishing] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => { loadAgents() }, [])
   useEffect(() => { if (selectedAgent) loadAll() }, [selectedAgent])
@@ -190,8 +192,14 @@ export default function SkillsPage() {
   const handleInstall = async (skillName: string) => {
     setOperating(skillName)
     try {
-      await invoke('install_skill_to_agent', { agentId: selectedAgent, skillName })
+      const msg = await invoke<string>('install_skill_to_agent', { agentId: selectedAgent, skillName })
       await loadAll()
+      // 显示安装成功 + 可能的配置提示
+      if (msg && typeof msg === 'string' && msg.length > 0) {
+        toast.info(msg)
+      } else {
+        toast.success(t('skills.installSuccess'))
+      }
     } catch (e) { toast.error(t('skills.installFailed') + ': ' + e) }
     setOperating('')
   }
@@ -208,46 +216,54 @@ export default function SkillsPage() {
 
   // 构建统一列表
   type DisplaySkill = {
-    name: string; desc: string; icon: string; category: string
+    name: string; dirName: string; desc: string; icon: string; category: string
     installed: boolean; isBuiltin: boolean; tools_count: number
   }
 
   const allSkills: DisplaySkill[] = [
-    // 技能市场的技能
+    // 技能市场的技能（dir_name 是文件系统目录名，用于安装/卸载）
     ...marketplace.map(s => {
-      const meta = SKILL_META[s.name] || { icon: '\u{1F9E9}', category: 'other' }
+      const dirName = s.dir_name || s.name
+      const meta = SKILL_META[dirName] || SKILL_META[s.name] || { icon: '\u{1F9E9}', category: 'other' }
       return {
         name: s.name,
+        dirName,
         desc: s.description || '',
         icon: meta.icon,
         category: meta.category,
-        installed: installedNames.has(s.name),
+        installed: installedNames.has(dirName) || installedNames.has(s.name),
         isBuiltin: false,
         tools_count: s.tools_count,
       }
     }),
     // 已安装但不在 marketplace 的技能
     ...installed
-      .filter(s => !marketplace.some(m => m.name === s.name) && !BUILTIN_TOOLS.some(b => b.name === s.name))
+      .filter(s => !marketplace.some(m => (m.dir_name || m.name) === s.name) && !BUILTIN_TOOLS.some(b => b.name === s.name))
       .map(s => {
         const meta = SKILL_META[s.name] || { icon: '\u{1F9E9}', category: 'other' }
         return {
-          name: s.name, desc: s.description || '', icon: meta.icon,
+          name: s.name, dirName: s.name, desc: s.description || '', icon: meta.icon,
           category: meta.category, installed: true, isBuiltin: false, tools_count: 0,
         }
       }),
     // 内置工具
     ...BUILTIN_TOOLS.map(b => ({
-      name: b.name, desc: t(b.descKey), icon: b.icon, category: 'builtin',
+      name: b.name, dirName: b.name, desc: t(b.descKey), icon: b.icon, category: 'builtin',
       installed: true, isBuiltin: true, tools_count: 0,
     })),
   ]
 
-  const filtered = activeTab === 'all' ? allSkills.filter(s => !s.isBuiltin)
+  const tabFiltered = activeTab === 'all' ? allSkills.filter(s => !s.isBuiltin)
     : activeTab === 'installed' ? allSkills.filter(s => s.installed && !s.isBuiltin)
     : activeTab === 'available' ? allSkills.filter(s => !s.installed && !s.isBuiltin)
     : activeTab === 'builtin' ? allSkills.filter(s => s.isBuiltin)
     : allSkills.filter(s => s.category === activeTab)
+
+  // 搜索过滤
+  const q = searchQuery.toLowerCase().trim()
+  const filtered = q
+    ? tabFiltered.filter(s => s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q) || s.dirName.toLowerCase().includes(q))
+    : tabFiltered
 
   if (loading) return <div style={{ padding: 24, color: 'var(--text-muted)' }}>{t('common.loading')}</div>
 
@@ -277,6 +293,25 @@ export default function SkillsPage() {
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
+      </div>
+
+      {/* 搜索框 */}
+      <div style={{ marginBottom: 16 }}>
+        <input
+          type="text"
+          placeholder={t('skills.searchPlaceholder')}
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '10px 14px',
+            borderRadius: 10,
+            border: '1px solid var(--border-subtle)',
+            fontSize: 13,
+            backgroundColor: 'var(--bg-elevated)',
+            color: 'var(--text-primary)',
+          }}
+        />
       </div>
 
       {/* 分类 Tab */}
@@ -361,37 +396,37 @@ export default function SkillsPage() {
               <div style={{ flexShrink: 0, display: 'flex', gap: 6 }}>
                 {skill.installed ? (<>
                   <button
-                    onClick={() => handlePublishToHub(skill.name)}
-                    disabled={publishing === skill.name}
+                    onClick={() => handlePublishToHub(skill.dirName)}
+                    disabled={publishing === skill.dirName}
                     style={{
                       padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
                       border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
                       color: 'var(--accent)', fontWeight: 500,
                     }}
                   >
-                    {publishing === skill.name ? '...' : t('skills.btnPublish')}
+                    {publishing === skill.dirName ? '...' : t('skills.btnPublish')}
                   </button>
                   <button
-                    onClick={() => handleUninstall(skill.name)}
-                    disabled={operating === skill.name}
+                    onClick={() => handleUninstall(skill.dirName)}
+                    disabled={operating === skill.dirName}
                     style={{
                       padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
                       border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
                       color: 'var(--error)', fontWeight: 500,
                     }}
                   >
-                    {operating === skill.name ? '...' : t('skills.btnUninstall')}
+                    {operating === skill.dirName ? '...' : t('skills.btnUninstall')}
                   </button>
                 </>) : (
                   <button
-                    onClick={() => handleInstall(skill.name)}
-                    disabled={operating === skill.name}
+                    onClick={() => handleInstall(skill.dirName)}
+                    disabled={operating === skill.dirName}
                     style={{
                       padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                       border: 'none', backgroundColor: 'var(--accent)', color: '#fff', fontWeight: 500,
                     }}
                   >
-                    {operating === skill.name ? t('skills.btnInstalling') : t('skills.btnInstall')}
+                    {operating === skill.dirName ? t('skills.btnInstalling') : t('skills.btnInstall')}
                   </button>
                 )}
               </div>

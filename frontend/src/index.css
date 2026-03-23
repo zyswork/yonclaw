@@ -1,7 +1,7 @@
-/* ─── YonClaw Dark Theme — Glassmorphism 2.0 ────────── */
+/* ─── YonClaw Theme System ────────────────────── */
 
-:root {
-  /* 基础色板 — 深色侧边栏 + 暖白内容区（参考 PetClaw） */
+:root, [data-theme="light"] {
+  /* 基础色板 — 深色侧边栏 + 暖白内容区 */
   --bg-base: #f7f7f4;
   --bg-surface: #1E1E2E;
   --bg-elevated: #ffffff;
@@ -9,7 +9,7 @@
   --bg-glass-hover: rgba(0, 0, 0, 0.06);
   --bg-glass-active: rgba(99, 102, 241, 0.08);
 
-  /* 侧边栏专用 */
+  /* 侧边栏 */
   --sidebar-bg: #1E1E2E;
   --sidebar-text: #B8B8C8;
   --sidebar-active: rgba(255, 255, 255, 0.12);
@@ -25,6 +25,7 @@
   --text-secondary: #666660;
   --text-muted: #999993;
   --text-accent: #6366F1;
+  --text-heading: #262521;
 
   /* 强调色 */
   --accent: #262521;
@@ -37,14 +38,73 @@
   --error: #ef4444;
   --error-bg: rgba(239, 68, 68, 0.08);
 
-  /* 用户消息 */
+  /* 消息气泡 */
   --user-bubble: #f0f0ed;
   --assistant-bubble: #ffffff;
+
+  /* 代码块 */
+  --code-bg: #f0f0ed;
+  --code-text: #c7254e;
+  --pre-bg: #0A0A12;
+  --pre-text: #D4D4D4;
 
   /* 毛玻璃 */
   --glass-blur: 16px;
   --glass-border: 1px solid var(--border-subtle);
 
+  /* 滚动条 */
+  --scrollbar-thumb: rgba(0,0,0,0.12);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.2);
+}
+
+[data-theme="dark"] {
+  --bg-base: #0F0F14;
+  --bg-surface: #16161E;
+  --bg-elevated: #1C1C26;
+  --bg-glass: rgba(255, 255, 255, 0.04);
+  --bg-glass-hover: rgba(255, 255, 255, 0.08);
+  --bg-glass-active: rgba(99, 102, 241, 0.15);
+
+  --sidebar-bg: #111118;
+  --sidebar-text: #9898A8;
+  --sidebar-active: rgba(255, 255, 255, 0.1);
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+
+  --border-subtle: #2A2A36;
+  --border-default: #3A3A46;
+  --border-active: #818CF8;
+
+  --text-primary: #E8E8EC;
+  --text-secondary: #9898A8;
+  --text-muted: #666678;
+  --text-accent: #818CF8;
+  --text-heading: #F0F0F4;
+
+  --accent: #818CF8;
+  --accent-hover: #6366F1;
+  --accent-bg: rgba(129, 140, 248, 0.12);
+  --success: #34D399;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --warning: #FBBF24;
+  --warning-bg: rgba(251, 191, 36, 0.12);
+  --error: #F87171;
+  --error-bg: rgba(248, 113, 113, 0.1);
+
+  --user-bubble: #1E1E2A;
+  --assistant-bubble: #16161E;
+
+  --code-bg: #1E1E2A;
+  --code-text: #F472B6;
+  --pre-bg: #0A0A12;
+  --pre-text: #D4D4D4;
+
+  --scrollbar-thumb: rgba(255,255,255,0.1);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.2);
+
+  color-scheme: dark;
+}
+
+:root {
   color: var(--text-primary);
   background-color: var(--bg-base);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
@@ -89,8 +149,8 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: #6366F1;
-  box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+  border-color: var(--border-active);
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 select option { background: var(--bg-elevated); color: var(--text-primary); }
@@ -99,8 +159,8 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* ─── Markdown 渲染 ──────────────────────── */
 
@@ -111,25 +171,25 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
   color: var(--text-primary);
   letter-spacing: 0.01em;
 }
-.markdown-body h1 { font-size: 1.4em; margin: 12px 0 8px; font-weight: 600; color: #262521; }
-.markdown-body h2 { font-size: 1.25em; margin: 10px 0 6px; font-weight: 600; color: #262521; }
-.markdown-body h3 { font-size: 1.1em; margin: 8px 0 4px; font-weight: 600; color: #262521; }
+.markdown-body h1 { font-size: 1.4em; margin: 12px 0 8px; font-weight: 600; color: var(--text-heading); }
+.markdown-body h2 { font-size: 1.25em; margin: 10px 0 6px; font-weight: 600; color: var(--text-heading); }
+.markdown-body h3 { font-size: 1.1em; margin: 8px 0 4px; font-weight: 600; color: var(--text-heading); }
 .markdown-body p { margin: 4px 0; }
 .markdown-body ul, .markdown-body ol { margin: 4px 0; padding-left: 20px; }
 .markdown-body li { margin: 2px 0; }
 
 .markdown-body code {
-  background: #f0f0ed;
+  background: var(--code-bg);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', Monaco, monospace;
-  color: #c7254e;
+  color: var(--code-text);
 }
 
 .markdown-body pre {
-  background: #0A0A12;
-  color: #D4D4D4;
+  background: var(--pre-bg);
+  color: var(--pre-text);
   padding: 14px 18px;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
@@ -156,7 +216,7 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body hr { border: none; border-top: 1px solid var(--border-subtle); margin: 12px 0; }
 .markdown-body img { max-width: 100%; border-radius: 8px; }
-.markdown-body strong { font-weight: 600; color: #262521; }
+.markdown-body strong { font-weight: 600; color: var(--text-heading); }
 
 /* ─── 动画 ─────────────────────────────── */
 
