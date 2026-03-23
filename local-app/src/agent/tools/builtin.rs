@@ -2218,36 +2218,71 @@ impl TtsTool {
 
         #[cfg(target_os = "linux")]
         {
-            let result = tokio::process::Command::new("espeak")
-                .arg("-w").arg(output_path.to_str().unwrap_or(""))
-                .arg(text)
-                .output().await
-                .map_err(|e| format!("espeak 执行失败: {}", e))?;
-
-            if !result.status.success() {
-                return Err("espeak 失败".to_string());
+            // 检测 espeak 是否安装
+            let check = tokio::process::Command::new("which").arg("espeak").output().await;
+            if check.is_err() || !check.unwrap().status.success() {
+                // 尝试 espeak-ng（更新的分支）
+                let check_ng = tokio::process::Command::new("which").arg("espeak-ng").output().await;
+                if check_ng.is_err() || !check_ng.unwrap().status.success() {
+                    return Err("本地 TTS 需要安装 espeak：\n  Ubuntu/Debian: sudo apt install espeak-ng\n  Fedora: sudo dnf install espeak-ng\n  Arch: sudo pacman -S espeak-ng\n\n或使用 mode=api 调用 OpenAI TTS".to_string());
+                }
+                // 用 espeak-ng
+                let voice = args.get("voice").and_then(|v| v.as_str()).unwrap_or("zh");
+                let speed = args.get("speed").and_then(|s| s.as_u64()).unwrap_or(175);
+                let result = tokio::process::Command::new("espeak-ng")
+                    .arg("-v").arg(voice)
+                    .arg("-s").arg(speed.to_string())
+                    .arg("-w").arg(output_path.to_str().unwrap_or(""))
+                    .arg(text)
+                    .output().await
+                    .map_err(|e| format!("espeak-ng 执行失败: {}", e))?;
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    return Err(format!("espeak-ng 失败: {}", stderr));
+                }
+            } else {
+                let voice = args.get("voice").and_then(|v| v.as_str()).unwrap_or("zh");
+                let speed = args.get("speed").and_then(|s| s.as_u64()).unwrap_or(175);
+                let result = tokio::process::Command::new("espeak")
+                    .arg("-v").arg(voice)
+                    .arg("-s").arg(speed.to_string())
+                    .arg("-w").arg(output_path.to_str().unwrap_or(""))
+                    .arg(text)
+                    .output().await
+                    .map_err(|e| format!("espeak 执行失败: {}", e))?;
+                if !result.status.success() {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    return Err(format!("espeak 失败: {}", stderr));
+                }
             }
             let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-            Ok(format!("语音已生成（espeak）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+            Ok(format!("语音已生成（Linux TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
         }
 
         #[cfg(target_os = "windows")]
         {
+            // Windows 自带 System.Speech（.NET Framework），大部分系统可用
+            let output_wav = output_path.with_extension("wav");
             let ps_script = format!(
-                "Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.SetOutputToWaveFile('{}'); $synth.Speak('{}'); $synth.Dispose()",
-                output_path.to_str().unwrap_or("").replace("'", "''"),
-                text.replace("'", "''")
+                "Add-Type -AssemblyName System.Speech; \
+                 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; \
+                 $synth.SetOutputToWaveFile('{}'); \
+                 $synth.Speak('{}'); \
+                 $synth.Dispose()",
+                output_wav.to_str().unwrap_or("").replace("'", "''"),
+                text.replace("'", "''").replace("\n", " ")
             );
             let result = tokio::process::Command::new("powershell")
-                .arg("-Command").arg(&ps_script)
+                .arg("-NoProfile").arg("-Command").arg(&ps_script)
                 .output().await
-                .map_err(|e| format!("PowerShell TTS 失败: {}", e))?;
+                .map_err(|e| format!("PowerShell TTS 失败: {}。\n如果 System.Speech 不可用，请使用 mode=api", e))?;
 
             if !result.status.success() {
-                return Err("Windows TTS 失败".to_string());
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                return Err(format!("Windows TTS 失败: {}\n\n建议使用 mode=api 调用 OpenAI TTS", stderr));
             }
-            let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-            Ok(format!("语音已生成（Windows TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+            let size = std::fs::metadata(&output_wav).map(|m| m.len()).unwrap_or(0);
+            Ok(format!("语音已生成（Windows TTS）: {} ({} 字节)\n文件: {}", output_wav.file_name().unwrap_or_default().to_string_lossy(), size, output_wav.display()))
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
