@@ -40,13 +40,17 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
         match role {
             "tool" => {
                 // OpenAI tool result → Anthropic user + tool_result
-                let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
+                let raw_id = msg["tool_call_id"].as_str().unwrap_or("");
+                let id: String = raw_id.chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .take(64).collect();
+                let id = if id.is_empty() { "unknown".to_string() } else { id };
                 let content = msg["content"].as_str().unwrap_or("");
                 result.push(serde_json::json!({
                     "role": "user",
                     "content": [{
                         "type": "tool_result",
-                        "tool_use_id": if tool_call_id.is_empty() { "unknown" } else { tool_call_id },
+                        "tool_use_id": id,
                         "content": content
                     }]
                 }));
@@ -69,10 +73,20 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
                     // 转换每个 tool_call 为 tool_use block
                     for tc in tool_calls {
                         let name = tc["function"]["name"].as_str().unwrap_or("");
-                        let id = tc["id"].as_str().unwrap_or("unknown");
-                        let input: serde_json::Value = tc["function"]["arguments"].as_str()
-                            .and_then(|s| serde_json::from_str(s).ok())
-                            .unwrap_or(serde_json::json!({}));
+                        let raw_id = tc["id"].as_str().unwrap_or("unknown");
+                        // Anthropic 要求 id 匹配 /^[a-zA-Z0-9_-]{1,64}$/
+                        let id: String = raw_id.chars()
+                            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                            .take(64).collect();
+                        let id = if id.is_empty() { "tool_call".to_string() } else { id };
+                        // arguments 可能是 JSON 字符串或已解析的对象
+                        let input: serde_json::Value = if let Some(obj) = tc["function"]["arguments"].as_object() {
+                            serde_json::Value::Object(obj.clone())
+                        } else {
+                            tc["function"]["arguments"].as_str()
+                                .and_then(|s| serde_json::from_str(s).ok())
+                                .unwrap_or(serde_json::json!({}))
+                        };
                         content_blocks.push(serde_json::json!({
                             "type": "tool_use", "id": id, "name": name, "input": input
                         }));
@@ -428,7 +442,7 @@ impl LlmClient {
                 "anthropic" => {
                     req = req.header("x-api-key", &config.api_key);
                     req = req.header("anthropic-version", "2023-06-01");
-                    req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+                    req = req.header("anthropic-beta", "prompt-caching-2024-07-31,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14");
                 }
                 _ => {}
             }
