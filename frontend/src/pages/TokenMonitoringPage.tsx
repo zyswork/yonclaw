@@ -42,10 +42,18 @@ interface Agent {
 
 function estimateCost(model: string, input: number, output: number): number {
   const m = model.toLowerCase()
-  const [ip, op] = m.includes('claude') ? [3, 15]
-    : m.includes('gpt-5') || m.includes('gpt-4o') ? [2.5, 10]
+  const [ip, op] =
+    m.includes('claude-opus') ? [15, 75]
+    : m.includes('claude-sonnet') ? [3, 15]
+    : m.includes('claude-haiku') ? [0.8, 4]
+    : m.includes('claude') ? [3, 15]
     : m.includes('gpt-4o-mini') ? [0.15, 0.6]
+    : m.includes('gpt-4o') || m.includes('gpt-4-turbo') || m.includes('gpt-5') ? [2.5, 10]
     : m.includes('deepseek') ? [0.14, 0.28]
+    : m.includes('gemini-2.5-pro') ? [1.25, 10]
+    : m.includes('gemini') ? [0.075, 0.3]
+    : m.includes('llama') || m.includes('mixtral') ? [0.05, 0.1]
+    : m.includes('qwen') ? [0.5, 2]
     : [1, 3]
   return (input * ip + output * op) / 1_000_000
 }
@@ -109,8 +117,8 @@ export default function TokenMonitoringPage() {
         {[7, 14, 30].map(d => (
           <button key={d} onClick={() => setDays(d)} style={{
             padding: '6px 12px', border: `1px solid ${days === d ? 'var(--accent)' : '#ddd'}`,
-            borderRadius: 6, backgroundColor: days === d ? 'var(--accent)' : 'white',
-            color: days === d ? 'white' : '#333', cursor: 'pointer', fontSize: 13,
+            borderRadius: 6, backgroundColor: days === d ? 'var(--accent)' : 'var(--bg-elevated)',
+            color: days === d ? '#fff' : 'var(--text-primary)', cursor: 'pointer', fontSize: 13,
           }}>{d}{t('tokens.labelDays')}</button>
         ))}
       </div>
@@ -145,7 +153,7 @@ export default function TokenMonitoringPage() {
                       height: `${(d.totalTokens / maxDaily) * 80}px`,
                       backgroundColor: 'var(--accent)', borderRadius: '3px 3px 0 0', minHeight: 2,
                     }} title={`${d.date}: ${d.totalTokens} tokens, ${d.calls} calls`} />
-                    <div style={{ fontSize: 9, color: '#bbb', marginTop: 2 }}>{d.date.slice(5)}</div>
+                    <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 2 }}>{d.date.slice(5)}</div>
                   </div>
                 ))}
               </div>
@@ -157,7 +165,7 @@ export default function TokenMonitoringPage() {
               <h3 style={{ fontSize: 15, margin: '0 0 12px' }}>{t('tokens.sectionModels')}</h3>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
-                  <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+                  <tr style={{ borderBottom: '2px solid var(--border-default)' }}>
                     <th style={{ textAlign: 'left', padding: '8px 12px' }}>{t('tokens.columnModel')}</th>
                     <th style={{ textAlign: 'right', padding: '8px 12px' }}>{t('tokens.columnInput')}</th>
                     <th style={{ textAlign: 'right', padding: '8px 12px' }}>{t('tokens.columnOutput')}</th>
@@ -168,7 +176,7 @@ export default function TokenMonitoringPage() {
                 </thead>
                 <tbody>
                   {stats.models.map((m) => (
-                    <tr key={m.model} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                    <tr key={m.model} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                       <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{m.model}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(m.input_tokens)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(m.output_tokens)}</td>

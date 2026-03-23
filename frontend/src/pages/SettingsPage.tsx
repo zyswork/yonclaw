@@ -128,6 +128,29 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
     enabled: true,
   },
   {
+    id: 'mistral',
+    name: 'Mistral AI',
+    apiType: 'openai',
+    baseUrl: 'https://api.mistral.ai/v1',
+    models: [
+      { id: 'mistral-large-latest', name: 'Mistral Large' },
+      { id: 'mistral-small-latest', name: 'Mistral Small' },
+      { id: 'codestral-latest', name: 'Codestral' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'xai',
+    name: 'xAI (Grok)',
+    apiType: 'openai',
+    baseUrl: 'https://api.x.ai/v1',
+    models: [
+      { id: 'grok-3', name: 'Grok 3' },
+      { id: 'grok-3-mini', name: 'Grok 3 Mini' },
+    ],
+    enabled: true,
+  },
+  {
     id: 'ollama',
     name: 'Ollama (本地)',
     apiType: 'openai',

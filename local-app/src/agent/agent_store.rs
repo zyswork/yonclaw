@@ -46,6 +46,12 @@ pub fn estimate_cost(model: &str, input_tokens: u64, output_tokens: u64) -> f64 
         (0.075, 0.3)
     } else if m.starts_with("llama") || m.starts_with("mixtral") {
         (0.05, 0.1) // Groq 免费/极低价
+    } else if m.starts_with("mistral-large") {
+        (2.0, 6.0)
+    } else if m.starts_with("mistral") || m.starts_with("codestral") {
+        (0.2, 0.6)
+    } else if m.starts_with("grok") {
+        (3.0, 15.0)
     } else {
         (1.0, 3.0)
     };

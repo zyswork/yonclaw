@@ -143,6 +143,12 @@ impl SchedulerEngine {
                 log::error!("stuck run 检测失败: {}", e);
             }
 
+            // 7.5. 定期截断超大会话（每轮健康检查时执行）
+            if last_health_check.elapsed() < Duration::from_secs(5) {
+                // 刚做过健康检查，顺便截断
+                let _ = crate::memory::conversation::truncate_all_sessions(&self.pool, 500).await;
+            }
+
             // 8. anti-spin
             tokio::time::sleep(Duration::from_millis(MIN_REFIRE_GAP_MS)).await;
         }

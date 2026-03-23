@@ -287,6 +287,7 @@ pub async fn delete_old_session_messages(
     session_id: &str,
     keep_recent: i64,
 ) -> Result<(), sqlx::Error> {
+    // 清理 conversations 表
     sqlx::query(
         r#"
         DELETE FROM conversations WHERE session_id = ? AND id NOT IN (
@@ -300,7 +301,54 @@ pub async fn delete_old_session_messages(
     .bind(keep_recent)
     .execute(pool)
     .await?;
+
+    // 同时清理 chat_messages 表（保留最近 keep_recent * 10 条结构化消息）
+    let keep_structured = keep_recent * 10;
+    sqlx::query(
+        r#"
+        DELETE FROM chat_messages WHERE session_id = ? AND id NOT IN (
+            SELECT id FROM chat_messages WHERE session_id = ?
+            ORDER BY seq DESC LIMIT ?
+        )
+        "#,
+    )
+    .bind(session_id)
+    .bind(session_id)
+    .bind(keep_structured)
+    .execute(pool)
+    .await?;
+
     Ok(())
+}
+
+/// 清理所有会话中超出阈值的旧消息（定期调用，防止 DB 无限增长）
+pub async fn truncate_all_sessions(
+    pool: &SqlitePool,
+    max_messages_per_session: i64,
+) -> Result<u64, sqlx::Error> {
+    // 找出消息数超标的 session
+    let sessions: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT session_id, COUNT(*) as cnt FROM chat_messages GROUP BY session_id HAVING cnt > ?"
+    )
+    .bind(max_messages_per_session)
+    .fetch_all(pool)
+    .await?;
+
+    let mut total_deleted = 0u64;
+    for (sid, _count) in &sessions {
+        let result = sqlx::query(
+            "DELETE FROM chat_messages WHERE session_id = ? AND id NOT IN (SELECT id FROM chat_messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?)"
+        )
+        .bind(sid).bind(sid).bind(max_messages_per_session)
+        .execute(pool)
+        .await?;
+        total_deleted += result.rows_affected();
+    }
+
+    if total_deleted > 0 {
+        log::info!("自动截断: {} 个会话共清理 {} 条旧消息", sessions.len(), total_deleted);
+    }
+    Ok(total_deleted)
 }
 
 /// 删除旧对话
