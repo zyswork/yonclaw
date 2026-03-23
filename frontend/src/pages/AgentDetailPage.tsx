@@ -512,7 +512,10 @@ function ChatTab({ agentId }: { agentId: string }) {
               parsed.push({ role: 'tool', content: '', toolName: tc.function?.name || tc.name || t('common.tools') })
             }
           } else {
-            parsed.push({ role: m.role, content: m.content || '' })
+            // 过滤 Anthropic 格式的 tool_result 消息（不显示原始 JSON）
+            const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
+            if (contentStr.includes('"tool_result"') || contentStr.includes('"tool_use"')) continue
+            parsed.push({ role: m.role, content: contentStr })
           }
         }
         setMessages(parsed)
