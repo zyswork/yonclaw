@@ -411,6 +411,7 @@ pub async fn compress_with_summary(
     let client = super::llm::LlmClient::new(super::llm::LlmConfig {
         temperature: Some(0.2),
         max_tokens: Some(500),
+        thinking_level: None,
         ..llm_config.clone()
     });
 

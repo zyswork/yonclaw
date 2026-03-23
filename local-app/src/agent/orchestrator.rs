@@ -688,6 +688,7 @@ impl Orchestrator {
             provider: provider.to_string(), api_key: api_key.to_string(),
             model: selected_model, base_url: base_url.map(|s| s.to_string()),
             temperature: agent.temperature, max_tokens: agent.max_tokens,
+            thinking_level: None,
         };
         let system_prompt_opt = if provider == "anthropic" { Some(system_prompt.as_str()) } else { None };
 
@@ -781,6 +782,7 @@ impl Orchestrator {
                         provider: cfg.provider.clone(), api_key: cfg.api_key.clone(),
                         model: cfg.model.clone(), base_url: cfg.base_url.clone(),
                         temperature: Some(0.3), max_tokens: Some(512),
+                        thinking_level: None,
                     });
                     let msgs = vec![serde_json::json!({"role": "user", "content": prompt})];
                     let (tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -949,6 +951,7 @@ impl Orchestrator {
             base_url: base_url.map(|s| s.to_string()),
             temperature: Some(0.3),
             max_tokens: Some(1024),
+            thinking_level: None,
         };
         let client = LlmClient::new(config);
         let messages = vec![

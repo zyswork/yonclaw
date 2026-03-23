@@ -163,6 +163,7 @@ pub async fn spawn_background_review(
             base_url,
             temperature: Some(0.3), // 低温度，更确定性
             max_tokens: Some(2000),
+            thinking_level: None,
         };
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();

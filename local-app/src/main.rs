@@ -459,6 +459,7 @@ async fn ai_generate_agent_config(
         base_url: if base_url.is_empty() { None } else { Some(base_url) },
         temperature: Some(0.3),
         max_tokens: Some(2048),
+        thinking_level: None,
     };
 
     let client = agent::LlmClient::new(llm_config);
@@ -2956,6 +2957,7 @@ async fn extract_memories_from_history(
         base_url: if base_url.is_empty() { None } else { Some(base_url.clone()) },
         temperature: Some(0.3),
         max_tokens: Some(2000),
+        thinking_level: None,
     };
     let llm_client = agent::llm::LlmClient::new(llm_config);
     let messages = vec![

@@ -58,6 +58,7 @@ impl ModelProvider for OpenAiCompatProvider {
             base_url: config.base_url.clone(),
             temperature: config.temperature,
             max_tokens: config.max_tokens.map(|m| m as i32),
+            thinking_level: None,
         };
         let client = LlmClient::new(llm_config);
         client.call_stream(messages, system_prompt, tools, tx).await

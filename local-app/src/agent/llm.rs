@@ -102,11 +102,16 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value]) -> Vec<serde_
                             }
                             Some("tool_use") => {
                                 let mut block = b.clone();
-                                // 清理 tool_use id
                                 if let Some(id) = b["id"].as_str() {
-                                    block["id"] = serde_json::Value::String(sanitize_tool_id(id));
+                                    let clean = tool_id_map.get(id).cloned().unwrap_or_else(|| sanitize_tool_id(id));
+                                    block["id"] = serde_json::Value::String(clean);
                                 }
                                 Some(block)
+                            }
+                            Some("thinking") => {
+                                // 剥离 thinking 块（参考 OpenClaw dropThinkingBlocks）
+                                // Anthropic 要求后续请求不能包含之前的 thinking 签名
+                                None
                             }
                             _ => Some(b.clone()),
                         }
@@ -418,6 +423,40 @@ pub enum LlmProvider {
     Anthropic,
 }
 
+/// Thinking 级别（扩展推理）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,  // budget: 1024
+    Low,      // budget: 2048
+    Medium,   // budget: 8192
+    High,     // budget: 16384
+}
+
+impl ThinkingLevel {
+    pub fn budget_tokens(&self) -> Option<i32> {
+        match self {
+            Self::Off => None,
+            Self::Minimal => Some(1024),
+            Self::Low => Some(2048),
+            Self::Medium => Some(8192),
+            Self::High => Some(16384),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            _ => Self::Off,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool { *self != Self::Off }
+}
+
 /// LLM 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
@@ -427,6 +466,9 @@ pub struct LlmConfig {
     pub base_url: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<i32>,
+    /// 扩展推理级别（Anthropic thinking / OpenAI reasoning）
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl LlmConfig {
@@ -436,6 +478,7 @@ impl LlmConfig {
             api_key, model,
             base_url: Some("https://api.openai.com/v1".to_string()),
             temperature: None, max_tokens: None,
+            thinking_level: None,
         }
     }
     pub fn anthropic(api_key: String, model: String) -> Self {
@@ -444,6 +487,7 @@ impl LlmConfig {
             api_key, model,
             base_url: Some("https://api.anthropic.com/v1".to_string()),
             temperature: None, max_tokens: None,
+            thinking_level: None,
         }
     }
 }
@@ -674,6 +718,17 @@ impl LlmClient {
                 log::info!("body 构建完成，添加 system+tools...");
                 if let Some(sp) = system_prompt { body["system"] = Self::build_anthropic_system_blocks(sp); }
                 if let Some(t) = tools { if !t.is_empty() { body["tools"] = Self::build_anthropic_tools(t); } }
+                // Thinking（扩展推理）支持
+                if let Some(ref level) = config.thinking_level {
+                    if level.is_enabled() {
+                        if let Some(budget) = level.budget_tokens() {
+                            body["thinking"] = serde_json::json!({"type": "enabled", "budget_tokens": budget});
+                            // thinking 模式下 temperature 必须为 1（Anthropic 要求）
+                            body["temperature"] = serde_json::json!(1);
+                            log::info!("Anthropic thinking 已启用: level={:?}, budget={}", level, budget);
+                        }
+                    }
+                }
                 // 调试：保存请求 body 到文件（临时）
                 let _ = std::fs::write("/tmp/anthropic-debug.json", serde_json::to_string_pretty(&body).unwrap_or_default());
                 log::info!("Anthropic 请求 body 已保存到 /tmp/anthropic-debug.json (size={})", body.to_string().len());
