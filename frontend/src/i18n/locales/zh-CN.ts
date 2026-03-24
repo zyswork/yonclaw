@@ -392,6 +392,7 @@ export const zhCN: TranslationMap = {
     labelAgentSwitch: 'Agent',
     emptyType: '暂无该类型的插件',
     hintDetail: '全局开关：控制插件是否在系统中可用。Agent 开关：控制选定的 Agent 是否使用此插件。不同 Agent 可以有不同的插件组合。',
+    apiCapabilities: '插件能力注册',
   },
   settings: {
     title: '模型供应商',

@@ -392,6 +392,7 @@ export const en: TranslationMap = {
     labelAgentSwitch: 'Agent',
     emptyType: 'No plugins of this type',
     hintDetail: 'Global: system availability. Agent: per-agent toggle. Different agents can have different plugin sets.',
+    apiCapabilities: 'Registered Capabilities',
   },
   settings: {
     title: 'Model Providers',

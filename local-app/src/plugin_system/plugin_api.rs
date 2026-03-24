@@ -135,6 +135,8 @@ pub struct PluginManager {
     image_gen_providers: Vec<ImageGenProvider>,
     /// TTS providers
     tts_providers: Vec<TtsProvider>,
+    /// LLM Model providers
+    model_providers: Vec<Box<dyn super::provider_trait::ModelProvider>>,
 }
 
 impl PluginManager {
@@ -145,7 +147,29 @@ impl PluginManager {
             web_search_providers: Vec::new(),
             image_gen_providers: Vec::new(),
             tts_providers: Vec::new(),
+            model_providers: Vec::new(),
         }
+    }
+
+    /// 注册 LLM Model Provider
+    pub fn register_model_provider(&mut self, provider: Box<dyn super::provider_trait::ModelProvider>) {
+        log::info!("PluginManager: 注册 LLM Provider: {} ({})", provider.display_name(), provider.id());
+        self.model_providers.push(provider);
+    }
+
+    /// 按 provider ID 查找 Model Provider
+    pub fn get_model_provider(&self, id: &str) -> Option<&dyn super::provider_trait::ModelProvider> {
+        self.model_providers.iter().find(|p| p.id() == id).map(|p| p.as_ref())
+    }
+
+    /// 按模型名查找 Model Provider
+    pub fn find_model_provider_by_model(&self, model: &str) -> Option<&dyn super::provider_trait::ModelProvider> {
+        self.model_providers.iter().find(|p| p.supports_model(model)).map(|p| p.as_ref())
+    }
+
+    /// 列出所有 Model Provider
+    pub fn list_model_providers(&self) -> Vec<(&str, &str)> {
+        self.model_providers.iter().map(|p| (p.id(), p.display_name())).collect()
     }
 
     /// 加载一个插件
@@ -224,15 +248,32 @@ impl PluginManager {
 
     /// 转为 JSON（前端展示）
     pub fn to_json(&self) -> Vec<serde_json::Value> {
-        self.plugins.iter().map(|p| {
+        let mut result: Vec<serde_json::Value> = self.plugins.iter().map(|p| {
             serde_json::json!({
                 "id": p.id,
                 "name": p.name,
                 "version": p.version,
                 "description": p.description,
+                "type": "plugin",
                 "capabilities": p.capabilities.iter().map(|c| format!("{:?}", c)).collect::<Vec<_>>(),
                 "enabled": p.enabled,
             })
-        }).collect()
+        }).collect();
+
+        // 追加 Model Provider 信息
+        for p in &self.model_providers {
+            result.push(serde_json::json!({
+                "id": p.id(),
+                "name": p.display_name(),
+                "version": "1.0.0",
+                "description": format!("LLM Provider: {}", p.display_name()),
+                "type": "provider",
+                "capabilities": [format!("Provider({})", p.id())],
+                "models": p.supported_models(),
+                "enabled": true,
+            }));
+        }
+
+        result
     }
 }

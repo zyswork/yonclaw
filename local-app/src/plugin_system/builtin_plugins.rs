@@ -152,5 +152,20 @@ pub fn register_builtin_plugins(manager: &mut PluginManager, pool: sqlx::SqliteP
         }),
     });
 
-    log::info!("内置插件注册完成: {} 个插件", manager.list_plugins().len());
+    // ═══════════════════════════════════════════
+    // LLM Model Providers（注册到 PluginManager）
+    // ═══════════════════════════════════════════
+    manager.register_model_provider(Box::new(
+        crate::plugin_system::providers::openai_compat::OpenAiCompatProvider::new()
+    ));
+    manager.register_model_provider(Box::new(
+        crate::plugin_system::providers::anthropic::AnthropicProvider::new()
+    ));
+    manager.register_model_provider(Box::new(
+        crate::plugin_system::providers::ollama::OllamaProvider::new()
+    ));
+
+    log::info!("内置插件注册完成: {} 个插件, {} 个 LLM Provider",
+        manager.list_plugins().len(),
+        manager.list_model_providers().len());
 }

@@ -35,9 +35,10 @@ export default function PluginsPage() {
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [configValues, setConfigValues] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
+  const [capabilities, setCapabilities] = useState<any[]>([])
 
   useEffect(() => { loadAgents() }, [])
-  useEffect(() => { loadPlugins() }, [])
+  useEffect(() => { loadPlugins(); loadCapabilities() }, [])
   useEffect(() => { if (selectedAgent) loadAgentStates() }, [selectedAgent])
 
   const loadAgents = async () => {
@@ -54,6 +55,13 @@ export default function PluginsPage() {
       const list = (await invoke('list_system_plugins')) as PluginInfo[]
       setPlugins(list)
     } catch (e) { console.error(e) }
+  }
+
+  const loadCapabilities = async () => {
+    try {
+      const caps = await invoke<any[]>('list_plugin_capabilities')
+      setCapabilities(caps || [])
+    } catch {}
   }
 
   const loadAgentStates = async () => {
@@ -288,6 +296,53 @@ export default function PluginsPage() {
       <div style={{ marginTop: 20, padding: '10px 0', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-muted)' }}>
         {t('plugins.hintDetail')}
       </div>
+
+      {/* Plugin API 注册能力 */}
+      {capabilities.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
+            {'\u{1F50C}'} {t('plugins.apiCapabilities')}
+          </h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+            {capabilities.map((cap: any) => (
+              <div key={cap.id} style={{
+                padding: '12px 16px', borderRadius: 10,
+                border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{cap.name}</span>
+                  <span style={{
+                    fontSize: 9, padding: '1px 6px', borderRadius: 8,
+                    backgroundColor: cap.type === 'provider' ? 'var(--accent-bg)' : 'var(--success-bg)',
+                    color: cap.type === 'provider' ? 'var(--accent)' : 'var(--success)',
+                  }}>{cap.type}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{cap.description}</div>
+                {cap.capabilities && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {(cap.capabilities as string[]).map((c: string, i: number) => (
+                      <span key={i} style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                        backgroundColor: 'var(--bg-glass)', color: 'var(--text-secondary)',
+                      }}>{c}</span>
+                    ))}
+                  </div>
+                )}
+                {cap.models && (
+                  <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {(cap.models as string[]).slice(0, 5).map((m: string, i: number) => (
+                      <span key={i} style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                        backgroundColor: 'var(--bg-glass)', color: 'var(--text-accent)', fontFamily: 'monospace',
+                      }}>{m}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
