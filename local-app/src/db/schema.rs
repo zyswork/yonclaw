@@ -52,6 +52,11 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // 兼容：添加 provider_id 列（指定模型对应的供应商，解决同名模型串供应商问题）
+    let _ = sqlx::query("ALTER TABLE agents ADD COLUMN provider_id TEXT")
+        .execute(pool)
+        .await;
+
     // 创建记忆体表
     sqlx::query(
         r#"

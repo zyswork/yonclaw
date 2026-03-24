@@ -13,15 +13,41 @@ pub mod slack;
 ///
 /// 返回 (api_type, api_key, base_url)
 /// 优先匹配 agent 使用的模型，找不到则用第一个有 key 的 provider
+/// 查找 Provider（支持 provider_id 精确匹配，解决同名模型串供应商）
 pub async fn find_provider(
     pool: &sqlx::SqlitePool,
     preferred_model: &str,
+) -> Option<(String, String, String)> {
+    find_provider_with_id(pool, preferred_model, None).await
+}
+
+/// 带 provider_id 的精确查找
+pub async fn find_provider_with_id(
+    pool: &sqlx::SqlitePool,
+    preferred_model: &str,
+    provider_id: Option<&str>,
 ) -> Option<(String, String, String)> {
     let providers_json: String = sqlx::query_scalar(
         "SELECT value FROM settings WHERE key = 'providers'"
     ).fetch_optional(pool).await.ok().flatten()?;
 
     let providers: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
+
+    // 第 0 轮：按 provider_id 精确匹配（最优先）
+    if let Some(pid) = provider_id {
+        for p in &providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            let key = p["apiKey"].as_str().unwrap_or("");
+            if key.is_empty() { continue; }
+            if p["id"].as_str() == Some(pid) {
+                let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
+                let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
+                log::info!("Provider: provider_id={} 精确匹配 → {} ({})", pid, p["name"], api_type);
+                return Some((api_type, key.to_string(), base_url));
+            }
+        }
+        log::warn!("Provider: provider_id={} 未找到，回退到模型匹配", pid);
+    }
 
     // 第一轮：按模型精确匹配
     for p in &providers {
@@ -33,7 +59,7 @@ pub async fn find_provider(
                 if m["id"].as_str() == Some(preferred_model) {
                     let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                     let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
-                    log::info!("频道 Provider: 匹配模型 {} → {} ({})", preferred_model, p["name"], api_type);
+                    log::info!("Provider: 模型 {} 匹配 → {} ({})", preferred_model, p["name"], api_type);
                     return Some((api_type, key.to_string(), base_url));
                 }
             }
@@ -47,11 +73,11 @@ pub async fn find_provider(
         if key.is_empty() { continue; }
         let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
         let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
-        log::warn!("频道 Provider: 模型 {} 无精确匹配，回退到 {} ({}, key={}...)",
+        log::warn!("Provider: 模型 {} 无精确匹配，回退到 {} ({}, key={}...)",
             preferred_model, p["name"], api_type, &key[..key.len().min(8)]);
         return Some((api_type, key.to_string(), base_url));
     }
 
-    log::error!("频道 Provider: 无任何可用 provider（模型: {}）", preferred_model);
+    log::error!("Provider: 无任何可用 provider（模型: {}）", preferred_model);
     None
 }

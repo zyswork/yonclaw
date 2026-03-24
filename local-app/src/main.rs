@@ -131,10 +131,33 @@ fn find_provider_for_model(
     providers: &[serde_json::Value],
     model: &str,
 ) -> Option<(String, String, String)> {
-    for p in providers {
-        if p["enabled"].as_bool() != Some(true) {
-            continue;
+    find_provider_for_model_with_id(providers, model, None)
+}
+
+/// 带 provider_id 的精确查找（解决同名模型串供应商）
+fn find_provider_for_model_with_id(
+    providers: &[serde_json::Value],
+    model: &str,
+    provider_id: Option<&str>,
+) -> Option<(String, String, String)> {
+    // 第 0 轮：按 provider_id 精确匹配
+    if let Some(pid) = provider_id {
+        for p in providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            if p["id"].as_str() == Some(pid) {
+                let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
+                let api_key = p["apiKey"].as_str().unwrap_or("").to_string();
+                let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
+                if !api_key.is_empty() {
+                    return Some((api_type, api_key, base_url));
+                }
+            }
         }
+    }
+
+    // 第一轮：按模型精确匹配
+    for p in providers {
+        if p["enabled"].as_bool() != Some(true) { continue; }
         let models = match p["models"].as_array() {
             Some(m) => m,
             None => continue,
@@ -144,7 +167,9 @@ fn find_provider_for_model(
                 let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                 let api_key = p["apiKey"].as_str().unwrap_or("").to_string();
                 let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
-                return Some((api_type, api_key, base_url));
+                if !api_key.is_empty() {
+                    return Some((api_type, api_key, base_url));
+                }
             }
         }
     }
@@ -1015,10 +1040,19 @@ async fn send_message(
     // 从 providers 配置中查找可用的模型
     let providers = load_providers(&state.db).await?;
 
-    // 找到第一个有可用 provider 的模型
+    // 找到第一个有可用 provider 的模型（优先使用 Agent 绑定的 provider_id）
+    let agent_provider_id = {
+        let row: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT provider_id FROM agents WHERE id = ?"
+        ).bind(&agent_id).fetch_optional(state.orchestrator.pool()).await.ok().flatten();
+        row.flatten()
+    };
+
     let mut selected_model = None;
     for model in failover.all_models() {
-        if let Some(provider_info) = find_provider_for_model(&providers, model) {
+        if let Some(provider_info) = find_provider_for_model_with_id(
+            &providers, model, agent_provider_id.as_deref()
+        ) {
             if !provider_info.1.is_empty() {
                 selected_model = Some((model.to_string(), provider_info));
                 break;

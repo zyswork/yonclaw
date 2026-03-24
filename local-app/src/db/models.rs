@@ -52,6 +52,8 @@ pub struct Agent {
     pub config: Option<String>,
     pub workspace_path: Option<String>,
     pub config_version: Option<i64>,
+    /// 绑定的供应商 ID（解决同名模型串供应商）
+    pub provider_id: Option<String>,
 }
 
 impl Agent {
@@ -70,6 +72,7 @@ impl Agent {
             config: None,
             workspace_path: None,
             config_version: Some(1),
+            provider_id: None,
         }
     }
 }
