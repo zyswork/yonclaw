@@ -691,6 +691,8 @@ impl LlmClient {
         tx: mpsc::UnboundedSender<String>,
     ) -> Result<LlmResponse, String> {
         let config = &self.config;
+        // 从限定引用 "provider/model" 中提取纯模型名（API 请求只用模型名）
+        let (_, pure_model) = crate::channels::parse_qualified_model(&config.model);
         let (url, body) = match config.provider.as_str() {
             "openai" => {
                 let url = format!("{}/chat/completions", config.base_url.as_deref().unwrap_or("https://api.openai.com/v1"));
@@ -698,7 +700,7 @@ impl LlmClient {
                 // 清理历史中可能混入的 Anthropic 格式消息
                 let clean_messages = sanitize_messages_for_openai(messages);
                 let mut body = serde_json::json!({
-                    "model": config.model, "messages": clean_messages, "stream": true,
+                    "model": pure_model, "messages": clean_messages, "stream": true,
                     "temperature": config.temperature.unwrap_or(0.7),
                     "max_tokens": resolved_max_tokens,
                     "stream_options": {"include_usage": true},
@@ -725,7 +727,7 @@ impl LlmClient {
                     log::info!("Anthropic msg[{}]: role={}, content={}, tool_calls={}, preview={}", i, role, content_type, has_tool_calls, preview);
                 }
                 let mut body = serde_json::json!({
-                    "model": config.model, "messages": clean_messages, "stream": true,
+                    "model": pure_model, "messages": clean_messages, "stream": true,
                     "temperature": config.temperature.unwrap_or(1.0),
                     "max_tokens": resolved_max_tokens,
                 });
