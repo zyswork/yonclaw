@@ -959,6 +959,52 @@ async fn plaza_get_comments(
 }
 
 /// 点赞
+/// 保存聊天中粘贴的图片到磁盘
+#[tauri::command]
+async fn save_chat_image(
+    agent_id: String,
+    base64_data: String,
+) -> Result<String, String> {
+    let image_dir = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".yonclaw/images")
+        .join(&agent_id);
+    let _ = std::fs::create_dir_all(&image_dir);
+
+    let filename = format!("img_{}.jpg", chrono::Utc::now().timestamp_millis());
+    let path = image_dir.join(&filename);
+
+    // 使用 Rust 内置的 base64 解码（通过标准库的 STANDARD 引擎）
+    fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+        let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut lookup = [255u8; 256];
+        for (i, &b) in table.iter().enumerate() { lookup[b as usize] = i as u8; }
+        let input = input.trim_end_matches('=');
+        let mut out = Vec::with_capacity(input.len() * 3 / 4);
+        let bytes = input.as_bytes();
+        for chunk in bytes.chunks(4) {
+            let mut buf = [0u8; 4];
+            for (i, &b) in chunk.iter().enumerate() {
+                let v = lookup[b as usize];
+                if v == 255 { return Err(format!("无效 base64 字符: {}", b as char)); }
+                buf[i] = v;
+            }
+            out.push((buf[0] << 2) | (buf[1] >> 4));
+            if chunk.len() > 2 { out.push((buf[1] << 4) | (buf[2] >> 2)); }
+            if chunk.len() > 3 { out.push((buf[2] << 6) | buf[3]); }
+        }
+        Ok(out)
+    }
+
+    let bytes = decode_base64(&base64_data)?;
+
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("保存图片失败: {}", e))?;
+
+    log::info!("聊天图片已保存: {} ({} 字节)", path.display(), bytes.len());
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 async fn plaza_like_post(
     state: State<'_, Arc<AppState>>,
@@ -3932,6 +3978,7 @@ async fn main() {
             deny_tool_call,
             send_agent_message,
             get_agent_mailbox,
+            save_chat_image,
             plaza_create_post,
             plaza_list_posts,
             plaza_add_comment,

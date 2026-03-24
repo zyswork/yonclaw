@@ -507,6 +507,14 @@ function ChatTab({ agentId }: { agentId: string }) {
           ctx.drawImage(img, 0, 0, w, h)
           const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
           setPendingImages(prev => [...prev, dataUrl])
+
+          // 持久化到磁盘（异步，不阻塞 UI）
+          try {
+            const base64 = dataUrl.split(',')[1]
+            if (base64) {
+              invoke('save_chat_image', { agentId, base64Data: base64 }).catch(() => {})
+            }
+          } catch {}
         }
         img.src = reader.result as string
       }

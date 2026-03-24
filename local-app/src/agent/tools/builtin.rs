@@ -2182,13 +2182,17 @@ impl Tool for TtsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tts".to_string(),
-            description: "文字转语音。支持两种模式：local（免费，使用系统 TTS）和 api（高质量，需要 OpenAI API）。默认使用本地 TTS。".to_string(),
+            description: "文字转语音。支持 list_voices（列出可用声音）和 synthesize（合成语音）两种操作。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作类型：synthesize（合成语音，默认）/ list_voices（列出可用声音）"
+                    },
                     "text": {
                         "type": "string",
-                        "description": "要转换为语音的文本"
+                        "description": "要转换为语音的文本（synthesize 时必填）"
                     },
                     "mode": {
                         "type": "string",
@@ -2214,6 +2218,13 @@ impl Tool for TtsTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments.get("action").and_then(|a| a.as_str()).unwrap_or("synthesize");
+
+        // 列出可用声音
+        if action == "list_voices" {
+            return self.list_voices().await;
+        }
+
         let text = arguments.get("text")
             .and_then(|t| t.as_str())
             .ok_or("缺少 text 参数")?;
@@ -2231,6 +2242,44 @@ impl Tool for TtsTool {
 }
 
 impl TtsTool {
+    /// 列出可用声音
+    async fn list_voices(&self) -> Result<String, String> {
+        let mut voices = Vec::new();
+
+        // 本地声音
+        #[cfg(target_os = "macos")]
+        {
+            let output = tokio::process::Command::new("say")
+                .arg("-v").arg("?")
+                .output().await
+                .map_err(|e| format!("获取声音列表失败: {}", e))?;
+            let list = String::from_utf8_lossy(&output.stdout);
+            voices.push("## 本地声音 (macOS say)\n".to_string());
+            for line in list.lines().take(20) {
+                let parts: Vec<&str> = line.splitn(3, char::is_whitespace).collect();
+                if let Some(name) = parts.first() {
+                    voices.push(format!("- **{}** {}", name.trim(), parts.get(1).unwrap_or(&"")));
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            voices.push("## 本地声音 (espeak)\n".to_string());
+            voices.push("- zh (中文)\n- en (英文)\n- de (德文)\n- fr (法文)".to_string());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            voices.push("## 本地声音 (Windows SAPI)\n".to_string());
+            voices.push("- 系统默认声音".to_string());
+        }
+
+        // OpenAI 声音
+        voices.push("\n## OpenAI TTS (mode=api)\n".to_string());
+        voices.push("- **alloy** — 中性、平衡\n- **echo** — 低沉、稳重\n- **fable** — 温暖、叙事\n- **onyx** — 深沉、权威\n- **nova** — 明亮、活力\n- **shimmer** — 柔和、友好".to_string());
+
+        Ok(voices.join("\n"))
+    }
+
     /// 本地 TTS — 使用系统命令（macOS: say, Linux: espeak, Windows: PowerShell）
     async fn tts_local(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
         let output_dir = dirs::home_dir()
