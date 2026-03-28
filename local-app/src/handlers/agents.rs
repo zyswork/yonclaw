@@ -477,24 +477,43 @@ pub async fn delete_agent_relation(
     agent::RelationManager::delete(state.orchestrator.pool(), &relation_id).await
 }
 
-/// 列出 Agent 的子 Agent
+/// 列出 Agent 的子 Agent（从 DB 读取，保证数据完整性）
 #[tauri::command]
 pub async fn list_subagents(
     state: State<'_, Arc<AppState>>,
     agent_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let children = state.orchestrator.subagent_registry().list_children(&agent_id).await;
-    Ok(children.iter().map(|r| {
+    let rows = crate::agent::subagent::list_subagent_runs(
+        state.orchestrator.pool(),
+        Some(&agent_id),
+        None,
+        50,
+    ).await?;
+
+    Ok(rows.into_iter().map(|r| {
+        // 将 DB 小写状态转为前端 PascalCase
+        let status = match r["status"].as_str().unwrap_or("unknown") {
+            "running"   => "Running",
+            "success"   => "Completed",
+            "failed"    => "Failed",
+            "timeout"   => "Timeout",
+            "cancelled" => "Cancelled",
+            other       => other,
+        };
+        let task_idx = r["taskIndex"].as_i64().unwrap_or(0);
         serde_json::json!({
-            "id": r.id,
-            "parentId": r.parent_id,
-            "name": r.name,
-            "task": r.task,
-            "status": format!("{:?}", r.status),
-            "result": r.result,
-            "createdAt": r.created_at,
-            "finishedAt": r.finished_at,
-            "timeoutSecs": r.timeout_secs,
+            "id": r["id"],
+            "parentId": r["parentAgentId"],
+            "name": format!("任务 {}", task_idx + 1),
+            "task": r["goal"],
+            "status": status,
+            "result": r["result"],
+            "createdAt": r["createdAt"],
+            "finishedAt": r["finishedAt"],
+            "timeoutSecs": 0,
+            "model": r["model"],
+            "durationMs": r["durationMs"],
+            "error": r["error"],
         })
     }).collect())
 }

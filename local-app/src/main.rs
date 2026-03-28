@@ -548,6 +548,30 @@ async fn main() {
                 });
             }
 
+            // 桥接 EventBroadcaster → Tauri 事件（让前端能收到 agent-event）
+            {
+                use tauri::Manager;
+                let mut rx = app_state_for_setup.orchestrator.event_broadcaster.subscribe();
+                let handle = app.handle().clone();
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(event) => {
+                                let _ = handle.emit_all("agent-event", &event);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                log::warn!("EventBroadcaster: 丢失 {} 个事件（通道积压）", n);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                log::warn!("EventBroadcaster: 广播通道已关闭");
+                                break;
+                            }
+                        }
+                    }
+                });
+                log::info!("\u{2713} EventBroadcaster → Tauri 事件桥已启动");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

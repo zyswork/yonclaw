@@ -1006,11 +1006,23 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     if (showAgentPanel) loadAgentPanel()
   }, [showAgentPanel, loadAgentPanel])
 
-  // 定期刷新子 Agent 状态
+  // 定期刷新子 Agent 状态（兜底轮询，每 10s）
   useEffect(() => {
     if (!showAgentPanel) return
-    const timer = setInterval(loadAgentPanel, 5000)
+    const timer = setInterval(loadAgentPanel, 10000)
     return () => clearInterval(timer)
+  }, [showAgentPanel, loadAgentPanel])
+
+  // 事件驱动刷新：子代理派发/完成时立即更新面板
+  useEffect(() => {
+    if (!showAgentPanel) return
+    const unlistenP = listen<any>('agent-event', (e) => {
+      const type = e.payload?.type
+      if (type === 'subagent_spawned' || type === 'subagent_complete') {
+        loadAgentPanel()
+      }
+    })
+    return () => { unlistenP.then(f => f()) }
   }, [showAgentPanel, loadAgentPanel])
 
   // 发送 Agent 间消息

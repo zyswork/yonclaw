@@ -208,10 +208,6 @@ impl DelegateTaskTool {
             }
         };
 
-        // 清理临时 session（chat_messages 有 ON DELETE CASCADE 自动清理）
-        let _ = sqlx::query("DELETE FROM chat_sessions WHERE id = ?")
-            .bind(&session_id).execute(&pool).await;
-
         (task_index, goal, result)
     }
 
@@ -316,7 +312,6 @@ impl Tool for DelegateTaskTool {
             return Err(format!("最多同时 {} 个任务", max_concurrent * 3));
         }
 
-        let model_str = arguments["model"].as_str().unwrap_or("gpt-4o-mini").to_string();
         let async_mode = arguments.get("async_mode").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // 从注入的上下文中获取父 Agent 信息（由 agent_loop 注入到 arguments 中）
@@ -331,6 +326,24 @@ impl Tool for DelegateTaskTool {
         if parent_agent_id.is_empty() {
             log::warn!("delegate_task: 无法获取父 Agent 上下文（_parent_agent_id 为空）");
         }
+
+        // 模型选择：优先使用调用方显式指定的，否则继承父 Agent 的模型配置
+        let model_str = if let Some(m) = arguments["model"].as_str().filter(|s| !s.is_empty()) {
+            m.to_string()
+        } else if !parent_agent_id.is_empty() {
+            match sqlx::query_scalar::<_, String>("SELECT model FROM agents WHERE id = ?")
+                .bind(&parent_agent_id)
+                .fetch_optional(&self.pool)
+                .await {
+                Ok(Some(m)) if !m.is_empty() => {
+                    log::info!("delegate_task: 继承父 Agent 模型 {}", m);
+                    m
+                }
+                _ => "gpt-4o-mini".to_string(),
+            }
+        } else {
+            "gpt-4o-mini".to_string()
+        };
 
         let batch_id = uuid::Uuid::new_v4().to_string();
         log::info!(
