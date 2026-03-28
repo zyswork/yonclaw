@@ -964,29 +964,28 @@ sem.wait()
     Err("语音转文字不可用。请配置 OpenAI 兼容的 Provider（需要 Whisper API 支持），或在 macOS 上确保语音识别权限已授予。".to_string())
 }
 
-// ─── 录音控制（macOS 原生 AVAudioRecorder，零外部依赖） ────
+// ─── 录音控制 ──────────────────────────────────────────
 
-use std::sync::Mutex as StdMutex;
-use once_cell::sync::Lazy;
+#[cfg(target_os = "macos")]
+mod voice_recording {
+    use std::sync::Mutex as StdMutex;
+    use once_cell::sync::Lazy;
 
-static RECORDING_PROCESS: Lazy<StdMutex<Option<std::process::Child>>> = Lazy::new(|| StdMutex::new(None));
-static RECORDING_PATH: Lazy<StdMutex<Option<String>>> = Lazy::new(|| StdMutex::new(None));
+    static RECORDING_PROCESS: Lazy<StdMutex<Option<std::process::Child>>> = Lazy::new(|| StdMutex::new(None));
+    static RECORDING_PATH: Lazy<StdMutex<Option<String>>> = Lazy::new(|| StdMutex::new(None));
 
-/// 开始录音（macOS: Swift + AVAudioRecorder，无需 ffmpeg）
-#[tauri::command]
-pub async fn start_voice_recording() -> Result<String, String> {
-    let audio_dir = dirs::home_dir()
-        .ok_or("无法获取 home 目录")?
-        .join(".xianzhu/tts");
-    let _ = std::fs::create_dir_all(&audio_dir);
-    let path = audio_dir.join(format!("recording_{}.wav", chrono::Utc::now().timestamp_millis()));
-    let path_str = path.to_string_lossy().to_string();
+    pub async fn start() -> Result<String, String> {
+        let audio_dir = dirs::home_dir()
+            .ok_or("无法获取 home 目录")?
+            .join(".xianzhu/tts");
+        let _ = std::fs::create_dir_all(&audio_dir);
+        let path = audio_dir.join(format!("recording_{}.wav", chrono::Utc::now().timestamp_millis()));
+        let path_str = path.to_string_lossy().to_string();
 
-    // 用 Swift 脚本启动录音（macOS 原生 AVAudioRecorder，无需 AVAudioSession）
-    let child = std::process::Command::new("swift")
-        .arg("-e")
-        .arg(format!(
-            r#"
+        let child = std::process::Command::new("swift")
+            .arg("-e")
+            .arg(format!(
+                r#"
 import AVFoundation
 import Foundation
 let url = URL(fileURLWithPath: "{}")
@@ -1003,44 +1002,50 @@ signal(SIGTERM, {{ _ in exit(0) }})
 signal(SIGINT, {{ _ in exit(0) }})
 RunLoop.current.run()
 "#,
-            path_str
-        ))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动录音失败: {}", e))?;
+                path_str
+            ))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动录音失败: {}", e))?;
 
-    *RECORDING_PROCESS.lock().unwrap() = Some(child);
-    *RECORDING_PATH.lock().unwrap() = Some(path_str.clone());
+        *RECORDING_PROCESS.lock().unwrap() = Some(child);
+        *RECORDING_PATH.lock().unwrap() = Some(path_str.clone());
+        log::info!("录音开始: {}", path_str);
+        Ok(path_str)
+    }
 
-    log::info!("录音开始: {}", path_str);
-    Ok(path_str)
+    pub async fn stop() -> Result<String, String> {
+        let mut guard = RECORDING_PROCESS.lock().unwrap();
+        if let Some(ref mut child) = *guard {
+            unsafe { libc::kill(child.id() as i32, libc::SIGTERM); }
+            let _ = child.wait();
+        }
+        *guard = None;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let path = RECORDING_PATH.lock().unwrap().take()
+            .ok_or("没有进行中的录音")?;
+        let meta = std::fs::metadata(&path).map_err(|_| "录音文件不存在")?;
+        if meta.len() < 100 { return Err("录音时间太短".to_string()); }
+        log::info!("录音停止: {} ({}KB)", path, meta.len() / 1024);
+        Ok(path)
+    }
 }
 
-/// 停止录音并返回音频文件路径
+#[tauri::command]
+pub async fn start_voice_recording() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    { return voice_recording::start().await; }
+    #[cfg(not(target_os = "macos"))]
+    { Err("语音录制目前仅支持 macOS".to_string()) }
+}
+
 #[tauri::command]
 pub async fn stop_voice_recording() -> Result<String, String> {
-    let mut guard = RECORDING_PROCESS.lock().unwrap();
-    if let Some(ref mut child) = *guard {
-        // 发 SIGTERM 让 Swift 脚本优雅退出（触发 signal handler → exit → AVAudioRecorder 自动 finalize 文件）
-        unsafe { libc::kill(child.id() as i32, libc::SIGTERM); }
-        // 等最多 3 秒
-        let _ = child.wait();
-    }
-    *guard = None;
-
-    // 给文件系统一点时间 flush
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    let path = RECORDING_PATH.lock().unwrap().take()
-        .ok_or("没有进行中的录音")?;
-
-    let meta = std::fs::metadata(&path).map_err(|_| "录音文件不存在")?;
-    if meta.len() < 100 {
-        return Err("录音时间太短".to_string());
-    }
-
-    log::info!("录音停止: {} ({}KB)", path, meta.len() / 1024);
-    Ok(path)
+    #[cfg(target_os = "macos")]
+    { return voice_recording::stop().await; }
+    #[cfg(not(target_os = "macos"))]
+    { Err("语音录制目前仅支持 macOS".to_string()) }
 }
