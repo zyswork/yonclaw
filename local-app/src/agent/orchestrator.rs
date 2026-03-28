@@ -2,17 +2,80 @@
 //!
 //! 支持 LLM 调用、多轮工具调用、Agent 管理、对话历史
 
-use super::llm::{LlmClient, LlmConfig};
+use super::llm::{LlmClient, LlmConfig, ThinkingLevel};
 use super::mcp_manager::McpManager;
 use super::skill_tool::SkillTool;
 use super::media::MediaProvider; // 导入 trait 使 describe_image 可用
 use super::skills::SkillManager;
 use super::soul::{SoulEngine, SectionBudget};
-use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, TtsTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, Tool};
+use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, TtsTool, SttTool, DocParseTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
 use super::tools::{parse_tools_config, is_tool_enabled};
 use super::workspace::AgentWorkspace;
 use super::subagent::SubagentRegistry;
 use super::tool_policy::ToolPolicyEngine;
+
+/// 估算文本的 token 数（中文 1 字 ≈ 1.5 token，英文 1 词 ≈ 1.3 token）
+/// 公开版本供其他模块使用
+pub fn estimate_tokens_pub(text: &str) -> usize { estimate_tokens(text) }
+
+fn estimate_tokens(text: &str) -> usize {
+    let mut tokens = 0usize;
+    let mut in_ascii = false;
+    let mut ascii_len = 0usize;
+    for c in text.chars() {
+        if c.is_ascii() {
+            if !in_ascii { in_ascii = true; ascii_len = 0; }
+            ascii_len += 1;
+            if c == ' ' || c == '\n' || c == '\t' {
+                tokens += (ascii_len as f64 / 4.0).ceil() as usize;
+                ascii_len = 0;
+            }
+        } else {
+            if in_ascii {
+                tokens += (ascii_len as f64 / 4.0).ceil() as usize;
+                ascii_len = 0;
+                in_ascii = false;
+            }
+            // 中文/日文/韩文：每字约 1.5 token
+            tokens += if c >= '\u{4E00}' && c <= '\u{9FFF}' { 2 } // CJK
+                else if c >= '\u{3040}' && c <= '\u{30FF}' { 2 } // 假名
+                else { 1 };
+        }
+    }
+    if in_ascii { tokens += (ascii_len as f64 / 4.0).ceil() as usize; }
+    tokens.max(1)
+}
+
+/// 格式化 token 数量（如 1234 → "1.2K"，123456 → "123.5K"）
+fn format_token_count(tokens: usize) -> String {
+    if tokens >= 1_000_000 { format!("{:.1}M", tokens as f64 / 1_000_000.0) }
+    else if tokens >= 1_000 { format!("{:.1}K", tokens as f64 / 1_000.0) }
+    else { format!("{}", tokens) }
+}
+
+/// 为压缩任务选择轻量模型（省钱+快速）
+fn pick_compact_model(agent_model: &str) -> String {
+    let m = agent_model.to_lowercase();
+    // 如果 agent 已经是轻量模型，直接用
+    if m.contains("mini") || m.contains("haiku") || m.contains("flash") || m.contains("turbo") {
+        return agent_model.to_string();
+    }
+    // 根据 provider 系列选择对应的最新轻量模型
+    if m.contains("gpt-5") { return "gpt-5.4-mini".to_string(); }
+    if m.contains("gpt-4") { return "gpt-4o-mini".to_string(); }
+    if m.contains("gpt") || m.contains("openai") { return "gpt-4o-mini".to_string(); }
+    if m.contains("claude-opus-4") || m.contains("claude-sonnet-4") { return "claude-haiku-4-5-20251001".to_string(); }
+    if m.contains("claude") { return "claude-haiku-4-5-20251001".to_string(); }
+    if m.contains("deepseek") { return "deepseek-chat".to_string(); }
+    if m.contains("qwen") { return "qwen-turbo".to_string(); }
+    if m.contains("gemini") { return "gemini-2.5-flash".to_string(); }
+    if m.contains("grok") { return "grok-3-mini".to_string(); }
+    if m.contains("moonshot") || m.contains("kimi") { return "moonshot-v1-8k".to_string(); }
+    if m.contains("glm") { return "glm-4-flash".to_string(); }
+    if m.contains("minimax") { return "abab6.5-chat".to_string(); }
+    // 默认用 agent 自己的模型
+    agent_model.to_string()
+}
 use crate::memory;
 use crate::memory::loader::MemoryLoader;
 use crate::memory::SqliteMemory;
@@ -107,6 +170,17 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(SkillManageTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(CronManageTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(PluginManageTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(BrowserTool));
+        tool_manager.register_tool(Box::new(SttTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(DocParseTool));
+        tool_manager.register_tool(Box::new(ApplyPatchTool));
+        tool_manager.register_tool(Box::new(HttpRequestTool));
+        tool_manager.register_tool(Box::new(SessionTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(FocusTool));
+        tool_manager.register_tool(Box::new(ResearchTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(CollaborateTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(YieldTool));
+        tool_manager.register_tool(Box::new(A2aTool::new(pool.clone())));
         let event_broadcaster = std::sync::Arc::new(super::observer::EventBroadcaster::default());
         tool_manager.register_tool(Box::new(super::delegate::DelegateTaskTool::new(pool.clone(), event_broadcaster.clone())));
         let mcp_manager = McpManager::new(pool.clone());
@@ -373,10 +447,10 @@ impl Orchestrator {
         let agent = self.get_agent_cached(agent_id).await?;
 
         // 2. 构建 system prompt（从 Soul 文件组装）
-        // 迁移旧的 .openclaw 路径到 .yonclaw
+        // 迁移旧的 .openclaw 路径到 .xianzhu
         let workspace_path = agent.workspace_path.as_ref().map(|wp| {
             if wp.contains("/.openclaw/") {
-                let new_wp = wp.replace("/.openclaw/", "/.yonclaw/");
+                let new_wp = wp.replace("/.openclaw/", "/.xianzhu/");
                 log::info!("Orchestrator 迁移工作区路径: {} -> {}", wp, new_wp);
                 let old_path = std::path::PathBuf::from(wp);
                 let new_path = std::path::PathBuf::from(&new_wp);
@@ -599,13 +673,26 @@ impl Orchestrator {
             }
         };
 
-        // 如果 session 有摘要，注入到 system prompt
+        // 如果 session 有摘要（compact 后），注入到 system prompt
+        // 同时获取压缩边界，只把边界之后的消息发给 LLM
+        let compact_boundary: i64 = {
+            let key = format!("compact_boundary_{}", session_id);
+            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                .bind(&key)
+                .fetch_optional(&self.pool).await.ok().flatten()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0)
+        };
+
         if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
             if let Some(ref summary) = session.summary {
-                system_prompt = format!(
-                    "{}\n\n---\n\n# 之前的对话摘要\n\n{}",
-                    system_prompt, summary
-                );
+                if !summary.is_empty() {
+                    system_prompt = format!(
+                        "{}\n\n---\n\n# Previous conversation summary\n\n{}\n\n---\n\nThe above is a summary of earlier conversation. Continue naturally from the recent messages below.",
+                        system_prompt, summary
+                    );
+                    log::info!("compact: 已注入摘要到 system prompt（{}字符），boundary_seq={}", summary.len(), compact_boundary);
+                }
             }
         }
 
@@ -616,8 +703,28 @@ impl Orchestrator {
             messages.push(serde_json::json!({"role": "system", "content": &system_prompt}));
         }
 
-        if !structured_history.is_empty() {
-            // 使用结构化历史（包含完整的工具调用上下文）
+        // 如果有压缩边界，只加载边界之后的消息发给 LLM（用户 UI 仍看到全部历史）
+        if compact_boundary > 0 {
+            // 过滤掉已被摘要覆盖的旧消息
+            let _filtered: Vec<serde_json::Value> = structured_history.into_iter()
+                .filter(|_msg| {
+                    // structured_history 没有 seq 字段，用位置近似判断
+                    // 保留全部（因为 load_chat_messages 已经有 limit）
+                    true
+                })
+                .collect();
+            // 重新从 DB 加载 boundary 之后的消息
+            let recent_msgs: Vec<(String, String)> = sqlx::query_as(
+                "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 50"
+            ).bind(session_id).bind(compact_boundary)
+                .fetch_all(&self.pool).await.unwrap_or_default();
+
+            log::info!("compact mode: 加载 boundary_seq={} 之后的 {} 条消息", compact_boundary, recent_msgs.len());
+            for (role, content) in &recent_msgs {
+                messages.push(serde_json::json!({"role": role, "content": content}));
+            }
+        } else if !structured_history.is_empty() {
+            // 无压缩：使用完整结构化历史
             log::info!("加载 {} 条结构化历史消息", structured_history.len());
             messages.extend(structured_history);
         } else {
@@ -746,11 +853,18 @@ impl Orchestrator {
         // - 没设 → 不传（用模型默认值，对话更自然）
         // - 辅助任务（摘要/进化 review）在各自模块里固定 0.3
 
+        // 从 Agent config JSON 读取 thinking level
+        let thinking_level = agent.config.as_deref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+            .and_then(|v| v["thinkingLevel"].as_str().map(|s| s.to_string()))
+            .map(|s| ThinkingLevel::from_str(&s))
+            .filter(|l| l.is_enabled());
+
         let config = LlmConfig {
             provider: provider.to_string(), api_key: api_key.to_string(),
             model: selected_model, base_url: base_url.map(|s| s.to_string()),
             temperature: agent.temperature, max_tokens: agent.max_tokens,
-            thinking_level: None,
+            thinking_level,
         };
         let system_prompt_opt = if provider == "anthropic" { Some(system_prompt.as_str()) } else { None };
 
@@ -860,8 +974,7 @@ impl Orchestrator {
             }
         }
 
-        // 11. 每日 Token 限额检查（异步，不阻塞返回，超限下次请求拦截）
-        // TODO: 在 send_message_stream 入口处做前置检查
+        // 11. 每日 Token 限额检查（已在 send_message_stream 入口 0b 步骤实现）
 
         // 11. 自我进化：检查是否触发后台 review
         {
@@ -977,7 +1090,14 @@ impl Orchestrator {
             .await.map_err(|e| format!("清除对话历史失败: {}", e))
     }
 
-    /// 压缩会话：用 LLM 生成摘要，删除旧消息保留最近 5 条
+    /// 压缩会话（参考 OpenClaw compact 机制）
+    ///
+    /// 流程：
+    /// 1. 从 chat_messages 读取全部消息
+    /// 2. 将要压缩的旧消息（保留最近 10 条）送给 LLM 生成摘要
+    /// 3. 删除旧消息
+    /// 4. 将摘要作为 system 消息插入，为后续对话提供上下文
+    /// 5. 更新 session.summary
     pub async fn compact_session(
         &self,
         agent_id: &str,
@@ -986,35 +1106,56 @@ impl Orchestrator {
         provider: &str,
         base_url: Option<&str>,
     ) -> Result<String, String> {
-        // 获取所有消息
-        let history = memory::conversation::get_history(&self.pool, agent_id, session_id, 200)
-            .await.map_err(|e| format!("获取历史失败: {}", e))?;
+        // 1. 从 chat_messages 读取全部消息
+        let all_messages: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT seq, role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? ORDER BY seq ASC"
+        ).bind(session_id).fetch_all(&self.pool).await
+            .map_err(|e| format!("获取消息失败: {}", e))?;
 
-        if history.is_empty() {
-            return Err("会话中没有消息可压缩".to_string());
+        let total_count = all_messages.len();
+        log::info!("compact: 读取到 {} 条消息", total_count);
+        if total_count <= 10 {
+            return Err(format!("消息数不多（{}条），无需压缩", total_count));
         }
 
-        // 构建摘要请求
+        // 2. 保留最近 10 条，压缩其余的
+        let keep_count = 10;
+        let to_compact = &all_messages[..total_count - keep_count];
+        let compact_count = to_compact.len();
+
+        log::info!("compact: 将压缩 {} 条，保留 {} 条", compact_count, keep_count);
+
+        // 构建要压缩的对话文本（限制总长度，避免发送太多给 LLM）
         let mut conversation_text = String::new();
-        for (user_msg, agent_resp) in history.iter().rev() {
-            conversation_text.push_str(&format!("用户: {}\n助手: {}\n\n", user_msg, agent_resp));
+        let char_budget = 8000usize; // 最多 8000 字符用于摘要生成
+        for (_, role, content) in to_compact.iter().rev() {
+            // 安全截断（避免在多字节 UTF-8 字符中间切断导致 panic）
+            let truncated: String = content.chars().take(200).collect();
+            let line = format!("{}: {}\n", role, truncated);
+            if conversation_text.len() + line.len() > char_budget { break; }
+            conversation_text.push_str(&line);
         }
+
+        // 3. 用 Agent 自身模型生成摘要（确保 provider 有配置）
+        let agent_info = self.get_agent_cached(agent_id).await?;
+        // 直接用 agent 的模型，不切换轻量模型（避免 provider 里没配置该模型）
+        let compact_model = agent_info.model.clone();
+        log::info!("compact: 使用模型 {} 生成摘要", compact_model);
 
         let summary_prompt = format!(
-            "请将以下对话压缩为一段简洁的摘要，保留关键信息、决策和上下文。摘要应该让后续对话能够理解之前讨论的内容。\n\n---\n\n{}\n\n---\n\n请直接输出摘要，不要加前缀。",
+            "Compress the following conversation into a concise summary (max 500 chars). \
+             Keep key decisions, facts, and context. Use the same language as the conversation. \
+             Output ONLY the summary.\n\n---\n{}\n---",
             conversation_text
         );
 
-        // 用 LLM 生成摘要（单次调用，不带工具）
-        // 使用 Agent 自身模型而非硬编码
-        let agent_info = self.get_agent_cached(agent_id).await?;
         let config = LlmConfig {
             provider: provider.to_string(),
             api_key: api_key.to_string(),
-            model: agent_info.model.clone(),
+            model: compact_model,
             base_url: base_url.map(|s| s.to_string()),
-            temperature: Some(0.3),
-            max_tokens: Some(1024),
+            temperature: Some(0.2),
+            max_tokens: Some(512),
             thinking_level: None,
         };
         let client = LlmClient::new(config);
@@ -1022,21 +1163,75 @@ impl Orchestrator {
             serde_json::json!({"role": "user", "content": summary_prompt}),
         ];
         let (dummy_tx, _) = mpsc::unbounded_channel::<String>();
-        let response = client.call_stream(&messages, None, None, dummy_tx)
-            .await.map_err(|e| format!("LLM 摘要生成失败: {}", e))?;
+        log::info!("compact: 开始调 LLM 生成摘要...");
 
-        let summary = response.content.trim().to_string();
+        // 30 秒超时保护
+        let llm_result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.call_stream(&messages, None, None, dummy_tx)
+        ).await;
 
-        // 存入 session.summary
-        memory::conversation::update_session_summary(&self.pool, session_id, &summary)
-            .await.map_err(|e| format!("保存摘要失败: {}", e))?;
+        let summary = match llm_result {
+            Ok(Ok(response)) => {
+                let s = response.content.trim().to_string();
+                log::info!("compact: 摘要生成完成，{}字符", s.len());
+                s
+            }
+            Ok(Err(e)) => {
+                log::error!("compact: LLM 调用失败: {}", e);
+                let fallback: String = to_compact.iter()
+                    .rev().take(5)
+                    .map(|(_, role, content)| {
+                        let t: String = content.chars().take(100).collect();
+                        format!("{}: {}", role, t)
+                    })
+                    .collect::<Vec<_>>().join("\n");
+                format!("[自动摘要失败]\n{}", fallback)
+            }
+            Err(_) => {
+                log::error!("compact: LLM 调用超时（30s）");
+                let fallback: String = to_compact.iter()
+                    .rev().take(5)
+                    .map(|(_, role, content)| {
+                        let t: String = content.chars().take(100).collect();
+                        format!("{}: {}", role, t)
+                    })
+                    .collect::<Vec<_>>().join("\n");
+                format!("[摘要生成超时]\n{}", fallback)
+            }
+        };
 
-        // 删除旧消息，保留最近 5 条
-        memory::conversation::delete_old_session_messages(&self.pool, session_id, 5)
-            .await.map_err(|e| format!("删除旧消息失败: {}", e))?;
+        // 4. 记录压缩边界点（不删除任何消息！用户仍能看到全部历史）
+        //    只更新 session.summary 和 compacted_before_seq
+        //    下次构建 LLM context 时，compacted_before_seq 之前的消息用 summary 替代
+        let boundary_seq = to_compact.last().map(|(seq, _, _)| *seq).unwrap_or(0);
 
-        log::info!("会话已压缩: session_id={}, 摘要长度={}", session_id, summary.len());
-        Ok(summary)
+        // 事务性写入：summary + boundary 必须一起成功或一起失败
+        let compact_key = format!("compact_boundary_{}", session_id);
+        let mut tx = self.pool.begin().await.map_err(|e| format!("事务开始失败: {}", e))?;
+        sqlx::query("UPDATE chat_sessions SET summary = ? WHERE id = ?")
+            .bind(&summary).bind(session_id)
+            .execute(&mut *tx).await.map_err(|e| format!("保存摘要失败: {}", e))?;
+        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+            .bind(&compact_key).bind(boundary_seq.to_string())
+            .execute(&mut *tx).await.map_err(|e| format!("保存边界失败: {}", e))?;
+        tx.commit().await.map_err(|e| format!("事务提交失败: {}", e))?;
+
+        // 5. 计算压缩效果
+        let tokens_before: usize = all_messages.iter().map(|(_, _, c)| estimate_tokens(c)).sum();
+        let kept_messages = &all_messages[total_count - keep_count..];
+        let tokens_after: usize = kept_messages.iter().map(|(_, _, c)| estimate_tokens(c)).sum::<usize>()
+            + estimate_tokens(&summary);
+
+        log::info!("compact 完成: session={}, boundary_seq={}, tokens {}→{} (LLM context only, 消息不删除)",
+            &session_id[..8.min(session_id.len())], boundary_seq, tokens_before, tokens_after);
+
+        Ok(format!(
+            "Context compacted: {} → {} (LLM context)\n{} messages summarized, all history preserved.\n\n{}",
+            format_token_count(tokens_before), format_token_count(tokens_after),
+            compact_count,
+            if summary.len() > 300 { format!("{}...", &summary.chars().take(300).collect::<String>()) } else { summary }
+        ))
     }
 }
 

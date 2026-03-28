@@ -5,6 +5,7 @@ export interface User {
   enterpriseId: string
   email: string
   name: string
+  passwordHash?: string
   role: 'admin' | 'manager' | 'user'
   permissions: string[]
   status: 'active' | 'inactive' | 'suspended'

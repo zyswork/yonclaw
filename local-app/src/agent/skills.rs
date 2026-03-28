@@ -11,8 +11,8 @@
 //! description: 执行终端命令
 //! trigger_keywords: [执行, 运行, shell]
 //! permissions:
-//!   read_paths: ["~/.yonclaw"]
-//!   write_paths: ["~/.yonclaw/agents"]
+//!   read_paths: ["~/.xianzhu"]
+//!   write_paths: ["~/.xianzhu/agents"]
 //!   exec_commands: [ls, cat, grep]
 //!   network: false
 //! tools:
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_legacy() {
         // 旧格式（3 字段）向后兼容
-        let temp = std::env::temp_dir().join("yonclaw_skill_test_legacy");
+        let temp = std::env::temp_dir().join("xianzhu_skill_test_legacy");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn test_parse_extended_manifest() {
         // 扩展格式（含 tools/permissions）
-        let temp = std::env::temp_dir().join("yonclaw_skill_test_ext");
+        let temp = std::env::temp_dir().join("xianzhu_skill_test_ext");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 
@@ -654,8 +654,8 @@ version: 0.1.0
 description: 执行终端命令
 trigger_keywords: [执行, 运行, shell]
 permissions:
-  read_paths: ["~/.yonclaw"]
-  write_paths: ["~/.yonclaw/agents"]
+  read_paths: ["~/.xianzhu"]
+  write_paths: ["~/.xianzhu/agents"]
   exec_commands: [ls, cat, grep]
   network: false
 tools:
@@ -700,7 +700,7 @@ requires:
 
     #[test]
     fn test_match_keywords() {
-        let temp = std::env::temp_dir().join("yonclaw_skill_kw");
+        let temp = std::env::temp_dir().join("xianzhu_skill_kw");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 
@@ -722,7 +722,7 @@ requires:
 
     #[test]
     fn test_empty_skills_dir() {
-        let temp = std::env::temp_dir().join("yonclaw_skill_empty2");
+        let temp = std::env::temp_dir().join("xianzhu_skill_empty2");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 
@@ -788,7 +788,7 @@ requires:
 
     #[test]
     fn test_render_index() {
-        let temp = std::env::temp_dir().join("yonclaw_skill_render");
+        let temp = std::env::temp_dir().join("xianzhu_skill_render");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 

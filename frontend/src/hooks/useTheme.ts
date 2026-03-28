@@ -7,9 +7,9 @@ function getSystemTheme(): 'light' | 'dark' {
 }
 
 function resolveInitial(): Theme {
-  const saved = localStorage.getItem('yonclaw.theme') as Theme | null
+  const saved = localStorage.getItem('xianzhu.theme') as Theme | null
   if (saved && ['light', 'dark', 'system'].includes(saved)) return saved
-  return 'light' // 默认浅色（当前主题）
+  return 'dark' // 默认深色主题
 }
 
 function applyTheme(theme: Theme) {
@@ -26,7 +26,7 @@ interface ThemeState {
 export const useTheme = create<ThemeState>((set, get) => {
   // 初始化时应用主题
   const initial = resolveInitial()
-  setTimeout(() => applyTheme(initial), 0)
+  applyTheme(initial) // 立即应用，避免闪屏
 
   // 监听系统主题变化
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -36,7 +36,7 @@ export const useTheme = create<ThemeState>((set, get) => {
   return {
     theme: initial,
     setTheme: (t: Theme) => {
-      localStorage.setItem('yonclaw.theme', t)
+      localStorage.setItem('xianzhu.theme', t)
       applyTheme(t)
       set({ theme: t })
     },

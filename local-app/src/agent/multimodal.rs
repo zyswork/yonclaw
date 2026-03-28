@@ -70,11 +70,11 @@ pub fn extract_image_urls(text: &str) -> Vec<String> {
     urls
 }
 
-/// 把 base64 图片保存到磁盘（~/.yonclaw/media/），返回保存后的文件路径列表
+/// 把 base64 图片保存到磁盘（~/.xianzhu/media/），返回保存后的文件路径列表
 pub fn save_images_to_disk(image_urls: &[String], agent_id: &str) -> Vec<String> {
     let media_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".yonclaw")
+        .join(".xianzhu")
         .join("media");
     let _ = std::fs::create_dir_all(&media_dir);
 

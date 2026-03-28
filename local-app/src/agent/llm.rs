@@ -66,8 +66,12 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value], current_provi
     for msg in messages {
         let role = msg["role"].as_str().unwrap_or("");
 
-        // 跳过 error/aborted 的 assistant 消息（参考 OpenClaw transformMessages:109）
+        // 跳过空 content 的 assistant 消息（null / 空字符串）
         if role == "assistant" {
+            if msg["content"].is_null() || (msg["content"].as_str() == Some("")) {
+                log::debug!("跳过空 content 的 assistant 消息");
+                continue;
+            }
             if let Some(stop) = msg["stop_reason"].as_str() {
                 if stop == "error" || stop == "aborted" {
                     log::debug!("跳过 error/aborted assistant 消息");
@@ -165,8 +169,17 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value], current_provi
                         result.push(serde_json::json!({"role": "assistant", "content": blocks}));
                     }
                 } else {
-                    // 纯文本 assistant — 保持字符串
-                    result.push(msg.clone());
+                    // 纯文本 assistant — 转为 Anthropic 数组格式
+                    if let Some(text) = msg["content"].as_str() {
+                        if !text.is_empty() {
+                            result.push(serde_json::json!({
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": text}]
+                            }));
+                        }
+                    } else {
+                        result.push(msg.clone());
+                    }
                 }
             }
             _ => {
@@ -188,7 +201,14 @@ fn sanitize_messages_for_anthropic(messages: &[serde_json::Value], current_provi
     // 第四步：确保第一条消息是 user（Anthropic 要求）
     if let Some(first) = result.first() {
         if first["role"].as_str() != Some("user") {
-            result.insert(0, serde_json::json!({"role": "user", "content": "Continue."}));
+            result.insert(0, serde_json::json!({"role": "user", "content": [{"type": "text", "text": "Continue."}]}));
+        }
+    }
+
+    // 第五步：确保所有消息的 content 都是数组格式（部分严格代理要求）
+    for msg in result.iter_mut() {
+        if let Some(text) = msg["content"].as_str().map(|s| s.to_string()) {
+            msg["content"] = serde_json::json!([{"type": "text", "text": text}]);
         }
     }
 
@@ -514,6 +534,8 @@ pub struct LlmResponse {
     pub stop_reason: String,
     /// API 返回的 token 使用统计
     pub usage: Option<LlmUsage>,
+    /// Anthropic extended thinking 内容
+    pub thinking_content: String,
 }
 
 /// Token 使用统计
@@ -723,7 +745,7 @@ impl LlmClient {
                     let role = m["role"].as_str().unwrap_or("?");
                     let content_type = if m["content"].is_array() { "array" } else if m["content"].is_string() { "STRING(!)" } else { "other(!)" };
                     let has_tool_calls = m.get("tool_calls").is_some();
-                    let preview = &m["content"].to_string()[..m["content"].to_string().len().min(80)];
+                    let preview: String = m["content"].to_string().chars().take(80).collect();
                     log::info!("Anthropic msg[{}]: role={}, content={}, tool_calls={}, preview={}", i, role, content_type, has_tool_calls, preview);
                 }
                 let mut body = serde_json::json!({
@@ -1462,6 +1484,15 @@ impl LlmClient {
                         if !text.is_empty() {
                             result.content.push_str(text);
                             let _ = tx.send(text.to_string());
+                        }
+                    }
+                } else if delta["type"].as_str() == Some("thinking_delta") {
+                    // Anthropic extended thinking：流式思维内容
+                    if let Some(thinking) = delta["thinking"].as_str() {
+                        if !thinking.is_empty() {
+                            result.thinking_content.push_str(thinking);
+                            // 用特殊前缀发送给前端，便于区分
+                            let _ = tx.send(format!("\x01THINKING\x01{}", thinking));
                         }
                     }
                 } else if delta["type"].as_str() == Some("input_json_delta") {

@@ -119,9 +119,10 @@ impl BridgeClient {
             "agents": agent_ids,
         });
 
-        write.send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::to_string(&register_msg).unwrap()
-        )).await.map_err(|e| format!("发送 register 失败: {}", e))?;
+        let register_json = serde_json::to_string(&register_msg)
+            .map_err(|e| format!("register 序列化失败: {}", e))?;
+        write.send(tokio_tungstenite::tungstenite::Message::Text(register_json))
+            .await.map_err(|e| format!("发送 register 失败: {}", e))?;
 
         log::info!("Bridge: 已发送 register（{} capabilities, {} agents）", capabilities.len(), agent_ids.len());
 
@@ -243,9 +244,9 @@ impl BridgeClient {
                                     "ping" => {
                                         // 回复 pong
                                         let pong = serde_json::json!({"type": "pong"});
-                                        let _ = write.send(tokio_tungstenite::tungstenite::Message::Text(
-                                            serde_json::to_string(&pong).unwrap()
-                                        )).await;
+                                        if let Ok(pong_str) = serde_json::to_string(&pong) {
+                                            let _ = write.send(tokio_tungstenite::tungstenite::Message::Text(pong_str)).await;
+                                        }
                                     }
                                     "sync_ack" => {
                                         log::info!("Bridge: 同步确认 pushed={}", json["pushed"]);
@@ -276,10 +277,13 @@ impl BridgeClient {
                         "type": "heartbeat",
                         "timestamp": chrono::Utc::now().timestamp_millis(),
                     });
-                    if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(
-                        serde_json::to_string(&hb).unwrap()
-                    )).await {
-                        return Err(format!("心跳发送失败: {}", e));
+                    match serde_json::to_string(&hb) {
+                        Ok(hb_str) => {
+                            if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(hb_str)).await {
+                                return Err(format!("心跳发送失败: {}", e));
+                            }
+                        }
+                        Err(e) => log::warn!("Bridge: 心跳序列化失败: {}", e),
                     }
                 }
             }

@@ -7,7 +7,7 @@ import { en } from './locales/en'
 const translations: Record<Locale, TranslationMap> = { 'zh-CN': zhCN, 'en': en }
 
 function resolveInitialLocale(): Locale {
-  const saved = localStorage.getItem('yonclaw.locale')
+  const saved = localStorage.getItem('xianzhu.locale')
   if (saved && SUPPORTED_LOCALES.includes(saved as Locale)) return saved as Locale
   const nav = navigator.language
   if (nav.startsWith('zh')) return 'zh-CN'
@@ -33,7 +33,7 @@ interface I18nState {
 export const useI18n = create<I18nState>((set, get) => ({
   locale: resolveInitialLocale(),
   setLocale: (locale: Locale) => {
-    localStorage.setItem('yonclaw.locale', locale)
+    localStorage.setItem('xianzhu.locale', locale)
     set({ locale })
   },
   t: (key: string, params?: Record<string, string | number>) => {

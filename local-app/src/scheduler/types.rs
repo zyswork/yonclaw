@@ -33,6 +33,25 @@ pub enum Schedule {
         #[serde(default)]
         last_hash: Option<String>,
     },
+    /// 消息触发（特定渠道/关键词匹配时执行）
+    OnMessage {
+        /// 渠道过滤（如 "telegram"/"discord"/"*" 全部）
+        #[serde(default)]
+        channel: String,
+        /// 关键词匹配（正则表达式，为空则匹配所有消息）
+        #[serde(default)]
+        keyword_pattern: Option<String>,
+        /// 发送者过滤（为空则不限）
+        #[serde(default)]
+        sender_filter: Option<String>,
+    },
+    /// Agent 间消息触发（另一个 Agent 发消息时执行）
+    OnAgentEvent {
+        /// 源 Agent ID（"*" 表示任意）
+        source_agent: String,
+        /// 事件类型（如 "task_complete"/"error"/"*"）
+        event_type: String,
+    },
 }
 
 /// 任务执行类型

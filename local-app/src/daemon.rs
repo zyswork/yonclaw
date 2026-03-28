@@ -4,7 +4,7 @@
 //! macOS: launchd (LaunchAgent)
 //! Linux: systemd (user service)
 //!
-//! 让 YonClaw 在后台运行，无需打开桌面窗口。
+//! 让 XianZhu 在后台运行，无需打开桌面窗口。
 
 use std::path::PathBuf;
 
@@ -19,7 +19,7 @@ pub struct ServiceManager {
 impl ServiceManager {
     pub fn new(executable: PathBuf) -> Self {
         Self {
-            service_name: "com.yonclaw.agent".to_string(),
+            service_name: "com.xianzhu.agent".to_string(),
             executable,
         }
     }
@@ -75,7 +75,7 @@ impl ServiceManager {
         let plist_path = self.launchd_plist_path();
         let log_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Logs/YonClaw");
+            .join("Library/Logs/XianZhu");
         let _ = std::fs::create_dir_all(&log_dir);
 
         let plist = format!(
@@ -157,7 +157,7 @@ impl ServiceManager {
         let unit_path = self.systemd_unit_path();
         let unit = format!(
             r#"[Unit]
-Description=YonClaw Agent Daemon
+Description=XianZhu Agent Daemon
 After=network.target
 
 [Service]

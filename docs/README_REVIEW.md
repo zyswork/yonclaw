@@ -2,7 +2,7 @@
 
 **日期**: 2026-03-15  
 **评审人**: Gemini (前端 UX 专家)  
-**项目**: YonClaw Local App
+**项目**: XianZhu Local App
 
 ---
 

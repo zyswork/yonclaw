@@ -301,23 +301,223 @@ fn truncate_output(output: &str, max_bytes: usize) -> String {
     )
 }
 
+/// 命令最大长度限制（防止超长混淆命令）
+const MAX_COMMAND_CHARS: usize = 10_000;
+
+/// 不可见 Unicode 码点集合（参考 OpenClaw 73+ 码点）
+///
+/// 包含零宽字符、变体选择符、BiDi 覆盖、格式控制符等
+fn is_invisible_unicode(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp,
+        // 软连字符
+        0x00AD |
+        // 组合用字素连接符
+        0x034F |
+        // 阿拉伯字母标记
+        0x061C |
+        // 韩文填充符
+        0x115F | 0x1160 | 0x3164 | 0xFFA0 |
+        // 高棉元音固有符
+        0x17B4 | 0x17B5 |
+        // 蒙古语变体选择符
+        0x180B..=0x180F |
+        // BOM / 零宽无断空格
+        0xFEFF |
+        // 零宽字符 + BiDi 控制
+        0x200B..=0x200F |
+        // BiDi 覆盖/嵌入
+        0x202A..=0x202E |
+        // 不可见数学运算符 + 隔离
+        0x2060..=0x2069 |
+        // 已废弃格式字符
+        0x206A..=0x206F |
+        // 变体选择符 (VS1-VS16)
+        0xFE00..=0xFE0F |
+        // 语言标签
+        0xE0001 |
+        // Tag 空格到 ~ (标签修饰符)
+        0xE0020..=0xE007F |
+        // 补充变体选择符 (VS17-VS256)
+        0xE0100..=0xE01EF
+    )
+}
+
+/// 剥离不可见 Unicode 字符（用于命令规范化分析）
+fn strip_invisible_unicode(cmd: &str) -> String {
+    cmd.chars().filter(|c| !is_invisible_unicode(*c)).collect()
+}
+
+/// Windows UNC/SMB 路径检测（防止 SMB 凭证泄漏）
+///
+/// 攻击向量：LLM 被诱导执行包含 UNC 路径的命令（如 \\evil.com\share），
+/// Windows 会自动发送 NTLM 凭证到远程 SMB 服务器
+fn detect_unc_path(cmd: &str) -> Option<String> {
+    for line in cmd.lines() {
+        let trimmed = line.trim();
+        // 检测 \\server\share 或 \\?\UNC\ 形式
+        if trimmed.contains("\\\\") {
+            // 排除 shell 转义序列（\\n, \\t 等）
+            let re_unc = regex::Regex::new(r"\\\\[a-zA-Z0-9._\-]+\\[a-zA-Z0-9._\-]+").ok()?;
+            if re_unc.is_match(trimmed) {
+                return Some(format!(
+                    "安全拦截：检测到 Windows UNC 路径，可能导致 SMB 凭证泄漏。命令: {}",
+                    &trimmed[..trimmed.len().min(80)]
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// 命令混淆检测结构
+struct ObfuscationResult {
+    detected: bool,
+    reasons: Vec<String>,
+}
+
+/// 安全 curl|sh 白名单 URL
+const SAFE_CURL_PIPE_HOSTS: &[&str] = &[
+    "brew.sh",
+    "get.pnpm.io",
+    "bun.sh",
+    "sh.rustup.rs",
+    "get.docker.com",
+    "install.python-poetry.org",
+];
+
+/// 检测命令混淆/编码攻击（参考 OpenClaw 16 种模式）
+///
+/// 攻击向量：LLM 被诱导执行经过 base64/hex/printf 编码后管道到 shell 的命令，
+/// 绕过基于关键词的安全检查
+fn detect_command_obfuscation(cmd: &str) -> ObfuscationResult {
+    if cmd.is_empty() {
+        return ObfuscationResult { detected: false, reasons: vec![] };
+    }
+    if cmd.len() > MAX_COMMAND_CHARS {
+        return ObfuscationResult {
+            detected: true,
+            reasons: vec!["命令过长，可能包含混淆内容".to_string()],
+        };
+    }
+
+    // NFKC 规范化 + 剥离不可见字符
+    let normalized = strip_invisible_unicode(cmd);
+    let mut reasons = Vec::new();
+
+    // 混淆模式正则定义（使用 r#"..."# 避免转义问题）
+    let patterns: &[(&str, &str)] = &[
+        // base64 解码管道到 shell
+        (r#"(?i)base64\s+(?:-d|--decode)\b.*\|\s*(?:sh|bash|zsh|dash|ksh|fish)\b"#,
+         "Base64 解码管道到 shell 执行"),
+        // xxd 十六进制解码管道到 shell
+        (r#"(?i)xxd\s+-r\b.*\|\s*(?:sh|bash|zsh|dash|ksh|fish)\b"#,
+         "十六进制解码管道到 shell 执行"),
+        // printf 转义管道到 shell
+        (r#"(?i)printf\s+.*\\x[0-9a-f]{2}.*\|\s*(?:sh|bash|zsh|dash|ksh|fish)\b"#,
+         "printf 转义序列管道到 shell 执行"),
+        // eval + 解码
+        (r#"(?i)eval\s+.*(?:base64|xxd|printf|decode)"#,
+         "eval 结合编码/解码，可能执行隐藏命令"),
+        // 管道直接到 shell 解释器
+        (r#"(?im)\|\s*(?:sh|bash|zsh|dash|ksh|fish)\b(?:\s+[^|;\n\r]+)?\s*$"#,
+         "内容直接管道到 shell 解释器"),
+        // shell -c 内含命令替换 + 解码
+        (r#"(?i)(?:sh|bash|zsh|dash|ksh|fish)\s+-c\s+["'][^"']*\$\([^)]*(?:base64|xxd|printf)"#,
+         "shell -c 内含命令替换解码"),
+        // 进程替换执行远程内容
+        (r#"(?i)(?:sh|bash|zsh|dash|ksh|fish)\s+<\(\s*(?:curl|wget)\b"#,
+         "进程替换执行远程内容"),
+        // source/. 进程替换远程内容
+        (r#"(?i)(?:source|\.)\s+<\(\s*(?:curl|wget)\b"#,
+         "source 进程替换执行远程内容"),
+        // shell heredoc 执行
+        (r#"(?i)(?:sh|bash|zsh|dash|ksh|fish)\s+<<-?\s*['"]?[a-zA-Z_][\w-]*['"]?"#,
+         "shell heredoc 执行"),
+        // bash 八进制转义（可能混淆命令）
+        (r#"\$'(?:[^']*\\[0-7]{3}){2,}"#,
+         "bash 八进制转义序列（可能混淆命令）"),
+        // bash 十六进制转义
+        (r#"\$'(?:[^']*\\x[0-9a-fA-F]{2}){2,}"#,
+         "bash 十六进制转义序列（可能混淆命令）"),
+        // Python/Perl/Ruby 编码执行
+        (r#"(?i)(?:python[23]?|perl|ruby)\s+-[ec]\s+.*(?:base64|b64decode|decode|exec|system|eval)"#,
+         "脚本语言编码执行"),
+        // curl/wget 管道到 shell
+        (r#"(?i)(?:curl|wget)\s+.*\|\s*(?:sh|bash|zsh|dash|ksh|fish)\b"#,
+         "远程内容 (curl/wget) 管道到 shell"),
+        // 变量展开混淆
+        (r#"(?:[a-zA-Z_]\w{0,2}=[^;\s]+\s*;\s*){2,}[^$]*\$(?:[a-zA-Z_]|\{[a-zA-Z_])"#,
+         "变量赋值链展开（可能混淆命令）"),
+    ];
+
+    for (pattern_str, description) in patterns {
+        if let Ok(re) = regex::Regex::new(pattern_str) {
+            if re.is_match(&normalized) {
+                // curl|sh 白名单检查
+                if description.contains("curl/wget") || description.contains("管道到 shell") {
+                    if is_safe_curl_pipe(&normalized) {
+                        continue;
+                    }
+                }
+                reasons.push(description.to_string());
+            }
+        }
+    }
+
+    ObfuscationResult {
+        detected: !reasons.is_empty(),
+        reasons,
+    }
+}
+
+/// 检查 curl|sh 命令是否指向安全白名单 URL
+fn is_safe_curl_pipe(cmd: &str) -> bool {
+    // 简单提取 http(s) URL
+    let url_re = regex::Regex::new(r"https?://[^\s]+").ok();
+    if let Some(re) = url_re {
+        let urls: Vec<&str> = re.find_iter(cmd).map(|m| m.as_str()).collect();
+        if urls.len() == 1 {
+            if let Ok(url) = url::Url::parse(urls[0]) {
+                let host = url.host_str().unwrap_or("");
+                return SAFE_CURL_PIPE_HOSTS.iter().any(|safe| host == *safe || host.ends_with(&format!(".{}", safe)));
+            }
+        }
+    }
+    false
+}
+
 /// 检测危险 bash 命令，返回警告消息
+///
+/// 安全防线层级：
+/// 1. 不可见 Unicode 字符检测（73+ 码点，含 NFKC 规范化）
+/// 2. Windows UNC/SMB 路径凭证泄漏检测
+/// 3. 命令混淆/编码攻击检测（16 种模式）
+/// 4. 高危破坏性命令拦截
+/// 5. 中危命令日志记录
 fn detect_dangerous_command(cmd: &str) -> Option<String> {
-    // 安全: 检测不可见 Unicode 字符（防止隐藏命令攻击）
+    // ── 1. 不可见 Unicode 字符检测（完整 73+ 码点集合）──
     if cmd.chars().any(|c| {
-        matches!(c,
-            '\u{200B}'..='\u{200F}' | // 零宽字符
-            '\u{2028}'..='\u{202F}' | // 段落/行分隔/嵌入
-            '\u{FEFF}' |              // BOM
-            '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' // 韩文填充符
-        ) || c.is_control() && c != '\n' && c != '\r' && c != '\t'
+        is_invisible_unicode(c) || (c.is_control() && c != '\n' && c != '\r' && c != '\t')
     }) {
         return Some("安全拦截：命令包含不可见 Unicode 字符，可能隐藏恶意内容".to_string());
     }
 
+    // ── 2. Windows UNC/SMB 凭证泄漏检测 ──
+    if let Some(warning) = detect_unc_path(cmd) {
+        return Some(warning);
+    }
+
+    // ── 3. 命令混淆/编码攻击检测（16 种模式）──
+    let obfuscation = detect_command_obfuscation(cmd);
+    if obfuscation.detected {
+        let reasons_str = obfuscation.reasons.join("；");
+        return Some(format!("安全拦截：检测到命令混淆/编码攻击 — {}", reasons_str));
+    }
+
     let cmd_lower = cmd.to_lowercase();
 
-    // 高危：不可逆的破坏性命令
+    // ── 4. 高危：不可逆的破坏性命令 ──
     let critical_patterns = [
         ("rm -rf /", "危险：试图删除根目录"),
         ("rm -rf ~", "危险：试图删除用户目录"),
@@ -332,7 +532,7 @@ fn detect_dangerous_command(cmd: &str) -> Option<String> {
         }
     }
 
-    // 中危：需要注意的命令（记录日志但不拦截）
+    // ── 5. 中危：需要注意的命令（记录日志但不拦截）──
     let warn_patterns = [
         "sudo ", "chmod 777", "chown ", "curl | sh", "curl | bash",
         "wget -O - | sh", "eval ", "> /dev/",
@@ -391,10 +591,10 @@ fn validate_write_path(path: &str) -> Result<(), String> {
         if path_str.starts_with(prefix) { return Ok(()); }
     }
 
-    // 允许 ~/.yonclaw/ 下的所有路径（Agent workspace）
+    // 允许 ~/.xianzhu/ 下的所有路径（Agent workspace）
     if let Some(home) = std::env::var_os("HOME") {
         let home_str = home.to_string_lossy();
-        if path_str.starts_with(&format!("{}/.yonclaw/", home_str)) {
+        if path_str.starts_with(&format!("{}/.xianzhu/", home_str)) {
             return Ok(());
         }
         // 允许用户 Desktop/Documents/Downloads 下的项目目录

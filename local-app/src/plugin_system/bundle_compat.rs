@@ -1,7 +1,7 @@
 //! 跨生态插件兼容
 //!
 //! 支持解析 Claude / Cursor / Codex 生态的插件格式，
-//! 映射为 YonClaw 的 Skill 或 MCP Server。
+//! 映射为 XianZhu 的 Skill 或 MCP Server。
 //!
 //! 格式检测：
 //! - .claude-plugin/marketplace.json → Claude 插件
@@ -9,7 +9,7 @@
 //! - .codex-plugin/plugin.json → Codex 插件
 //! - 含 mcp.json / mcp-servers.json → MCP 配置
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 检测到的外部插件类型
 #[derive(Debug, Clone)]
@@ -209,12 +209,12 @@ fn extract_mcp_from_manifest(manifest: &serde_json::Value, _dir: &Path) -> Vec<M
     servers
 }
 
-/// 将外部插件安装到 YonClaw（转换为 Skill 或 MCP Server）
+/// 将外部插件安装到 XianZhu（转换为 Skill 或 MCP Server）
 pub async fn install_bundle(
     pool: &sqlx::SqlitePool,
     agent_id: &str,
     bundle: &BundleInfo,
-    source_dir: &Path,
+    _source_dir: &Path,
 ) -> Result<String, String> {
     let mut results = Vec::new();
 

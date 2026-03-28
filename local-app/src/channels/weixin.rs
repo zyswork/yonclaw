@@ -5,6 +5,7 @@
 //! 参考：@tencent-weixin/openclaw-weixin 插件实现
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use crate::agent::Orchestrator;
 
 const WEIXIN_BASE: &str = "https://ilinkai.weixin.qq.com";
@@ -13,89 +14,99 @@ const WEIXIN_BASE: &str = "https://ilinkai.weixin.qq.com";
 pub struct WeixinConfig {
     /// bot_token（扫码登录后获得）
     pub bot_token: String,
+    pub agent_id: String,
 }
 
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 启动微信长轮询（单例）
+/// 启动微信长轮询
+///
+/// 由 ChannelManager 调用，不再自行 spawn，通过 CancellationToken 控制生命周期。
 pub async fn start_weixin(
     config: WeixinConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
-) {
-    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("微信: 轮询已在运行，跳过");
-        return;
-    }
+    cancel: CancellationToken,
+) -> Result<(), String> {
     let token = config.bot_token.clone();
-    log::info!("微信: 启动长轮询 (token: {}...)", &token[..token.len().min(15)]);
+    let agent_id = config.agent_id.clone();
+    log::info!("微信: 启动长轮询 (token: {}..., agent={})", &token[..token.len().min(15)], agent_id);
 
-    tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(45))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
 
-        let mut get_updates_buf = String::new();
+    let mut get_updates_buf = String::new();
 
-        // 从 settings 读取 base_url（扫码时可能分配了不同的端点）
-        let base_url: String = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = 'weixin_base_url'"
-        ).fetch_optional(&pool).await.ok().flatten()
-            .unwrap_or_else(|| WEIXIN_BASE.to_string());
-        log::info!("微信: 使用 API 端点: {}", base_url);
+    // 从 settings 读取 base_url（扫码时可能分配了不同的端点）
+    let base_url: String = sqlx::query_scalar(
+        "SELECT value FROM settings WHERE key = 'weixin_base_url'"
+    ).fetch_optional(&pool).await.ok().flatten()
+        .unwrap_or_else(|| WEIXIN_BASE.to_string());
+    log::info!("微信: 使用 API 端点: {}", base_url);
 
-        // 从本地缓存恢复 buf
-        if let Some(buf) = load_sync_buf(&pool).await {
-            get_updates_buf = buf;
+    // 从本地缓存恢复 buf
+    if let Some(buf) = load_sync_buf(&pool).await {
+        get_updates_buf = buf;
+    }
+
+    loop {
+        if cancel.is_cancelled() {
+            log::info!("微信: 收到取消信号，退出轮询");
+            return Ok(());
         }
 
-        loop {
-            match get_updates(&client, &token, &get_updates_buf, &base_url).await {
-                Ok(resp) => {
-                    // 更新 buf
-                    if let Some(buf) = resp.get("get_updates_buf").and_then(|b| b.as_str()) {
-                        if !buf.is_empty() {
-                            get_updates_buf = buf.to_string();
-                            save_sync_buf(&pool, &get_updates_buf).await;
-                        }
-                    }
+        let result = tokio::select! {
+            _ = cancel.cancelled() => {
+                log::info!("微信: 轮询等待中收到取消信号");
+                return Ok(());
+            }
+            r = get_updates(&client, &token, &get_updates_buf, &base_url) => r,
+        };
 
-                    // 处理消息
-                    if let Some(msgs) = resp.get("msgs").and_then(|m| m.as_array()) {
-                        if !msgs.is_empty() {
-                            log::info!("微信: 收到 {} 条消息", msgs.len());
-                        }
-                        for msg in msgs {
-                            let token = token.clone();
-                            let pool = pool.clone();
-                            let orch = orchestrator.clone();
-                            let handle = app_handle.clone();
-                            let msg = msg.clone();
-                            tokio::spawn(async move {
-                                handle_weixin_message(&token, &msg, &pool, &orch, &handle).await;
-                            });
-                        }
+        match result {
+            Ok(resp) => {
+                // 更新 buf
+                if let Some(buf) = resp.get("get_updates_buf").and_then(|b| b.as_str()) {
+                    if !buf.is_empty() {
+                        get_updates_buf = buf.to_string();
+                        save_sync_buf(&pool, &get_updates_buf).await;
                     }
                 }
-                Err(e) => {
-                    if e.contains("session 过期") || e.contains("session timeout") {
-                        log::error!("微信: Session 已过期，需要重新扫码登录");
-                        // 清除失效 token 和 sync_buf
-                        let _ = sqlx::query("DELETE FROM settings WHERE key IN ('weixin_bot_token', 'weixin_sync_buf')")
-                            .execute(&pool).await;
-                        break; // 退出轮询，等用户重新扫码
+
+                // 处理消息
+                if let Some(msgs) = resp.get("msgs").and_then(|m| m.as_array()) {
+                    if !msgs.is_empty() {
+                        log::info!("微信: 收到 {} 条消息", msgs.len());
                     }
-                    if e == "timeout" {
-                        continue; // 长轮询超时是正常的
+                    for msg in msgs {
+                        let token = token.clone();
+                        let pool = pool.clone();
+                        let orch = orchestrator.clone();
+                        let handle = app_handle.clone();
+                        let msg = msg.clone();
+                        let aid = agent_id.clone();
+                        tokio::spawn(async move {
+                            handle_weixin_message(&token, &msg, &pool, &orch, &handle, &aid).await;
+                        });
                     }
-                    log::warn!("微信: getUpdates 失败: {}，5秒后重试", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
+            Err(e) => {
+                if e.contains("session 过期") || e.contains("session timeout") {
+                    log::error!("微信: Session 已过期，需要重新扫码登录");
+                    let _ = sqlx::query("DELETE FROM settings WHERE key IN ('weixin_bot_token', 'weixin_sync_buf')")
+                        .execute(&pool).await;
+                    return Err("session 过期".to_string());
+                }
+                if e == "timeout" {
+                    continue;
+                }
+                log::warn!("微信: getUpdates 失败: {}，5秒后重试", e);
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
         }
-    });
+    }
 }
 
 /// 长轮询获取消息
@@ -107,7 +118,7 @@ async fn get_updates(
 ) -> Result<serde_json::Value, String> {
     let body = serde_json::json!({
         "get_updates_buf": get_updates_buf,
-        "base_info": { "channel_version": "yonclaw-1.0.0" },
+        "base_info": { "channel_version": "xianzhu-1.0.0" },
     });
 
     let resp = client.post(format!("{}/ilink/bot/getupdates", base_url))
@@ -157,6 +168,7 @@ async fn handle_weixin_message(
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    config_agent_id: &str,
 ) {
     let message_type = msg["message_type"].as_i64().unwrap_or(0);
     let message_state = msg["message_state"].as_i64().unwrap_or(-1);
@@ -183,13 +195,26 @@ async fn handle_weixin_message(
 
     log::info!("微信: [{}] {}", from_user, &text[..text.len().min(50)]);
 
-    // 获取 Agent
-    let agent = match orchestrator.list_agents().await {
-        Ok(agents) => match agents.into_iter().next() {
-            Some(a) => a,
-            None => { log::warn!("微信: 无可用 Agent"); return; }
-        },
-        Err(_) => return,
+    // 优先使用 config 中指定的 agent_id，fallback 到 Router
+    let agent_id = if !config_agent_id.is_empty() {
+        config_agent_id.to_string()
+    } else {
+        let router = crate::routing::Router::new(orchestrator.pool().clone());
+        let route = router.resolve("weixin", Some(from_user)).await;
+        match route {
+            Ok(r) => r.agent_id,
+            Err(_) => {
+                let agents = orchestrator.list_agents().await.unwrap_or_default();
+                match agents.into_iter().next() {
+                    Some(a) => a.id,
+                    None => { log::warn!("微信: 无可用 Agent"); return; }
+                }
+            }
+        }
+    };
+    let agent = match orchestrator.get_agent_cached(&agent_id).await {
+        Ok(a) => a,
+        Err(e) => { log::warn!("微信: 获取 Agent 失败: {}", e); return; }
     };
 
     // session
@@ -257,6 +282,11 @@ async fn handle_weixin_message(
         "type": "done", "sessionId": session_id,
         "role": "assistant", "content": reply, "source": "weixin",
     }));
+
+    // Session 自动命名
+    crate::memory::conversation::auto_name_session(
+        pool, &session_id, &text, &api_key, &api_type, base_url_opt,
+    ).await;
 }
 
 /// 提取消息文本
@@ -284,7 +314,7 @@ async fn send_weixin_text(token: &str, to: &str, context_token: &str, text: &str
         .unwrap_or_else(|| WEIXIN_BASE.to_string());
 
     // 参考 OpenClaw: from_user_id 为空, to_user_id 为用户, 必须有 client_id 和 message_state
-    let client_id = format!("yonclaw-{}", uuid::Uuid::new_v4());
+    let client_id = format!("xianzhu-{}", uuid::Uuid::new_v4());
     let body = serde_json::json!({
         "msg": {
             "from_user_id": "",
@@ -298,7 +328,7 @@ async fn send_weixin_text(token: &str, to: &str, context_token: &str, text: &str
                 "text_item": { "text": text },
             }],
         },
-        "base_info": { "channel_version": "yonclaw-1.0.0" },
+        "base_info": { "channel_version": "xianzhu-1.0.0" },
     });
 
     log::info!("微信: sendMessage to={} base_url={}", &to[..to.len().min(20)], &base_url[..base_url.len().min(40)]);

@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
+import Select from '../components/Select'
 
 interface ModelStats {
   model: string
@@ -43,17 +44,43 @@ interface Agent {
 function estimateCost(model: string, input: number, output: number): number {
   const m = model.toLowerCase()
   const [ip, op] =
-    m.includes('claude-opus') ? [15, 75]
+    // GPT-5.x
+    m.includes('gpt-5') && m.includes('mini') ? [0.30, 1.20]
+    : m.includes('gpt-5') || m.includes('gpt-4.5') ? [5, 20]
+    // GPT-4.x
+    : m.includes('gpt-4o-mini') || m.includes('gpt-4.1-mini') ? [0.15, 0.6]
+    : m.includes('gpt-4o') || m.includes('gpt-4.1') ? [2.5, 10]
+    // o 系列
+    : m.includes('o4-mini') || m.includes('o3-mini') ? [1.1, 4.4]
+    : m.includes('o3') || m.includes('o4') ? [10, 40]
+    // Claude 4.x
+    : m.includes('claude-opus-4') ? [15, 75]
+    : m.includes('claude-sonnet-4') ? [3, 15]
+    : m.includes('claude-haiku-4') ? [0.8, 4]
+    : m.includes('claude-opus') ? [15, 75]
     : m.includes('claude-sonnet') ? [3, 15]
-    : m.includes('claude-haiku') ? [0.8, 4]
+    : m.includes('claude-haiku') ? [0.25, 1.25]
     : m.includes('claude') ? [3, 15]
-    : m.includes('gpt-4o-mini') ? [0.15, 0.6]
-    : m.includes('gpt-4o') || m.includes('gpt-4-turbo') || m.includes('gpt-5') ? [2.5, 10]
-    : m.includes('deepseek') ? [0.14, 0.28]
-    : m.includes('gemini-2.5-pro') ? [1.25, 10]
-    : m.includes('gemini') ? [0.075, 0.3]
-    : m.includes('llama') || m.includes('mixtral') ? [0.05, 0.1]
-    : m.includes('qwen') ? [0.5, 2]
+    // Gemini
+    : m.includes('gemini') && m.includes('flash') ? [0.075, 0.3]
+    : m.includes('gemini') && m.includes('pro') ? [1.25, 5]
+    : m.includes('gemini') ? [0.5, 1.5]
+    // DeepSeek
+    : m.includes('deepseek-r1') ? [0.55, 2.19]
+    : m.includes('deepseek') ? [0.27, 1.1]
+    // Grok
+    : m.includes('grok') && m.includes('mini') ? [0.3, 0.5]
+    : m.includes('grok') ? [3, 15]
+    // Qwen
+    : m.includes('qwen') && m.includes('turbo') ? [0.3, 0.6]
+    : m.includes('qwen') ? [0.8, 2]
+    // Others
+    : m.includes('moonshot') || m.includes('kimi') ? [1, 1]
+    : m.includes('glm') && m.includes('flash') ? [0.1, 0.1]
+    : m.includes('glm') ? [1, 1]
+    : m.includes('mistral') && m.includes('large') ? [2, 6]
+    : m.includes('mistral') ? [0.25, 0.25]
+    : m.includes('llama') ? [0.2, 0.2]
     : [1, 3]
   return (input * ip + output * op) / 1_000_000
 }
@@ -107,13 +134,12 @@ export default function TokenMonitoringPage() {
       <h2 style={{ margin: '0 0 20px', fontSize: 20 }}>{t('tokens.title')}</h2>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
-        <select
+        <Select
           value={selectedAgent}
-          onChange={(e) => setSelectedAgent(e.target.value)}
-          style={{ padding: '6px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14 }}
-        >
-          {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.model})</option>)}
-        </select>
+          onChange={setSelectedAgent}
+          options={agents.map(a => ({ value: a.id, label: `${a.name} (${a.model})` }))}
+          style={{ minWidth: 200 }}
+        />
         {[7, 14, 30].map(d => (
           <button key={d} onClick={() => setDays(d)} style={{
             padding: '6px 12px', border: `1px solid ${days === d ? 'var(--accent)' : '#ddd'}`,
@@ -160,6 +186,40 @@ export default function TokenMonitoringPage() {
             </div>
           )}
 
+          {/* 模型使用分布（饼图效果 - 水平条） */}
+          {stats.models.length > 1 && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, margin: '0 0 12px' }}>Model Distribution</h3>
+              <div style={{ display: 'flex', height: 24, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+                {(() => {
+                  const total = stats.models.reduce((s: number, m: any) => s + m.total_tokens, 0)
+                  const colors = ['var(--accent)', '#fd7e14', 'var(--success)', '#6f42c1', '#e83e8c', '#20c997', '#6c757d']
+                  return stats.models.map((m: any, i: number) => {
+                    const pct = total > 0 ? (m.total_tokens / total * 100) : 0
+                    return pct > 0 ? (
+                      <div key={m.model} title={`${m.model}: ${pct.toFixed(1)}%`}
+                        style={{ width: `${pct}%`, backgroundColor: colors[i % colors.length], minWidth: pct > 3 ? undefined : 2 }}>
+                        {pct > 8 && <span style={{ fontSize: 10, color: '#fff', padding: '0 4px', lineHeight: '24px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{m.model.split('/').pop()}</span>}
+                      </div>
+                    ) : null
+                  })
+                })()}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', marginTop: 8 }}>
+                {(() => {
+                  const colors = ['var(--accent)', '#fd7e14', 'var(--success)', '#6f42c1', '#e83e8c', '#20c997', '#6c757d']
+                  const total = stats.models.reduce((s: number, m: any) => s + m.total_tokens, 0)
+                  return stats.models.map((m: any, i: number) => (
+                    <span key={m.model} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: colors[i % colors.length], display: 'inline-block' }} />
+                      {m.model} ({(m.total_tokens / total * 100).toFixed(1)}%)
+                    </span>
+                  ))
+                })()}
+              </div>
+            </div>
+          )}
+
           {stats.models.length > 0 && (
             <div>
               <h3 style={{ fontSize: 15, margin: '0 0 12px' }}>{t('tokens.sectionModels')}</h3>
@@ -187,6 +247,17 @@ export default function TokenMonitoringPage() {
                       </td>
                     </tr>
                   ))}
+                  {/* 合计行 */}
+                  <tr style={{ borderTop: '2px solid var(--border-default)', fontWeight: 700 }}>
+                    <td style={{ padding: '8px 12px' }}>{t('tokens.totalRow') || 'Total'}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(stats.models.reduce((s, m) => s + m.input_tokens, 0))}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(stats.models.reduce((s, m) => s + m.output_tokens, 0))}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatTokens(stats.models.reduce((s, m) => s + m.total_tokens, 0))}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right' }}>{stats.models.reduce((s, m) => s + m.calls, 0)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--error)', fontSize: 14 }}>
+                      ${stats.models.reduce((s, m) => s + estimateCost(m.model, m.input_tokens, m.output_tokens), 0).toFixed(4)}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>

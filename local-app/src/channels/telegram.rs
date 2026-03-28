@@ -4,87 +4,99 @@
 //! 参考 OpenClaw：Telegram 轮询始终在能力最强的端执行。
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use crate::agent::Orchestrator;
 
 /// Telegram Bot 配置
 pub struct TelegramConfig {
     pub bot_token: String,
+    pub agent_id: String,
 }
 
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 启动 Telegram 长轮询（后台 tokio task，单例）
+/// 启动 Telegram 长轮询
+///
+/// 由 ChannelManager 调用，不再自行 spawn，通过 CancellationToken 控制生命周期。
 pub async fn start_polling(
     config: TelegramConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
-) {
-    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("Telegram: 轮询已在运行，跳过");
-        return;
-    }
+    cancel: CancellationToken,
+) -> Result<(), String> {
     let token = config.bot_token.clone();
-    log::info!("Telegram: 启动本地轮询 (token: {}...)", &token[..token.len().min(15)]);
+    let agent_id = config.agent_id.clone();
+    log::info!("Telegram: 启动本地轮询 (token: {}..., agent={})", &token[..token.len().min(15)], agent_id);
 
-    tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        let mut offset: i64 = 0;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut offset: i64 = 0;
 
-        log::info!("Telegram: 轮询 loop 已进入");
+    log::info!("Telegram: 轮询 loop 已进入");
 
-        loop {
-            let url = format!(
-                "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout=30",
-                token, offset
-            );
+    loop {
+        if cancel.is_cancelled() {
+            log::info!("Telegram: 收到取消信号，退出轮询");
+            return Ok(());
+        }
 
-            match client.get(&url).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(data) => {
-                            if data["ok"].as_bool() != Some(true) {
-                                log::warn!("Telegram: API 返回错误: {}", data);
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                continue;
-                            }
-                            if let Some(updates) = data["result"].as_array() {
-                                if !updates.is_empty() {
-                                    log::info!("Telegram: 收到 {} 条更新", updates.len());
-                                }
-                                for update in updates {
-                                    offset = update["update_id"].as_i64().unwrap_or(0) + 1;
-                                    // 并发处理：不阻塞轮询 loop
-                                    let t = token.clone();
-                                    let p = pool.clone();
-                                    let o = orchestrator.clone();
-                                    let h = app_handle.clone();
-                                    let u = update.clone();
-                                    tokio::spawn(async move {
-                                        handle_update(&t, &u, &p, &o, &h).await;
-                                    });
-                                }
-                            } else {
-                                log::warn!("Telegram: 响应缺少 result 字段: {}", &data.to_string()[..data.to_string().len().min(200)]);
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Telegram: JSON 解析失败 (status={}): {}", status, e);
+        let url = format!(
+            "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout=30",
+            token, offset
+        );
+
+        let resp = tokio::select! {
+            _ = cancel.cancelled() => {
+                log::info!("Telegram: 轮询等待中收到取消信号");
+                return Ok(());
+            }
+            r = client.get(&url).send() => r,
+        };
+
+        match resp {
+            Ok(resp) => {
+                let status = resp.status();
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        if data["ok"].as_bool() != Some(true) {
+                            log::warn!("Telegram: API 返回错误: {}", data);
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        if let Some(updates) = data["result"].as_array() {
+                            if !updates.is_empty() {
+                                log::info!("Telegram: 收到 {} 条更新", updates.len());
+                            }
+                            for update in updates {
+                                offset = update["update_id"].as_i64().unwrap_or(0) + 1;
+                                // 并发处理：不阻塞轮询 loop
+                                let t = token.clone();
+                                let p = pool.clone();
+                                let o = orchestrator.clone();
+                                let h = app_handle.clone();
+                                let u = update.clone();
+                                let aid = agent_id.clone();
+                                tokio::spawn(async move {
+                                    handle_update(&t, &u, &p, &o, &h, &aid).await;
+                                });
+                            }
+                        } else {
+                            log::warn!("Telegram: 响应缺少 result 字段: {}", &data.to_string()[..data.to_string().len().min(200)]);
                         }
                     }
-                }
-                Err(e) => {
-                    log::warn!("Telegram: 轮询请求失败: {}，10秒后重试", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    Err(e) => {
+                        log::warn!("Telegram: JSON 解析失败 (status={}): {}", status, e);
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
                 }
             }
+            Err(e) => {
+                log::warn!("Telegram: 轮询请求失败: {}，10秒后重试", e);
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
         }
-    });
+    }
 }
 
 /// 处理单条 Telegram 消息
@@ -94,6 +106,7 @@ async fn handle_update(
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    config_agent_id: &str,
 ) {
     let msg = match update.get("message") {
         Some(m) => m,
@@ -109,13 +122,27 @@ async fn handle_update(
 
     log::info!("Telegram: [{}] {}: {}", chat_id, user_name, &text[..text.len().min(50)]);
 
-    // 获取本地 Agent
-    let agent = match orchestrator.list_agents().await {
-        Ok(agents) => match agents.into_iter().next() {
-            Some(a) => a,
-            None => { log::warn!("Telegram: 无可用 Agent"); return; }
-        },
-        Err(_) => return,
+    // 优先使用 config 中指定的 agent_id，fallback 到 Router
+    let agent_id = if !config_agent_id.is_empty() {
+        config_agent_id.to_string()
+    } else {
+        let router = crate::routing::Router::new(orchestrator.pool().clone());
+        let sender_str = chat_id.to_string();
+        let route = router.resolve("telegram", Some(&sender_str)).await;
+        match route {
+            Ok(r) => r.agent_id,
+            Err(_) => {
+                let agents = orchestrator.list_agents().await.unwrap_or_default();
+                match agents.into_iter().next() {
+                    Some(a) => a.id,
+                    None => { log::warn!("Telegram: 无可用 Agent"); return; }
+                }
+            }
+        }
+    };
+    let agent = match orchestrator.get_agent_cached(&agent_id).await {
+        Ok(a) => a,
+        Err(e) => { log::warn!("Telegram: 获取 Agent 失败: {}", e); return; }
     };
 
     // 获取或创建 session
@@ -207,6 +234,11 @@ async fn handle_update(
         "content": reply,
         "source": "telegram",
     }));
+
+    // Session 自动命名（fire-and-forget，不阻塞）
+    crate::memory::conversation::auto_name_session(
+        pool, &session_id, &text, &api_key, &api_type, base_url_opt,
+    ).await;
 }
 
 /// 获取或创建 Telegram session

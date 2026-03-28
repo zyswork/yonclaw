@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#f7f7f4">
-<title>YonClaw</title>
+<title>XianZhu</title>
 <link rel="manifest" href="manifest.json">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -96,7 +96,7 @@ body {
 <!-- 顶栏 -->
 <div class="header">
   <div style="font-size:20px; cursor:pointer;" onclick="toggleSessions()">☰</div>
-  <h1>YonClaw</h1>
+  <h1>XianZhu</h1>
   <div>
     <span class="status-dot" id="statusDot" style="background:var(--text3)"></span>
     <span class="status-text" id="statusText">连接中...</span>
@@ -134,7 +134,7 @@ body {
 const API_BASE = location.origin + '/api/v1/chat'
 const AGENT_ID = 'default'
 
-let currentSession = localStorage.getItem('yonclaw_session') || ''
+let currentSession = localStorage.getItem('xianzhu_session') || ''
 let sending = false
 let messages = []
 
@@ -176,7 +176,7 @@ async function newSession() {
     })
     const d = await r.json()
     currentSession = d.id
-    localStorage.setItem('yonclaw_session', d.id)
+    localStorage.setItem('xianzhu_session', d.id)
     messages = []
     renderMessages()
     toggleSessions()
@@ -211,7 +211,7 @@ async function loadSessions() {
 
 function selectSession(id) {
   currentSession = id
-  localStorage.setItem('yonclaw_session', id)
+  localStorage.setItem('xianzhu_session', id)
   messages = []
   loadMessages()
   toggleSessions()

@@ -14,6 +14,7 @@ import { useI18n, SUPPORTED_LOCALES, LOCALE_LABELS } from '../i18n'
 import { toast } from '../hooks/useToast'
 import { useTheme, type Theme } from '../hooks/useTheme'
 import type { Locale } from '../i18n'
+import Select from '../components/Select'
 
 interface ProviderModel {
   id: string
@@ -204,8 +205,43 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
     enabled: true,
   },
   {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    apiType: 'openai',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OR)' },
+      { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OR)' },
+      { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro (via OR)' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    apiType: 'openai',
+    baseUrl: 'https://api.together.xyz/v1',
+    models: [
+      { id: 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8', name: 'Llama 4 Maverick' },
+      { id: 'deepseek-ai/DeepSeek-R1', name: 'DeepSeek R1' },
+      { id: 'Qwen/Qwen3-235B-A22B-FP8', name: 'Qwen3 235B' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'nvidia',
+    name: 'Nvidia NIM',
+    apiType: 'openai',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    models: [
+      { id: 'meta/llama-3.3-70b-instruct', name: 'Llama 3.3 70B' },
+      { id: 'nvidia/llama-3.1-nemotron-70b-instruct', name: 'Nemotron 70B' },
+    ],
+    enabled: true,
+  },
+  {
     id: 'ollama',
-    name: 'Ollama (本地)',
+    name: 'Ollama (Local)',
     apiType: 'openai',
     baseUrl: 'http://localhost:11434/v1',
     models: [
@@ -217,8 +253,101 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
   },
 ]
 
+/** 分类导航项定义 */
+type SectionId = 'providers' | 'appearance' | 'search' | 'heartbeat' | 'backup' | 'gateway' | 'embedding'
+
+interface NavItem {
+  id: SectionId
+  labelKey: string
+  icon: JSX.Element
+}
+
+/** 左侧导航图标（SVG 线条风格） */
+const NAV_ITEMS: NavItem[] = [
+  {
+    id: 'providers',
+    labelKey: 'settings.title',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="2" width="20" height="8" rx="2" />
+        <rect x="2" y="14" width="20" height="8" rx="2" />
+        <circle cx="6" cy="6" r="1" fill="currentColor" />
+        <circle cx="6" cy="18" r="1" fill="currentColor" />
+      </svg>
+    ),
+  },
+  {
+    id: 'appearance',
+    labelKey: 'settings.sectionTheme',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="5" />
+        <line x1="12" y1="1" x2="12" y2="3" />
+        <line x1="12" y1="21" x2="12" y2="23" />
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+        <line x1="1" y1="12" x2="3" y2="12" />
+        <line x1="21" y1="12" x2="23" y2="12" />
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+      </svg>
+    ),
+  },
+  {
+    id: 'search',
+    labelKey: 'settings.sectionSearch',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="8" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+    ),
+  },
+  {
+    id: 'heartbeat',
+    labelKey: 'settings.sectionHeartbeat',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    ),
+  },
+  {
+    id: 'backup',
+    labelKey: 'settings.sectionBackup',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+        <polyline points="17 21 17 13 7 13 7 21" />
+        <polyline points="7 3 7 8 15 8" />
+      </svg>
+    ),
+  },
+  {
+    id: 'gateway',
+    labelKey: 'settings.sectionCloud',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'embedding',
+    labelKey: 'settings.sectionEmbedding',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <circle cx="12" cy="12" r="6" />
+        <circle cx="12" cy="12" r="2" />
+      </svg>
+    ),
+  },
+]
+
 export default function SettingsPage() {
   const { t } = useI18n()
+  const [activeSection, setActiveSection] = useState<SectionId>('providers')
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -352,303 +481,447 @@ export default function SettingsPage() {
     (preset) => !providers.some((p) => p.id === preset.id)
   )
 
+  /** 导航项的显示名称（需要 t 函数，所以在组件内定义映射） */
+  const navLabels: Record<SectionId, string> = {
+    providers: t('settings.title'),
+    appearance: t('settings.sectionTheme') + ' / ' + t('settings.sectionLanguage'),
+    search: t('settings.sectionSearch'),
+    heartbeat: t('settings.sectionHeartbeat'),
+    backup: t('settings.sectionBackup') || 'Backup',
+    gateway: t('settings.sectionCloud'),
+    embedding: t('settings.sectionEmbedding'),
+  }
+
   return (
-    <div style={{ padding: '20px', maxWidth: '700px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <div>
-          <h1 style={{ marginTop: 0, marginBottom: '4px' }}>{t('settings.title')}</h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
-            {t('settings.subtitle')}
-          </p>
-        </div>
-        <div style={{ position: 'relative' }}>
-          <button
-            onClick={() => setShowAddMenu(!showAddMenu)}
-            style={{
-              padding: '8px 16px', backgroundColor: 'var(--accent)', color: '#fff',
-              border: 'none', borderRadius: '6px', fontSize: '13px', cursor: 'pointer',
-            }}
-          >
-            {t('settings.btnAddProvider')}
-          </button>
-          {showAddMenu && (
-            <div style={{
-              position: 'absolute', right: 0, top: '100%', marginTop: '4px',
-              backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: '8px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 10, minWidth: '220px',
-              padding: '4px 0',
-            }}>
-              {availablePresets.map((preset) => (
-                <div
-                  key={preset.id}
-                  onClick={() => handleAddPreset(preset)}
-                  style={{
-                    padding: '8px 16px', cursor: 'pointer', fontSize: '13px',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-glass)' }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
-                >
-                  <span>{preset.name}</span>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{preset.apiType}</span>
-                </div>
-              ))}
-              {availablePresets.length > 0 && (
-                <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '4px 0' }} />
-              )}
-              <div
-                onClick={handleAddCustom}
-                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '13px', color: 'var(--accent)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-glass)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
-              >
-                {t('settingsExtra.customProviderOpenai')}
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+      {/* ===== 左侧分类导航 ===== */}
+      <nav style={{
+        width: 200, minWidth: 200, height: '100%', overflowY: 'auto',
+        backgroundColor: 'var(--bg-glass)', borderRight: '1px solid var(--border-subtle)',
+        padding: '16px 0', display: 'flex', flexDirection: 'column', gap: 2,
+      }}>
+        <h2 style={{ margin: '0 0 12px', padding: '0 16px', fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+          {t('settings.title')}
+        </h2>
+        {NAV_ITEMS.map(item => {
+          const isActive = activeSection === item.id
+          return (
+            <button
+              key={item.id}
+              onClick={() => setActiveSection(item.id)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 16px', margin: '0 8px',
+                border: 'none', borderRadius: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: isActive ? 600 : 400,
+                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                backgroundColor: isActive ? 'var(--accent-bg)' : 'transparent',
+                borderLeft: isActive ? '3px solid var(--accent)' : '3px solid transparent',
+                textAlign: 'left', width: 'calc(100% - 16px)',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive) e.currentTarget.style.backgroundColor = 'var(--bg-elevated)'
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
+              }}
+            >
+              {item.icon}
+              <span>{navLabels[item.id]}</span>
+            </button>
+          )
+        })}
+      </nav>
+
+      {/* ===== 右侧内容面板 ===== */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
+        {/* 全局消息提示 */}
+        {message && (
+          <div style={{
+            padding: '10px 15px', marginBottom: '16px', borderRadius: '6px', fontSize: '13px',
+            backgroundColor: message.type === 'success' ? '#d4edda' : 'var(--error-bg)',
+            color: message.type === 'success' ? '#155724' : '#721c24',
+            border: `1px solid ${message.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`,
+          }}>
+            {message.text}
+          </div>
+        )}
+
+        {/* ---- 供应商 ---- */}
+        {activeSection === 'providers' && (
+          <div style={{ maxWidth: 700 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <h1 style={{ marginTop: 0, marginBottom: '4px' }}>{t('settings.title')}</h1>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
+                  {t('settings.subtitle')}
+                </p>
               </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {message && (
-        <div style={{
-          padding: '10px 15px', marginBottom: '16px', borderRadius: '6px', fontSize: '13px',
-          backgroundColor: message.type === 'success' ? '#d4edda' : 'var(--error-bg)',
-          color: message.type === 'success' ? '#155724' : '#721c24',
-          border: `1px solid ${message.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`,
-        }}>
-          {message.text}
-        </div>
-      )}
-
-      {/* 供应商列表 */}
-      {providers.map((p) => {
-        const isEditing = editingId === p.id
-        const hasKey = !!(p.apiKeyMasked && p.apiKeyMasked !== '')
-        const isOllama = p.id === 'ollama' || p.baseUrl.includes('localhost')
-
-        return (
-          <div
-            key={p.id}
-            style={{
-              marginBottom: '12px', padding: '16px',
-              border: `1px solid ${p.enabled && (hasKey || isOllama) ? '#c3e6cb' : 'var(--border-subtle)'}`,
-              borderRadius: '8px',
-              backgroundColor: !p.enabled ? 'var(--bg-glass)' : (hasKey || isOllama) ? 'var(--success-bg)' : 'var(--bg-elevated)',
-              opacity: p.enabled ? 1 : 0.6,
-            }}
-          >
-            {/* 供应商头部 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isEditing ? '12px' : 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
-                  <input
-                    type="checkbox"
-                    checked={p.enabled}
-                    onChange={() => handleToggleEnabled(p)}
-                    style={{ marginRight: '6px' }}
-                  />
-                </label>
-                <strong style={{ fontSize: '15px' }}>{p.name}</strong>
-                <span style={{
-                  fontSize: '11px', padding: '2px 6px', borderRadius: '3px',
-                  backgroundColor: hasKey || isOllama ? 'var(--success)' : '#ffc107',
-                  color: hasKey || isOllama ? '#fff' : 'var(--text-primary)',
-                }}>
-                  {isOllama ? t('settings.labelLocal') : hasKey ? t('settings.labelConfigured') : t('settings.labelNoKey')}
-                </span>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '2px 6px', backgroundColor: 'var(--bg-glass)', borderRadius: '3px' }}>
-                  {p.apiType}
-                </span>
-              </div>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                {!isEditing && (
-                  <button
-                    onClick={() => handleEdit(p)}
-                    style={{
-                      padding: '4px 12px', fontSize: '12px', cursor: 'pointer',
-                      border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)',
-                    }}
-                  >
-                    {t('common.edit')}
-                  </button>
-                )}
+              <div style={{ position: 'relative' }}>
                 <button
-                  onClick={() => setDeleteConfirm({ id: p.id, name: p.name })}
+                  onClick={() => setShowAddMenu(!showAddMenu)}
                   style={{
-                    padding: '4px 8px', fontSize: '12px', cursor: 'pointer',
-                    border: '1px solid #f5c6cb', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)', color: 'var(--error)',
+                    padding: '8px 16px', backgroundColor: 'var(--accent)', color: '#fff',
+                    border: 'none', borderRadius: '6px', fontSize: '13px', cursor: 'pointer',
                   }}
                 >
-                  {t('common.delete')}
+                  {t('settings.btnAddProvider')}
                 </button>
+                {showAddMenu && (
+                  <div style={{
+                    position: 'absolute', right: 0, top: '100%', marginTop: '4px',
+                    backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 10, minWidth: '220px',
+                    padding: '4px 0',
+                  }}>
+                    {availablePresets.map((preset) => (
+                      <div
+                        key={preset.id}
+                        onClick={() => handleAddPreset(preset)}
+                        style={{
+                          padding: '8px 16px', cursor: 'pointer', fontSize: '13px',
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-glass)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+                      >
+                        <span>{preset.name}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{preset.apiType}</span>
+                      </div>
+                    ))}
+                    {availablePresets.length > 0 && (
+                      <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '4px 0' }} />
+                    )}
+                    <div
+                      onClick={handleAddCustom}
+                      style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '13px', color: 'var(--accent)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-glass)' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent' }}
+                    >
+                      {t('settingsExtra.customProviderOpenai')}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* 非编辑模式：显示模型列表摘要 */}
-            {!isEditing && (
-              <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
-                {(!p.models || p.models.length === 0) && (
-                  <span style={{
-                    fontSize: '12px', padding: '3px 10px', borderRadius: '4px',
-                    backgroundColor: '#fff3cd', color: '#856404', border: '1px solid #ffc107',
-                  }}>
-                    {t('settings.warningNoModels')}
-                  </span>
-                )}
-                {p.models?.map((m) => (
-                  <span key={m.id} style={{
-                    fontSize: '11px', padding: '2px 8px', borderRadius: '10px',
-                    backgroundColor: 'var(--bg-glass)', color: 'var(--text-secondary)',
-                  }}>
-                    {m.name || m.id}
-                  </span>
-                ))}
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '2px 4px' }}>
-                  {p.baseUrl}
-                </span>
-              </div>
-            )}
+            {/* 供应商列表 */}
+            {providers.map((p) => {
+              const isEditing = editingId === p.id
+              const hasKey = !!(p.apiKeyMasked && p.apiKeyMasked !== '')
+              const isOllama = p.id === 'ollama' || p.baseUrl.includes('localhost')
 
-            {/* 编辑模式 */}
-            {isEditing && editForm && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                  <div>
-                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('common.name')}</label>
-                    <input
-                      value={editForm.name}
-                      onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                      style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
-                    />
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    marginBottom: '12px', padding: '16px',
+                    border: `1px solid ${p.enabled && (hasKey || isOllama) ? '#c3e6cb' : 'var(--border-subtle)'}`,
+                    borderRadius: '8px',
+                    backgroundColor: !p.enabled ? 'var(--bg-glass)' : (hasKey || isOllama) ? 'var(--success-bg)' : 'var(--bg-elevated)',
+                    opacity: p.enabled ? 1 : 0.6,
+                  }}
+                >
+                  {/* 供应商头部 */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isEditing ? '12px' : 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={p.enabled}
+                          onChange={() => handleToggleEnabled(p)}
+                          style={{ marginRight: '6px' }}
+                        />
+                      </label>
+                      <strong style={{ fontSize: '15px' }}>{p.name}</strong>
+                      <span style={{
+                        fontSize: '11px', padding: '2px 6px', borderRadius: '3px',
+                        backgroundColor: hasKey || isOllama ? 'var(--success)' : '#ffc107',
+                        color: hasKey || isOllama ? '#fff' : 'var(--text-primary)',
+                      }}>
+                        {isOllama ? t('settings.labelLocal') : hasKey ? t('settings.labelConfigured') : t('settings.labelNoKey')}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '2px 6px', backgroundColor: 'var(--bg-glass)', borderRadius: '3px' }}>
+                        {p.apiType}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {!isEditing && (
+                        <>
+                          <button
+                            onClick={async () => {
+                              try {
+                                const result = await invoke<any>('test_provider_connection', {
+                                  apiType: p.apiType, apiKey: p.apiKey || '', baseUrl: p.baseUrl || null
+                                })
+                                toast.success(`${p.name}: ${result.latency_ms}ms, ${result.models_available} models`)
+                              } catch (e) { toast.error(`${p.name}: ${String(e)}`) }
+                            }}
+                            style={{
+                              padding: '4px 10px', fontSize: '11px', cursor: 'pointer',
+                              border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)',
+                            }}
+                          >
+                            {t('settings.testBtn')}
+                          </button>
+                          <button
+                            onClick={() => handleEdit(p)}
+                            style={{
+                              padding: '4px 12px', fontSize: '12px', cursor: 'pointer',
+                              border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)',
+                            }}
+                          >
+                            {t('common.edit')}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setDeleteConfirm({ id: p.id, name: p.name })}
+                        style={{
+                          padding: '4px 8px', fontSize: '12px', cursor: 'pointer',
+                          border: '1px solid #f5c6cb', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)', color: 'var(--error)',
+                        }}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('settings.fieldApiType')}</label>
-                    <select
-                      value={editForm.apiType}
-                      onChange={(e) => setEditForm({ ...editForm, apiType: e.target.value })}
-                      style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
-                    >
-                      <option value="openai">{t('settings.apiTypeOpenai')}</option>
-                      <option value="anthropic">{t('settings.apiTypeAnthropic')}</option>
-                    </select>
-                  </div>
-                </div>
 
-                <div>
-                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('settings.fieldBaseUrl')}</label>
-                  <input
-                    value={editForm.baseUrl}
-                    onChange={(e) => setEditForm({ ...editForm, baseUrl: e.target.value })}
-                    placeholder="https://api.example.com/v1"
-                    style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
-                    {t('settings.fieldApiKey')} {p.apiKeyMasked && <span style={{ color: 'var(--text-muted)' }}>({t('settings.labelCurrent')}: {p.apiKeyMasked}, {t('settings.placeholderKeep')})</span>}
-                  </label>
-                  <input
-                    type="password"
-                    value={editForm.apiKey || ''}
-                    onChange={(e) => setEditForm({ ...editForm, apiKey: e.target.value })}
-                    placeholder={p.apiKeyMasked ? t('settings.placeholderKeep') : t('settings.placeholderEnterKey')}
-                    style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
-                  />
-                </div>
-
-                {/* 模型列表编辑 */}
-                <div>
-                  <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
-                    {t('settings.fieldModels')} <span style={{ color: 'var(--error)' }}>*</span>
-                  </label>
-                  {editForm.models.length === 0 && (
-                    <div style={{
-                      padding: '8px 12px', marginBottom: '8px', borderRadius: '4px',
-                      backgroundColor: '#fff3cd', color: '#856404', fontSize: '12px',
-                      border: '1px solid #ffc107',
-                    }}>
-                      {t('settings.warningAddModels')}
+                  {/* 非编辑模式：显示模型列表摘要 */}
+                  {!isEditing && (
+                    <div style={{ marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                      {(!p.models || p.models.length === 0) && (
+                        <span style={{
+                          fontSize: '12px', padding: '3px 10px', borderRadius: '4px',
+                          backgroundColor: '#fff3cd', color: '#856404', border: '1px solid #ffc107',
+                        }}>
+                          {t('settings.warningNoModels')}
+                        </span>
+                      )}
+                      {p.models?.map((m) => (
+                        <span key={m.id} style={{
+                          fontSize: '11px', padding: '2px 8px', borderRadius: '10px',
+                          backgroundColor: 'var(--bg-glass)', color: 'var(--text-secondary)',
+                        }}>
+                          {m.name || m.id}
+                        </span>
+                      ))}
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '2px 4px' }}>
+                        {p.baseUrl}
+                      </span>
                     </div>
                   )}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
-                    {editForm.models.map((m) => (
-                      <span key={m.id} style={{
-                        fontSize: '12px', padding: '3px 8px', borderRadius: '4px',
-                        backgroundColor: 'var(--bg-glass)', display: 'flex', alignItems: 'center', gap: '4px',
-                      }}>
-                        {m.name || m.id}
-                        <span
-                          onClick={() => removeModelFromForm(m.id)}
-                          style={{ cursor: 'pointer', color: 'var(--error)', fontWeight: 'bold', fontSize: '14px', lineHeight: 1 }}
-                        >
-                          ×
-                        </span>
-                      </span>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <input
-                      value={newModelId}
-                      onChange={(e) => setNewModelId(e.target.value)}
-                      placeholder={t('settings.fieldModelId')}
-                      style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
-                    />
-                    <input
-                      value={newModelName}
-                      onChange={(e) => setNewModelName(e.target.value)}
-                      placeholder={t('settings.fieldModelDisplayName')}
-                      style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
-                    />
-                    <button
-                      onClick={addModelToForm}
-                      disabled={!newModelId.trim()}
-                      style={{
-                        padding: '5px 10px', fontSize: '12px', cursor: newModelId.trim() ? 'pointer' : 'not-allowed',
-                        border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: newModelId.trim() ? 'var(--bg-glass)' : 'var(--bg-glass)',
-                      }}
-                    >
-                      {t('common.add')}
-                    </button>
-                  </div>
-                </div>
 
-                {/* 保存/取消 */}
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                  <button
-                    onClick={() => { setEditingId(null); setEditForm(null) }}
-                    style={{
-                      padding: '6px 16px', fontSize: '13px', cursor: 'pointer',
-                      border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)',
-                    }}
-                  >
-                    {t('common.cancel')}
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    style={{
-                      padding: '6px 16px', fontSize: '13px', cursor: 'pointer',
-                      border: 'none', borderRadius: '4px', backgroundColor: 'var(--accent)', color: '#fff',
-                    }}
-                  >
-                    {t('common.save')}
-                  </button>
+                  {/* 编辑模式 */}
+                  {isEditing && editForm && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('common.name')}</label>
+                          <input
+                            value={editForm.name}
+                            onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                            style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('settings.fieldApiType')}</label>
+                          <Select
+                            value={editForm.apiType}
+                            onChange={(v) => setEditForm({ ...editForm, apiType: v })}
+                            options={[
+                              { value: 'openai', label: t('settings.apiTypeOpenai') },
+                              { value: 'anthropic', label: t('settings.apiTypeAnthropic') },
+                            ]}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('settings.fieldBaseUrl')}</label>
+                        <input
+                          value={editForm.baseUrl}
+                          onChange={(e) => setEditForm({ ...editForm, baseUrl: e.target.value })}
+                          placeholder="https://api.example.com/v1"
+                          style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
+                          {t('settings.fieldApiKey')} {p.apiKeyMasked && <span style={{ color: 'var(--text-muted)' }}>({t('settings.labelCurrent')}: {p.apiKeyMasked}, {t('settings.placeholderKeep')})</span>}
+                        </label>
+                        <input
+                          type="password"
+                          value={editForm.apiKey || ''}
+                          onChange={(e) => setEditForm({ ...editForm, apiKey: e.target.value })}
+                          placeholder={p.apiKeyMasked ? t('settings.placeholderKeep') : t('settings.placeholderEnterKey')}
+                          style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
+                        />
+                      </div>
+
+                      {/* 模型列表编辑 */}
+                      <div>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+                          {t('settings.fieldModels')} <span style={{ color: 'var(--error)' }}>*</span>
+                        </label>
+                        {editForm.models.length === 0 && (
+                          <div style={{
+                            padding: '8px 12px', marginBottom: '8px', borderRadius: '4px',
+                            backgroundColor: '#fff3cd', color: '#856404', fontSize: '12px',
+                            border: '1px solid #ffc107',
+                          }}>
+                            {t('settings.warningAddModels')}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                          {editForm.models.map((m) => (
+                            <span key={m.id} style={{
+                              fontSize: '12px', padding: '3px 8px', borderRadius: '4px',
+                              backgroundColor: 'var(--bg-glass)', display: 'flex', alignItems: 'center', gap: '4px',
+                            }}>
+                              {m.name || m.id}
+                              <span
+                                onClick={() => removeModelFromForm(m.id)}
+                                style={{ cursor: 'pointer', color: 'var(--error)', fontWeight: 'bold', fontSize: '14px', lineHeight: 1 }}
+                              >
+                                ×
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <input
+                            value={newModelId}
+                            onChange={(e) => setNewModelId(e.target.value)}
+                            placeholder={t('settings.fieldModelId')}
+                            style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
+                          />
+                          <input
+                            value={newModelName}
+                            onChange={(e) => setNewModelName(e.target.value)}
+                            placeholder={t('settings.fieldModelDisplayName')}
+                            style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
+                          />
+                          <button
+                            onClick={addModelToForm}
+                            disabled={!newModelId.trim()}
+                            style={{
+                              padding: '5px 10px', fontSize: '12px', cursor: newModelId.trim() ? 'pointer' : 'not-allowed',
+                              border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: newModelId.trim() ? 'var(--bg-glass)' : 'var(--bg-glass)',
+                            }}
+                          >
+                            {t('common.add')}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 保存/取消 */}
+                      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                        <button
+                          onClick={() => { setEditingId(null); setEditForm(null) }}
+                          style={{
+                            padding: '6px 16px', fontSize: '13px', cursor: 'pointer',
+                            border: '1px solid var(--border-subtle)', borderRadius: '4px', backgroundColor: 'var(--bg-elevated)',
+                          }}
+                        >
+                          {t('common.cancel')}
+                        </button>
+                        <button
+                          onClick={handleSave}
+                          style={{
+                            padding: '6px 16px', fontSize: '13px', cursor: 'pointer',
+                            border: 'none', borderRadius: '4px', backgroundColor: 'var(--accent)', color: '#fff',
+                          }}
+                        >
+                          {t('common.save')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
+              )
+            })}
+
+            {providers.length === 0 && (
+              <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px 0' }}>
+                {t('settings.emptyProviders')}
               </div>
             )}
+
+            {/* 环境变量提示 */}
+            <div style={{
+              marginTop: '20px', padding: '12px', backgroundColor: 'var(--bg-glass)',
+              borderRadius: '6px', fontSize: '13px', color: 'var(--text-secondary)',
+            }}>
+              <strong>{t('settings.hintEnvVars')}</strong>
+              <pre style={{
+                margin: '8px 0 0', padding: '8px', backgroundColor: 'var(--bg-glass)',
+                borderRadius: '4px', fontSize: '12px', overflow: 'auto',
+              }}>
+{`export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export DEEPSEEK_API_KEY="sk-..."`}
+              </pre>
+            </div>
           </div>
-        )
-      })}
+        )}
 
-      {providers.length === 0 && (
-        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px 0' }}>
-          {t('settings.emptyProviders')}
-        </div>
-      )}
+        {/* ---- 外观（语言 + 主题） ---- */}
+        {activeSection === 'appearance' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionTheme')} / {t('settings.sectionLanguage')}</h1>
+            <LanguageSettings />
+            <ThemeSettings />
+          </div>
+        )}
 
-      {/* 删除确认弹窗 */}
+        {/* ---- 搜索引擎 ---- */}
+        {activeSection === 'search' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionSearch')}</h1>
+            <SearchSettings />
+          </div>
+        )}
+
+        {/* ---- 心跳自治 ---- */}
+        {activeSection === 'heartbeat' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionHeartbeat')}</h1>
+            <HeartbeatSettings />
+          </div>
+        )}
+
+        {/* ---- 备份恢复 ---- */}
+        {activeSection === 'backup' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionBackup') || 'Backup'}</h1>
+            <BackupSettings />
+          </div>
+        )}
+
+        {/* ---- 网关（云端连接） ---- */}
+        {activeSection === 'gateway' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionCloud')}</h1>
+            <AdvancedSettings initialSection="gateway" />
+          </div>
+        )}
+
+        {/* ---- 嵌入模型 ---- */}
+        {activeSection === 'embedding' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionEmbedding')}</h1>
+            <AdvancedSettings initialSection="embedding" />
+          </div>
+        )}
+      </div>
+
+      {/* 删除确认弹窗（全局浮层） */}
       {deleteConfirm && (
         <div style={{
           position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)',
@@ -685,37 +958,6 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
-
-      {/* 环境变量提示 */}
-      <div style={{
-        marginTop: '20px', padding: '12px', backgroundColor: 'var(--bg-glass)',
-        borderRadius: '6px', fontSize: '13px', color: 'var(--text-secondary)',
-      }}>
-        <strong>{t('settings.hintEnvVars')}</strong>
-        <pre style={{
-          margin: '8px 0 0', padding: '8px', backgroundColor: 'var(--bg-glass)',
-          borderRadius: '4px', fontSize: '12px', overflow: 'auto',
-        }}>
-{`export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export DEEPSEEK_API_KEY="sk-..."`}
-        </pre>
-      </div>
-
-      {/* 语言设置 */}
-      <LanguageSettings />
-
-      {/* 主题设置 */}
-      <ThemeSettings />
-
-      {/* 心跳自治 */}
-      <HeartbeatSettings />
-
-      {/* 搜索引擎 */}
-      <SearchSettings />
-
-      {/* 高级设置 */}
-      <AdvancedSettings />
     </div>
   )
 }
@@ -735,7 +977,7 @@ function HeartbeatSettings() {
   useEffect(() => {
     invoke<string>('get_setting', { key: 'heartbeat_config' }).then(json => {
       if (json) {
-        try { setConfig(prev => ({ ...prev, ...JSON.parse(json) })) } catch {}
+        try { setConfig(prev => ({ ...prev, ...JSON.parse(json) })) } catch (e) { console.error('parseHeartbeatConfig failed:', e) }
       }
       setLoaded(true)
     }).catch(() => setLoaded(true))
@@ -755,7 +997,7 @@ function HeartbeatSettings() {
   return (
     <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-        {'\u{1F49A}'} {t('settings.sectionHeartbeat')}
+        {t('settings.sectionHeartbeat')}
       </h3>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>
         {t('settings.heartbeatDesc')}
@@ -772,16 +1014,17 @@ function HeartbeatSettings() {
           {/* 间隔 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)', minWidth: 80 }}>{t('settings.heartbeatInterval')}</span>
-            <select
-              value={config.interval_secs}
-              onChange={e => save({ interval_secs: Number(e.target.value) })}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
-            >
-              <option value={600}>10 min</option>
-              <option value={1800}>30 min</option>
-              <option value={3600}>1 hour</option>
-              <option value={7200}>2 hours</option>
-            </select>
+            <Select
+              value={String(config.interval_secs)}
+              onChange={v => save({ interval_secs: Number(v) })}
+              options={[
+                { value: '600', label: '10 min' },
+                { value: '1800', label: '30 min' },
+                { value: '3600', label: '1 hour' },
+                { value: '7200', label: '2 hours' },
+              ]}
+              style={{ minWidth: 120 }}
+            />
           </div>
 
           {/* 静默时段 */}
@@ -833,16 +1076,19 @@ function SearchSettings() {
   if (!loaded) return null
 
   const options = [
-    { value: 'auto', label: t('settings.searchAuto'), desc: 'Serper → Tavily → DuckDuckGo' },
+    { value: 'auto', label: t('settings.searchAuto'), desc: 'Brave → Serper → Exa → Tavily → Firecrawl → DuckDuckGo' },
+    { value: 'brave', label: 'Brave Search', desc: t('settings.searchNeedsKey') + ': BRAVE_API_KEY — brave.com/search/api' },
     { value: 'serper', label: 'Serper (Google)', desc: t('settings.searchNeedsKey') + ': SERPER_API_KEY' },
+    { value: 'exa', label: 'Exa (Neural)', desc: t('settings.searchNeedsKey') + ': EXA_API_KEY — exa.ai' },
     { value: 'tavily', label: 'Tavily AI', desc: t('settings.searchNeedsKey') + ': TAVILY_API_KEY' },
+    { value: 'firecrawl', label: 'Firecrawl', desc: t('settings.searchNeedsKey') + ': FIRECRAWL_API_KEY — firecrawl.dev' },
     { value: 'duckduckgo', label: 'DuckDuckGo', desc: t('settings.searchFree') },
   ]
 
   return (
     <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-        {'\u{1F50D}'} {t('settings.sectionSearch')}
+        {t('settings.sectionSearch')}
       </h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {options.map(opt => (
@@ -865,10 +1111,64 @@ function SearchSettings() {
   )
 }
 
-/** 高级设置面板（嵌入配置 + 系统状态 + 缓存统计） */
-function AdvancedSettings() {
+/** 数据备份设置 */
+function BackupSettings() {
   const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
+  const [backupResult, setBackupResult] = useState<string>('')
+  const [backing, setBacking] = useState(false)
+
+  const handleBackup = async () => {
+    setBacking(true)
+    try {
+      const result = await invoke<string>('backup_database')
+      const parsed = JSON.parse(result)
+      setBackupResult(`Backup saved: ${parsed.path} (${(parsed.size_bytes / 1024 / 1024).toFixed(1)} MB)`)
+      toast.success('Backup complete')
+    } catch (e) { toast.error(String(e)) }
+    finally { setBacking(false) }
+  }
+
+  const handleRestore = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.db'
+    input.onchange = async () => {
+      if (!input.files?.[0]) return
+      // Tauri 环境下需要用文件路径
+      toast.error('Please use the file path directly. Drag the backup .db file here is not supported yet — use CLI or manual copy.')
+    }
+    input.click()
+  }
+
+  return (
+    <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
+      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
+        {t('settings.sectionBackup') || 'Data Backup'}
+      </h3>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+        {t('settings.backupDesc') || 'Create a consistent backup of all data (conversations, agents, settings, memory).'}
+      </p>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={handleBackup} disabled={backing} style={{
+          padding: '8px 16px', backgroundColor: 'var(--accent)', color: '#fff',
+          border: 'none', borderRadius: 6, cursor: backing ? 'wait' : 'pointer', fontSize: 13,
+        }}>
+          {backing ? 'Backing up...' : (t('settings.backupBtn') || 'Backup Now')}
+        </button>
+      </div>
+      {backupResult && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--success)', fontFamily: 'monospace' }}>
+          {backupResult}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 高级设置面板（嵌入配置 + 系统状态 + 缓存统计） */
+function AdvancedSettings({ initialSection }: { initialSection?: 'gateway' | 'embedding' } = {}) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(!!initialSection)
   const [embeddingKey, setEmbeddingKey] = useState('')
   const [embeddingUrl, setEmbeddingUrl] = useState('')
   const [embeddingModel, setEmbeddingModel] = useState('')
@@ -918,85 +1218,76 @@ function AdvancedSettings() {
     setSaving(false)
   }
 
-  useEffect(() => { if (expanded) loadSettings() }, [expanded])
+  useEffect(() => { loadSettings() }, [])
 
-  if (!expanded) {
-    return (
-      <div style={{ marginTop: '20px', textAlign: 'center' }}>
-        <button onClick={() => setExpanded(true)} style={{
-          padding: '8px 20px', background: 'none', border: '1px solid var(--border-subtle)',
-          borderRadius: '4px', cursor: 'pointer', color: 'var(--text-secondary)',
-        }}>
-          {t('settings.sectionAdvanced')}
-        </button>
-      </div>
-    )
-  }
+  const showEmbedding = !initialSection || initialSection === 'embedding'
+  const showGateway = !initialSection || initialSection === 'gateway'
 
   return (
-    <div style={{ marginTop: '20px', padding: '16px', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-        <h3 style={{ margin: 0 }}>{t('settings.sectionAdvanced')}</h3>
-        <button onClick={() => setExpanded(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' }}>×</button>
-      </div>
-
+    <div style={{ padding: '16px', border: '1px solid var(--border-subtle)', borderRadius: '8px' }}>
       {/* 向量嵌入 */}
-      <div style={{ marginBottom: '16px' }}>
-        <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionEmbedding')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 8px' }}>
-          {t('settings.hintEmbedding')}
-        </p>
-        <input placeholder={t('settingsExtra.embeddingKeyPlaceholder')} value={embeddingKey} onChange={e => setEmbeddingKey(e.target.value)}
-          style={{ width: '100%', padding: '6px', marginBottom: '6px', boxSizing: 'border-box' }} type="password" />
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-          <input placeholder={t('settingsExtra.embeddingUrlPlaceholder')} value={embeddingUrl} onChange={e => setEmbeddingUrl(e.target.value)}
-            style={{ flex: 3, padding: '6px' }} />
-          <input placeholder={t('settingsExtra.embeddingModelPlaceholder')} value={embeddingModel} onChange={e => setEmbeddingModel(e.target.value)}
-            style={{ flex: 2, padding: '6px' }} />
-          <input placeholder={t('settingsExtra.embeddingDimPlaceholder')} value={embeddingDimensions} onChange={e => setEmbeddingDimensions(e.target.value)}
-            style={{ flex: 1, padding: '6px' }} type="number" />
+      {showEmbedding && (
+        <div style={{ marginBottom: '16px' }}>
+          <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionEmbedding')}</h4>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 8px' }}>
+            {t('settings.hintEmbedding')}
+          </p>
+          <input placeholder={t('settingsExtra.embeddingKeyPlaceholder')} value={embeddingKey} onChange={e => setEmbeddingKey(e.target.value)}
+            style={{ width: '100%', padding: '6px', marginBottom: '6px', boxSizing: 'border-box' }} type="password" />
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+            <input placeholder={t('settingsExtra.embeddingUrlPlaceholder')} value={embeddingUrl} onChange={e => setEmbeddingUrl(e.target.value)}
+              style={{ flex: 3, padding: '6px' }} />
+            <input placeholder={t('settingsExtra.embeddingModelPlaceholder')} value={embeddingModel} onChange={e => setEmbeddingModel(e.target.value)}
+              style={{ flex: 2, padding: '6px' }} />
+            <input placeholder={t('settingsExtra.embeddingDimPlaceholder')} value={embeddingDimensions} onChange={e => setEmbeddingDimensions(e.target.value)}
+              style={{ flex: 1, padding: '6px' }} type="number" />
+          </div>
+          <button
+            onClick={async () => {
+              if (!embeddingKey || !embeddingUrl) { toast.info(t('settingsExtra.fillKeyFirst')); return }
+              try {
+                const res = await fetch(embeddingUrl, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${embeddingKey}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ model: embeddingModel || 'text-embedding-3-small', input: 'test', dimensions: parseInt(embeddingDimensions) || 1024 }),
+                })
+                const data = await res.json()
+                if (data?.data?.[0]?.embedding) {
+                  toast.success(t('settingsExtra.connectionSuccess', { dim: String(data.data[0].embedding.length), token: String(data.usage?.total_tokens || '?') }))
+                } else {
+                  toast.error(t('settingsExtra.connectionFailed') + ': ' + JSON.stringify(data).substring(0, 200))
+                }
+              } catch (e: unknown) { toast.error(t('settingsExtra.connectionFailed') + ': ' + ((e as Error)?.message || e)) }
+            }}
+            style={{ padding: '4px 12px', fontSize: '12px', border: '1px solid var(--border-subtle)', borderRadius: '4px', cursor: 'pointer', backgroundColor: 'var(--bg-elevated)' }}
+          >
+            {t('settings.btnTestConnection')}
+          </button>
         </div>
-        <button
-          onClick={async () => {
-            if (!embeddingKey || !embeddingUrl) { toast.info(t('settingsExtra.fillKeyFirst')); return }
-            try {
-              const res = await fetch(embeddingUrl, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${embeddingKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: embeddingModel || 'text-embedding-3-small', input: 'test', dimensions: parseInt(embeddingDimensions) || 1024 }),
-              })
-              const data = await res.json()
-              if (data?.data?.[0]?.embedding) {
-                toast.success(t('settingsExtra.connectionSuccess', { dim: String(data.data[0].embedding.length), token: String(data.usage?.total_tokens || '?') }))
-              } else {
-                toast.error(t('settingsExtra.connectionFailed') + ': ' + JSON.stringify(data).substring(0, 200))
-              }
-            } catch (e: unknown) { toast.error(t('settingsExtra.connectionFailed') + ': ' + ((e as Error)?.message || e)) }
-          }}
-          style={{ padding: '4px 12px', fontSize: '12px', border: '1px solid var(--border-subtle)', borderRadius: '4px', cursor: 'pointer', backgroundColor: 'var(--bg-elevated)' }}
-        >
-          {t('settings.btnTestConnection')}
-        </button>
-      </div>
+      )}
 
       {/* 云端连接（混合架构） */}
-      <div style={{ marginBottom: '16px' }}>
-        <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionCloud')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 8px' }}>
-          {t('settings.hintCloud')}
-        </p>
-        <input placeholder={t('settingsExtra.gatewayPlaceholder')} value={cloudUrl} onChange={e => setCloudUrl(e.target.value)}
-          style={{ width: '100%', padding: '6px', marginBottom: '6px', boxSizing: 'border-box' }} />
-        <input placeholder="API Key" value={cloudKey} onChange={e => setCloudKey(e.target.value)}
-          style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }} type="password" />
-      </div>
+      {showGateway && (
+        <div style={{ marginBottom: '16px' }}>
+          <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionCloud')}</h4>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 8px' }}>
+            {t('settings.hintCloud')}
+          </p>
+          <input placeholder={t('settingsExtra.gatewayPlaceholder')} value={cloudUrl} onChange={e => setCloudUrl(e.target.value)}
+            style={{ width: '100%', padding: '6px', marginBottom: '6px', boxSizing: 'border-box' }} />
+          <input placeholder="API Key" value={cloudKey} onChange={e => setCloudKey(e.target.value)}
+            style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }} type="password" />
+        </div>
+      )}
 
       {/* Token 限额 */}
-      <div style={{ marginBottom: '16px' }}>
-        <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionDailyLimit')}</h4>
-        <input placeholder={t('settings.fieldDailyLimit')} value={dailyLimit} onChange={e => setDailyLimit(e.target.value)}
-          style={{ width: '200px', padding: '6px' }} type="number" />
-      </div>
+      {showGateway && (
+        <div style={{ marginBottom: '16px' }}>
+          <h4 style={{ margin: '0 0 8px', color: 'var(--text-secondary)' }}>{t('settings.sectionDailyLimit')}</h4>
+          <input placeholder={t('settings.fieldDailyLimit')} value={dailyLimit} onChange={e => setDailyLimit(e.target.value)}
+            style={{ width: '200px', padding: '6px' }} type="number" />
+        </div>
+      )}
 
       <button onClick={saveSettings} disabled={saving} style={{
         padding: '8px 20px', backgroundColor: 'var(--success)', color: 'white',
@@ -1030,19 +1321,16 @@ function LanguageSettings() {
   return (
     <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-        {'\u{1F310}'}  {t('settings.sectionLanguage')}
+        {t('settings.sectionLanguage')}
       </h3>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.labelLanguage')}</span>
-        <select
+        <Select
           value={locale}
-          onChange={e => setLocale(e.target.value as Locale)}
-          style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13, cursor: 'pointer' }}
-        >
-          {SUPPORTED_LOCALES.map(loc => (
-            <option key={loc} value={loc}>{LOCALE_LABELS[loc]}</option>
-          ))}
-        </select>
+          onChange={v => setLocale(v as Locale)}
+          options={SUPPORTED_LOCALES.map(loc => ({ value: loc, label: LOCALE_LABELS[loc] }))}
+          style={{ minWidth: 140 }}
+        />
       </div>
     </div>
   )
@@ -1053,15 +1341,15 @@ function ThemeSettings() {
   const { theme, setTheme } = useTheme()
 
   const themes: { value: Theme; label: string; icon: string }[] = [
-    { value: 'light', label: t('settings.themeLight'), icon: '\u2600\uFE0F' },
-    { value: 'dark', label: t('settings.themeDark'), icon: '\u{1F319}' },
-    { value: 'system', label: t('settings.themeSystem'), icon: '\u{1F4BB}' },
+    { value: 'light', label: t('settings.themeLight'), icon: '' },
+    { value: 'dark', label: t('settings.themeDark'), icon: '' },
+    { value: 'system', label: t('settings.themeSystem'), icon: '' },
   ]
 
   return (
     <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)' }}>
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-        {'\u{1F3A8}'}  {t('settings.sectionTheme')}
+        {t('settings.sectionTheme')}
       </h3>
       <div style={{ display: 'flex', gap: 8 }}>
         {themes.map(opt => (

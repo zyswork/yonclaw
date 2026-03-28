@@ -1,6 +1,7 @@
 // SQLite 数据库实现
 
 import Database from 'better-sqlite3'
+import bcrypt from 'bcryptjs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -44,6 +45,7 @@ export function initializeDatabase() {
       enterpriseId TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
+      passwordHash TEXT,
       role TEXT DEFAULT 'member',
       status TEXT DEFAULT 'active',
       createdAt TEXT NOT NULL,
@@ -51,6 +53,14 @@ export function initializeDatabase() {
       FOREIGN KEY (enterpriseId) REFERENCES enterprises(id)
     )
   `)
+
+  // 迁移：为已有数据库添加 passwordHash 字段
+  const userColumns = sqliteDb.pragma('table_info(users)') as any[]
+  const hasPasswordHash = userColumns.some((col: any) => col.name === 'passwordHash')
+  if (!hasPasswordHash) {
+    sqliteDb.exec('ALTER TABLE users ADD COLUMN passwordHash TEXT')
+    console.log('已迁移: 为 users 表添加 passwordHash 字段')
+  }
 
   // 知识库文档表
   sqliteDb.exec(`
@@ -232,15 +242,24 @@ export function initializeDatabase() {
   const count = sqliteDb.prepare('SELECT COUNT(*) as cnt FROM enterprises').get()
   if (count.cnt === 0) {
     const now = new Date().toISOString()
+    const defaultPasswordHash = bcrypt.hashSync('admin123', 10)
     sqliteDb.prepare(`
       INSERT INTO enterprises (id, name, description, industry, size, status, createdAt, updatedAt)
-      VALUES ('001', 'YonClaw', 'YonClaw AI Platform', 'Technology', 'small', 'active', ?, ?)
+      VALUES ('001', 'XianZhu', 'XianZhu AI Platform', 'Technology', 'small', 'active', ?, ?)
     `).run(now, now)
     sqliteDb.prepare(`
-      INSERT INTO users (id, enterpriseId, email, name, role, status, createdAt, updatedAt)
-      VALUES ('user_admin', '001', 'admin@yonclaw.com', 'Admin', 'admin', 'active', ?, ?)
-    `).run(now, now)
-    console.log('已创建默认企业(001)和管理员(admin@yonclaw.com)')
+      INSERT INTO users (id, enterpriseId, email, name, passwordHash, role, status, createdAt, updatedAt)
+      VALUES ('user_admin', '001', 'admin@xianzhu.com', 'Admin', ?, 'admin', 'active', ?, ?)
+    `).run(defaultPasswordHash, now, now)
+    console.log('已创建默认企业(001)和管理员(admin@xianzhu.com, 默认密码: admin123)')
+  }
+
+  // 迁移：为已有 admin 用户设置默认密码（如果没有密码）
+  const adminUser = sqliteDb.prepare('SELECT id, passwordHash FROM users WHERE id = ?').get('user_admin') as any
+  if (adminUser && !adminUser.passwordHash) {
+    const defaultPasswordHash = bcrypt.hashSync('admin123', 10)
+    sqliteDb.prepare('UPDATE users SET passwordHash = ? WHERE id = ?').run(defaultPasswordHash, 'user_admin')
+    console.log('已为 admin 用户设置默认密码: admin123')
   }
 }
 

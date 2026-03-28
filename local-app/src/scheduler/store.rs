@@ -23,6 +23,8 @@ pub async fn add_job(pool: &SqlitePool, req: &CreateJobRequest) -> Result<CronJo
         Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string(), None, None),
         Schedule::Webhook { token, secret } => ("webhook", Some(token.clone()), None, None, "UTC".to_string(), secret.clone(), None),
         Schedule::Poll { url, interval_secs, json_path, .. } => ("poll", Some(url.clone()), Some(*interval_secs as i64), None, "UTC".to_string(), None, json_path.clone()),
+        Schedule::OnMessage { channel, keyword_pattern, .. } => ("on_message", Some(channel.clone()), None, None, "UTC".to_string(), None, keyword_pattern.clone()),
+        Schedule::OnAgentEvent { source_agent, event_type } => ("on_agent_event", Some(format!("{}:{}", source_agent, event_type)), None, None, "UTC".to_string(), None, None),
     };
 
     // 计算首次执行时间
@@ -182,6 +184,8 @@ pub async fn update_job(pool: &SqlitePool, job_id: &str, patch: &UpdateJobReques
         Schedule::At { ts } => ("at", None, None, Some(*ts), "UTC".to_string(), None, None),
         Schedule::Webhook { token, secret } => ("webhook", Some(token.clone()), None, None, "UTC".to_string(), secret.clone(), None),
         Schedule::Poll { url, interval_secs, json_path, .. } => ("poll", Some(url.clone()), Some(*interval_secs as i64), None, "UTC".to_string(), None, json_path.clone()),
+        Schedule::OnMessage { channel, keyword_pattern, .. } => ("on_message", Some(channel.clone()), None, None, "UTC".to_string(), None, keyword_pattern.clone()),
+        Schedule::OnAgentEvent { source_agent, event_type } => ("on_agent_event", Some(format!("{}:{}", source_agent, event_type)), None, None, "UTC".to_string(), None, None),
     };
 
     if patch.schedule.is_some() { need_reschedule = true; }

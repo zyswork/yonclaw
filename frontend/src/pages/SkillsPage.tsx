@@ -1,12 +1,12 @@
 /**
- * 技能广场 — Marketplace + 多 Agent 安装管理
+ * 技能广场 — 深色毛玻璃卡片式布局
  *
- * - 从 ~/.yonclaw/marketplace/ 加载全局可用技能
+ * - 从 ~/.xianzhu/marketplace/ 加载全局可用技能
  * - 从 agent skills/ 加载已安装技能
  * - 支持给指定 Agent 安装/卸载技能
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
@@ -38,50 +38,81 @@ interface OnlineSkill {
   author?: string
 }
 
-// 技能元数据（icon + 分类 key）
-const SKILL_META: Record<string, { icon: string; category: string }> = {
+/* ─── SVG 图标 ─────────────────────────────── */
+
+function SvgIcon({ name, size = 20, color }: { name: string; size?: number; color?: string }) {
+  const c = color || 'currentColor'
+  const props = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: c, strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
+
+  switch (name) {
+    case 'puzzle':
+      return <svg {...props}><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 01-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 10-3.214 3.214c.446.166.855.497.925.968a.979.979 0 01-.276.837l-1.61 1.61a2.404 2.404 0 01-1.705.707 2.402 2.402 0 01-1.704-.706l-1.568-1.568a1.026 1.026 0 00-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 11-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 00-.289-.877l-1.568-1.568A2.402 2.402 0 011.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 103.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0112 2c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 113.237 3.237c-.464.18-.894.527-.967 1.02z"/></svg>
+    case 'search':
+      return <svg {...props}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    case 'check':
+      return <svg {...props}><polyline points="20 6 9 17 4 12"/></svg>
+    case 'download':
+      return <svg {...props}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    case 'upload':
+      return <svg {...props}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    case 'trash':
+      return <svg {...props}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+    case 'empty':
+      return (
+        <svg width={size} height={size} viewBox="0 0 64 64" fill="none">
+          <circle cx="32" cy="32" r="28" stroke="var(--border-default)" strokeWidth="2" strokeDasharray="4 4"/>
+          <path d="M20 28l6 6-6 6M28 42h12" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      )
+    default:
+      return <svg {...props}><circle cx="12" cy="12" r="10"/></svg>
+  }
+}
+
+// 技能元数据（分类 key）
+const SKILL_META: Record<string, { category: string }> = {
   // productivity
-  'mail-ops':         { icon: '\u{1F4E8}', category: 'productivity' },
-  'oa-schedule':      { icon: '\u{1F4C5}', category: 'productivity' },
-  'oa-task':          { icon: '\u2705',     category: 'productivity' },
-  'oa-meeting':       { icon: '\u{1F4C5}', category: 'productivity' },
-  'oa-common':        { icon: '\u{1F527}', category: 'system' },
-  'summarize':        { icon: '\u{1F4DD}', category: 'productivity' },
-  'weather':          { icon: '\u26C5',     category: 'productivity' },
-  'apple-notes':      { icon: '\u{1F4D3}', category: 'productivity' },
-  'apple-reminders':  { icon: '\u{1F514}', category: 'productivity' },
+  'mail-ops':         { category: 'productivity' },
+  'oa-schedule':      { category: 'productivity' },
+  'oa-task':          { category: 'productivity' },
+  'oa-meeting':       { category: 'productivity' },
+  'oa-common':        { category: 'system' },
+  'summarize':        { category: 'productivity' },
+  'weather':          { category: 'productivity' },
+  'apple-notes':      { category: 'productivity' },
+  'apple-reminders':  { category: 'productivity' },
   // development
-  'github':           { icon: '\u{1F4BB}', category: 'development' },
-  'coding-agent':     { icon: '\u{1F916}', category: 'development' },
-  'skill-creator':    { icon: '\u2728',     category: 'development' },
-  'spec-generator':   { icon: '\u{1F4CB}', category: 'development' },
-  'session-logs':     { icon: '\u{1F4DC}', category: 'development' },
-  'tmux':             { icon: '\u{1F5A5}\uFE0F', category: 'development' },
+  'github':           { category: 'development' },
+  'coding-agent':     { category: 'development' },
+  'skill-creator':    { category: 'development' },
+  'spec-generator':   { category: 'development' },
+  'session-logs':     { category: 'development' },
+  'tmux':             { category: 'development' },
   // media
-  'nano-banana-pro':  { icon: '\u{1F3A8}', category: 'media' },
-  'nano-pdf':         { icon: '\u{1F4C4}', category: 'media' },
-  'peekaboo':         { icon: '\u{1F441}\uFE0F', category: 'media' },
+  'nano-banana-pro':  { category: 'media' },
+  'nano-pdf':         { category: 'media' },
+  'peekaboo':         { category: 'media' },
   // platform
-  'clawhub':          { icon: '\u{1F30D}', category: 'platform' },
+  'clawhub':          { category: 'platform' },
 }
 
 // 内置工具（始终可用，不需安装）
 const BUILTIN_TOOLS = [
-  { name: 'memory_write', descKey: 'skills.builtinMemoryWrite', icon: '\u{1F9E0}' },
-  { name: 'memory_read', descKey: 'skills.builtinMemoryRead', icon: '\u{1F50D}' },
-  { name: 'bash_exec', descKey: 'skills.builtinBashExec', icon: '\u{1F4BB}' },
-  { name: 'file_read', descKey: 'skills.builtinFileRead', icon: '\u{1F4C4}' },
-  { name: 'file_write', descKey: 'skills.builtinFileWrite', icon: '\u{1F4DD}' },
-  { name: 'file_edit', descKey: 'skills.builtinFileEdit', icon: '\u270F\uFE0F' },
-  { name: 'file_list', descKey: 'skills.builtinFileList', icon: '\u{1F4C1}' },
-  { name: 'code_search', descKey: 'skills.builtinCodeSearch', icon: '\u{1F50E}' },
-  { name: 'web_fetch', descKey: 'skills.builtinWebFetch', icon: '\u{1F310}' },
-  { name: 'calculator', descKey: 'skills.builtinCalculator', icon: '\u{1F522}' },
-  { name: 'date_time', descKey: 'skills.builtinDateTime', icon: '\u{1F552}' },
-  { name: 'diff_edit', descKey: 'skills.builtinDiffEdit', icon: '\u{1F4CB}' },
-  { name: 'settings_manage', descKey: 'skills.builtinSettingsManage', icon: '\u{1F527}' },
-  { name: 'provider_manage', descKey: 'skills.builtinProviderManage', icon: '\u2699\uFE0F' },
-  { name: 'agent_self_config', descKey: 'skills.builtinAgentSelfConfig', icon: '\u{1F916}' },
+  { name: 'memory_write', descKey: 'skills.builtinMemoryWrite' },
+  { name: 'memory_read', descKey: 'skills.builtinMemoryRead' },
+  { name: 'bash_exec', descKey: 'skills.builtinBashExec' },
+  { name: 'file_read', descKey: 'skills.builtinFileRead' },
+  { name: 'file_write', descKey: 'skills.builtinFileWrite' },
+  { name: 'file_edit', descKey: 'skills.builtinFileEdit' },
+  { name: 'file_list', descKey: 'skills.builtinFileList' },
+  { name: 'code_search', descKey: 'skills.builtinCodeSearch' },
+  { name: 'web_fetch', descKey: 'skills.builtinWebFetch' },
+  { name: 'calculator', descKey: 'skills.builtinCalculator' },
+  { name: 'date_time', descKey: 'skills.builtinDateTime' },
+  { name: 'diff_edit', descKey: 'skills.builtinDiffEdit' },
+  { name: 'settings_manage', descKey: 'skills.builtinSettingsManage' },
+  { name: 'provider_manage', descKey: 'skills.builtinProviderManage' },
+  { name: 'agent_self_config', descKey: 'skills.builtinAgentSelfConfig' },
 ]
 
 const CATEGORY_KEYS = ['all', 'installed', 'available', 'online', 'productivity', 'development', 'media', 'platform', 'builtin']
@@ -100,6 +131,19 @@ const CATEGORY_I18N: Record<string, string> = {
   other: 'skills.categoryOther',
 }
 
+/* ─── 样式常量 ─────────────────────────────── */
+
+const CARD_STYLE: CSSProperties = {
+  background: 'var(--bg-elevated)',
+  border: '1px solid var(--border-subtle)',
+  borderRadius: 12,
+  backdropFilter: 'blur(var(--glass-blur))',
+  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+}
+
+/* ─── 主组件 ─────────────────────────────── */
+
 export default function SkillsPage() {
   const { t } = useI18n()
   const confirm = useConfirm()
@@ -116,6 +160,7 @@ export default function SkillsPage() {
   const [downloading, setDownloading] = useState('')
   const [publishing, setPublishing] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [hoveredCard, setHoveredCard] = useState<string | null>(null)
 
   useEffect(() => { loadAgents() }, [])
   useEffect(() => { if (selectedAgent) loadAll() }, [selectedAgent])
@@ -216,7 +261,7 @@ export default function SkillsPage() {
 
   // 构建统一列表
   type DisplaySkill = {
-    name: string; dirName: string; desc: string; icon: string; category: string
+    name: string; dirName: string; desc: string; category: string
     installed: boolean; isBuiltin: boolean; tools_count: number
   }
 
@@ -224,12 +269,11 @@ export default function SkillsPage() {
     // 技能市场的技能（dir_name 是文件系统目录名，用于安装/卸载）
     ...marketplace.map(s => {
       const dirName = s.dir_name || s.name
-      const meta = SKILL_META[dirName] || SKILL_META[s.name] || { icon: '\u{1F9E9}', category: 'other' }
+      const meta = SKILL_META[dirName] || SKILL_META[s.name] || { category: 'other' }
       return {
         name: s.name,
         dirName,
         desc: s.description || '',
-        icon: meta.icon,
         category: meta.category,
         installed: installedNames.has(dirName) || installedNames.has(s.name),
         isBuiltin: false,
@@ -240,15 +284,15 @@ export default function SkillsPage() {
     ...installed
       .filter(s => !marketplace.some(m => (m.dir_name || m.name) === s.name) && !BUILTIN_TOOLS.some(b => b.name === s.name))
       .map(s => {
-        const meta = SKILL_META[s.name] || { icon: '\u{1F9E9}', category: 'other' }
+        const meta = SKILL_META[s.name] || { category: 'other' }
         return {
-          name: s.name, dirName: s.name, desc: s.description || '', icon: meta.icon,
+          name: s.name, dirName: s.name, desc: s.description || '',
           category: meta.category, installed: true, isBuiltin: false, tools_count: 0,
         }
       }),
     // 内置工具
     ...BUILTIN_TOOLS.map(b => ({
-      name: b.name, dirName: b.name, desc: t(b.descKey), icon: b.icon, category: 'builtin',
+      name: b.name, dirName: b.name, desc: t(b.descKey), category: 'builtin',
       installed: true, isBuiltin: true, tools_count: 0,
     })),
   ]
@@ -265,22 +309,40 @@ export default function SkillsPage() {
     ? tabFiltered.filter(s => s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q) || s.dirName.toLowerCase().includes(q))
     : tabFiltered
 
-  if (loading) return <div style={{ padding: 24, color: 'var(--text-muted)' }}>{t('common.loading')}</div>
+  if (loading) return (
+    <div style={{ padding: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+      {t('common.loading')}
+    </div>
+  )
 
   const installedCount = allSkills.filter(s => s.installed && !s.isBuiltin).length
   const availableCount = allSkills.filter(s => !s.installed && !s.isBuiltin).length
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 900 }}>
+    <div style={{ padding: '24px 32px', maxWidth: 960 }}>
       {/* 标题栏 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>{t('skills.title')}</h1>
-        <span style={{
-          fontSize: 12, padding: '2px 8px', borderRadius: 10,
-          backgroundColor: 'var(--bg-glass)', color: 'var(--text-secondary)',
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 }}>
+        <div style={{
+          width: 42, height: 42, borderRadius: 12,
+          background: 'var(--accent-gradient)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 4px 16px rgba(16, 185, 129, 0.3)',
         }}>
-          {t('skills.countSkills', { count: marketplace.length })}
-        </span>
+          <SvgIcon name="puzzle" size={22} color="#fff" />
+        </div>
+        <div>
+          <h1 style={{
+            margin: 0, fontSize: 22, fontWeight: 700,
+            background: 'var(--accent-gradient)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+          }}>
+            {t('skills.title')}
+          </h1>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {t('skills.countSkills', { count: marketplace.length })}
+          </span>
+        </div>
         <span style={{ flex: 1 }} />
         {/* Agent 选择器 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -288,7 +350,11 @@ export default function SkillsPage() {
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
-            style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
+            style={{
+              padding: '6px 12px', borderRadius: 10, fontSize: 13,
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
+            }}
           >
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
@@ -296,38 +362,47 @@ export default function SkillsPage() {
       </div>
 
       {/* 搜索框 */}
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ position: 'relative', marginBottom: 20 }}>
+        <div style={{
+          position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)',
+          color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
+        }}>
+          <SvgIcon name="search" size={16} />
+        </div>
         <input
           type="text"
           placeholder={t('skills.searchPlaceholder')}
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
           style={{
-            width: '100%',
-            padding: '10px 14px',
-            borderRadius: 10,
-            border: '1px solid var(--border-subtle)',
-            fontSize: 13,
-            backgroundColor: 'var(--bg-elevated)',
-            color: 'var(--text-primary)',
+            width: '100%', padding: '10px 14px 10px 40px',
+            borderRadius: 10, border: '1px solid var(--border-subtle)',
+            fontSize: 13, backgroundColor: 'var(--bg-elevated)',
+            color: 'var(--text-primary)', boxSizing: 'border-box',
+            outline: 'none', transition: 'border-color 0.2s ease',
           }}
         />
       </div>
 
-      {/* 分类 Tab */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, flexWrap: 'wrap' }}>
+      {/* 分类 Tab — pill 样式 */}
+      <div style={{
+        display: 'inline-flex', gap: 4, marginBottom: 24, flexWrap: 'wrap',
+        padding: '4px', borderRadius: 12,
+        backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+      }}>
         {CATEGORY_KEYS.map(cat => {
           const count = cat === 'installed' ? installedCount : cat === 'available' ? availableCount : undefined
+          const isActive = activeTab === cat
           return (
             <button
               key={cat}
               onClick={() => setActiveTab(cat)}
               style={{
-                padding: '6px 14px', borderRadius: 16, fontSize: 13, cursor: 'pointer',
-                backgroundColor: activeTab === cat ? 'var(--accent)' : 'var(--bg-glass)',
-                color: activeTab === cat ? '#fff' : 'var(--text-secondary)',
-                border: 'none', fontWeight: activeTab === cat ? 600 : 400,
-                transition: 'all 0.15s ease',
+                padding: '6px 16px', borderRadius: 10, fontSize: 12, cursor: 'pointer',
+                backgroundColor: isActive ? 'var(--accent)' : 'transparent',
+                color: isActive ? '#fff' : 'var(--text-secondary)',
+                border: 'none', fontWeight: isActive ? 600 : 400,
+                transition: 'all 0.2s ease',
               }}
             >
               {t(CATEGORY_I18N[cat] || cat)}{count !== undefined ? ` ${count}` : ''}
@@ -336,124 +411,175 @@ export default function SkillsPage() {
         })}
       </div>
 
-      {/* 技能列表 */}
-      <div>
-        {filtered.map((skill, i) => (
-          <div
-            key={skill.name}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 14,
-              padding: '14px 0',
-              borderBottom: i < filtered.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-            }}
-          >
-            {/* 图标 */}
-            <div style={{
-              width: 40, height: 40, borderRadius: 10,
-              backgroundColor: 'var(--bg-glass)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0,
-            }}>
-              {skill.icon}
-            </div>
-
-            {/* 名称 + 描述 */}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-                  {skill.name}
-                </span>
-                {skill.isBuiltin && (
-                  <span style={{
-                    fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                    backgroundColor: '#6366F1', color: '#fff', fontWeight: 600,
-                  }}>{t('skills.labelBuiltin')}</span>
-                )}
-                {!skill.isBuiltin && skill.installed && (
-                  <span style={{
-                    fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                    backgroundColor: 'var(--success)', color: '#fff', fontWeight: 600,
-                  }}>{t('skills.labelInstalled')}</span>
-                )}
-                {skill.tools_count > 0 && (
-                  <span style={{
-                    fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                    backgroundColor: 'var(--bg-glass)', color: 'var(--text-muted)',
-                  }}>{skill.tools_count} {t('skills.labelTools')}</span>
-                )}
-              </div>
-              {skill.desc && (
-                <div style={{
-                  fontSize: 12, color: 'var(--text-muted)', marginTop: 3,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {skill.desc}
+      {/* 技能卡片网格 */}
+      {activeTab !== 'online' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {filtered.map((skill) => {
+            const isHovered = hoveredCard === skill.name
+            return (
+              <div
+                key={skill.name}
+                onMouseEnter={() => setHoveredCard(skill.name)}
+                onMouseLeave={() => setHoveredCard(null)}
+                style={{
+                  ...CARD_STYLE,
+                  padding: '16px 18px',
+                  transform: isHovered ? 'translateY(-2px)' : 'none',
+                  boxShadow: isHovered ? '0 8px 24px rgba(0,0,0,0.25)' : '0 2px 8px rgba(0,0,0,0.15)',
+                }}
+              >
+                {/* 上部：图标 + 名称 + 标签 */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+                    backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <SvgIcon name="puzzle" size={20} color="var(--text-accent)" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {skill.name}
+                      </span>
+                      {skill.isBuiltin && (
+                        <span style={{
+                          fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                          backgroundColor: '#6366F1', color: '#fff', fontWeight: 600,
+                        }}>{t('skills.labelBuiltin')}</span>
+                      )}
+                      {!skill.isBuiltin && skill.installed && (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 2,
+                          fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                          backgroundColor: 'var(--success-bg)', color: 'var(--success)', fontWeight: 600,
+                        }}>
+                          <SvgIcon name="check" size={10} color="var(--success)" />
+                          {t('skills.labelInstalled')}
+                        </span>
+                      )}
+                    </div>
+                    {skill.tools_count > 0 && (
+                      <span style={{
+                        fontSize: 10, color: 'var(--text-muted)',
+                      }}>
+                        {skill.tools_count} {t('skills.labelTools')}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
 
-            {/* 操作按钮 */}
-            {!skill.isBuiltin && (
-              <div style={{ flexShrink: 0, display: 'flex', gap: 6 }}>
-                {skill.installed ? (<>
-                  <button
-                    onClick={() => handlePublishToHub(skill.dirName)}
-                    disabled={publishing === skill.dirName}
-                    style={{
-                      padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                      border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
-                      color: 'var(--accent)', fontWeight: 500,
-                    }}
-                  >
-                    {publishing === skill.dirName ? '...' : t('skills.btnPublish')}
-                  </button>
-                  <button
-                    onClick={() => handleUninstall(skill.dirName)}
-                    disabled={operating === skill.dirName}
-                    style={{
-                      padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                      border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
-                      color: 'var(--error)', fontWeight: 500,
-                    }}
-                  >
-                    {operating === skill.dirName ? '...' : t('skills.btnUninstall')}
-                  </button>
-                </>) : (
-                  <button
-                    onClick={() => handleInstall(skill.dirName)}
-                    disabled={operating === skill.dirName}
-                    style={{
-                      padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-                      border: 'none', backgroundColor: 'var(--accent)', color: '#fff', fontWeight: 500,
-                    }}
-                  >
-                    {operating === skill.dirName ? t('skills.btnInstalling') : t('skills.btnInstall')}
-                  </button>
+                {/* 描述 */}
+                {skill.desc && (
+                  <div style={{
+                    fontSize: 12, color: 'var(--text-muted)', marginBottom: 12,
+                    lineHeight: 1.5,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}>
+                    {skill.desc}
+                  </div>
+                )}
+
+                {/* 操作按钮 */}
+                {!skill.isBuiltin && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {skill.installed ? (<>
+                      <button
+                        onClick={() => handlePublishToHub(skill.dirName)}
+                        disabled={publishing === skill.dirName}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          padding: '6px 12px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+                          border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
+                          color: 'var(--text-accent)', fontWeight: 500, transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <SvgIcon name="upload" size={12} color="var(--text-accent)" />
+                        {publishing === skill.dirName ? '...' : t('skills.btnPublish')}
+                      </button>
+                      <button
+                        onClick={() => handleUninstall(skill.dirName)}
+                        disabled={operating === skill.dirName}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          padding: '6px 12px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+                          border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
+                          color: 'var(--error)', fontWeight: 500, transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <SvgIcon name="trash" size={12} color="var(--error)" />
+                        {operating === skill.dirName ? '...' : t('skills.btnUninstall')}
+                      </button>
+                    </>) : (
+                      <button
+                        onClick={() => handleInstall(skill.dirName)}
+                        disabled={operating === skill.dirName}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          padding: '6px 14px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                          border: 'none', fontWeight: 600, transition: 'all 0.15s ease',
+                          background: 'var(--accent-gradient)', color: '#fff',
+                          boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                        }}
+                      >
+                        <SvgIcon name="download" size={13} color="#fff" />
+                        {operating === skill.dirName ? t('skills.btnInstalling') : t('skills.btnInstall')}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
+            )
+          })}
 
-        {filtered.length === 0 && activeTab !== 'online' && (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-            {t('skills.emptyCategory')}
-          </div>
-        )}
-      </div>
+          {filtered.length === 0 && (
+            <div style={{
+              gridColumn: '1 / -1',
+              ...CARD_STYLE,
+              padding: '48px 24px',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
+            }}>
+              <SvgIcon name="empty" size={64} />
+              <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                {t('skills.emptyCategory')}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 在线市场 */}
       {activeTab === 'online' && (
-        <div style={{ marginTop: 16 }}>
+        <div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            <input
-              value={onlineSearch}
-              onChange={e => setOnlineSearch(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) loadOnlineSkills(onlineSearch) }}
-              placeholder={t('skills.searchOnline')}
-              style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}
-            />
+            <div style={{ flex: 1, position: 'relative' }}>
+              <div style={{
+                position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)',
+                color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
+              }}>
+                <SvgIcon name="search" size={16} />
+              </div>
+              <input
+                value={onlineSearch}
+                onChange={e => setOnlineSearch(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) loadOnlineSkills(onlineSearch) }}
+                placeholder={t('skills.searchOnline')}
+                style={{
+                  width: '100%', padding: '10px 14px 10px 40px',
+                  borderRadius: 10, border: '1px solid var(--border-subtle)',
+                  fontSize: 13, backgroundColor: 'var(--bg-elevated)',
+                  color: 'var(--text-primary)', boxSizing: 'border-box',
+                  outline: 'none',
+                }}
+              />
+            </div>
             <button onClick={() => loadOnlineSkills(onlineSearch)}
-              style={{ padding: '8px 16px', borderRadius: 6, backgroundColor: 'var(--accent)', color: '#fff', border: 'none', fontSize: 13, cursor: 'pointer' }}>
+              style={{
+                padding: '8px 20px', borderRadius: 10, fontSize: 13, cursor: 'pointer',
+                background: 'var(--accent-gradient)', color: '#fff', border: 'none', fontWeight: 600,
+                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+              }}>
               {t('common.search')}
             </button>
           </div>
@@ -461,46 +587,98 @@ export default function SkillsPage() {
           {onlineLoading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('common.loading')}</div>
           ) : onlineSkills.length === 0 ? (
-            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('skills.emptyOnline')}</div>
-          ) : (
-            onlineSkills.map((s) => (
-              <div key={s.slug} style={{
-                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0',
-                borderBottom: '1px solid var(--border-subtle)',
-              }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: 10, backgroundColor: 'var(--bg-glass)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0,
-                }}>{s.icon || '🧩'}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</span>
-                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, backgroundColor: 'var(--bg-glass)', color: 'var(--text-muted)' }}>{s.category}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>⬇ {s.downloads}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {s.description}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>v{s.version}</span>
-                  {installedNames.has(s.slug) || marketplace.some(m => m.name === s.slug) ? (
-                    <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 500 }}>{t('skills.labelHas')}</span>
-                  ) : (
-                    <button
-                      onClick={() => handleDownloadFromHub(s.slug)}
-                      disabled={downloading === s.slug}
-                      style={{
-                        padding: '4px 12px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                        border: 'none', backgroundColor: 'var(--accent)', color: '#fff', fontWeight: 500,
-                      }}
-                    >
-                      {downloading === s.slug ? t('skills.btnDownloading') : t('skills.btnDownload')}
-                    </button>
-                  )}
-                </div>
+            <div style={{
+              ...CARD_STYLE, padding: '48px 24px',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
+            }}>
+              <SvgIcon name="empty" size={64} />
+              <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                {t('skills.emptyOnline')}
               </div>
-            ))
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              {onlineSkills.map((s) => {
+                const isHovered = hoveredCard === `online-${s.slug}`
+                const alreadyHas = installedNames.has(s.slug) || marketplace.some(m => m.name === s.slug)
+                return (
+                  <div
+                    key={s.slug}
+                    onMouseEnter={() => setHoveredCard(`online-${s.slug}`)}
+                    onMouseLeave={() => setHoveredCard(null)}
+                    style={{
+                      ...CARD_STYLE,
+                      padding: '16px 18px',
+                      transform: isHovered ? 'translateY(-2px)' : 'none',
+                      boxShadow: isHovered ? '0 8px 24px rgba(0,0,0,0.25)' : '0 2px 8px rgba(0,0,0,0.15)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+                      <div style={{
+                        width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+                        backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {s.icon ? (
+                          <span style={{ fontSize: 20 }}>{s.icon}</span>
+                        ) : (
+                          <SvgIcon name="puzzle" size={20} color="var(--text-accent)" />
+                        )}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</span>
+                          <span style={{
+                            fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                            backgroundColor: 'var(--bg-glass)', color: 'var(--text-muted)',
+                          }}>{s.category}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>v{s.version}</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 10, color: 'var(--text-muted)' }}>
+                            <SvgIcon name="download" size={10} color="var(--text-muted)" /> {s.downloads}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{
+                      fontSize: 12, color: 'var(--text-muted)', marginBottom: 12,
+                      lineHeight: 1.5,
+                      display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}>
+                      {s.description}
+                    </div>
+                    <div>
+                      {alreadyHas ? (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                          fontSize: 12, color: 'var(--success)', fontWeight: 600,
+                        }}>
+                          <SvgIcon name="check" size={14} color="var(--success)" />
+                          {t('skills.labelHas')}
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleDownloadFromHub(s.slug)}
+                          disabled={downloading === s.slug}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 4,
+                            padding: '6px 14px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                            border: 'none', fontWeight: 600,
+                            background: 'var(--accent-gradient)', color: '#fff',
+                            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                          }}
+                        >
+                          <SvgIcon name="download" size={13} color="#fff" />
+                          {downloading === s.slug ? t('skills.btnDownloading') : t('skills.btnDownload')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       )}

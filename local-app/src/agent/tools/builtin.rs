@@ -334,7 +334,20 @@ impl Tool for FileReadTool {
     }
 }
 
-/// 网络搜索工具（占位）
+/// 网络搜索工具（6 纯搜索 API）
+///
+/// 只包含纯搜索 API（直接返回网页结果），不混入 LLM 搜索能力：
+/// - Brave Search（api.search.brave.com）
+/// - Exa（api.exa.ai，神经搜索 + 内容提取）
+/// - Serper（google.serper.dev，Google 搜索代理）
+/// - Tavily（api.tavily.com，AI 搜索 + 摘要）
+/// - Firecrawl（api.firecrawl.dev，搜索 + 网页抓取）
+/// - DuckDuckGo（免费，无需 API Key，兜底）
+///
+/// 注意：Perplexity/Grok/Kimi 是 LLM 模型的内置搜索能力，
+/// 不属于纯搜索 API，应在对话层面通过 function calling 使用。
+///
+/// 自动检测优先级：Brave → Serper → Exa → Tavily → Firecrawl → DuckDuckGo
 pub struct WebSearchTool {
     pool: sqlx::SqlitePool,
 }
@@ -346,7 +359,6 @@ impl WebSearchTool {
 
     /// 获取 API Key（优先 DB settings → 环境变量）
     async fn get_api_key(pool: &sqlx::SqlitePool, env_var: &str) -> Option<String> {
-        // 优先从 settings 读取（用户在插件页配置的）
         let db_key: Option<String> = sqlx::query_scalar(
             "SELECT value FROM settings WHERE key = ?"
         ).bind(format!("plugin_key_{}", env_var))
@@ -356,7 +368,6 @@ impl WebSearchTool {
             if !key.is_empty() { return Some(key); }
         }
 
-        // 回退到环境变量
         std::env::var(env_var).ok().filter(|k| !k.is_empty())
     }
 
@@ -369,12 +380,22 @@ impl WebSearchTool {
     }
 }
 
+/// 纯搜索 API 自动检测优先级（有 key 的优先，DuckDuckGo 兜底）
+const AUTO_DETECT_CHAIN: &[(&str, &[&str])] = &[
+    ("brave",      &["BRAVE_API_KEY"]),
+    ("serper",     &["SERPER_API_KEY"]),
+    ("exa",        &["EXA_API_KEY"]),
+    ("tavily",     &["TAVILY_API_KEY"]),
+    ("firecrawl",  &["FIRECRAWL_API_KEY"]),
+    // DuckDuckGo 无需 key，作为最终兜底
+];
+
 #[async_trait]
 impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "在网络上搜索信息。支持多个搜索引擎：Serper(Google)、DuckDuckGo、Tavily。".to_string(),
+            description: "在网络上搜索信息。支持 6 个搜索引擎：Brave、Exa、Serper(Google)、Tavily、Firecrawl、DuckDuckGo(免费)。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -384,7 +405,11 @@ impl Tool for WebSearchTool {
                     },
                     "provider": {
                         "type": "string",
-                        "description": "搜索引擎（可选）：serper/duckduckgo/tavily/auto。不填则使用系统默认。"
+                        "description": "搜索引擎（可选）：brave/exa/serper/tavily/firecrawl/duckduckgo/auto"
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "返回结果数量（1-10，默认 5）"
                     }
                 },
                 "required": ["query"]
@@ -397,10 +422,9 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
-        let query = arguments
-            .get("query")
-            .and_then(|q| q.as_str())
+        let query = arguments.get("query").and_then(|q| q.as_str())
             .ok_or("缺少 query 参数")?;
+        let count = arguments.get("count").and_then(|c| c.as_u64()).unwrap_or(5).min(10).max(1) as usize;
 
         let explicit_provider = arguments.get("provider").and_then(|p| p.as_str()).unwrap_or("");
         let preferred = if explicit_provider.is_empty() {
@@ -409,36 +433,64 @@ impl Tool for WebSearchTool {
             explicit_provider.to_string()
         };
 
-        log::info!("执行网络搜索: {} (provider={})", query, preferred);
+        log::info!("网络搜索: query={} provider={} count={}", query, preferred, count);
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        // 按指定 provider 或 auto fallback 链执行
         match preferred.as_str() {
+            "brave" => {
+                let key = Self::get_api_key(&self.pool, "BRAVE_API_KEY").await
+                    .ok_or("BRAVE_API_KEY 未配置。获取: https://brave.com/search/api/")?;
+                search_brave(&client, &key, query, count).await
+            }
+            "exa" => {
+                let key = Self::get_api_key(&self.pool, "EXA_API_KEY").await
+                    .ok_or("EXA_API_KEY 未配置。获取: https://exa.ai/")?;
+                search_exa(&client, &key, query, count).await
+            }
             "serper" => {
                 let key = Self::get_api_key(&self.pool, "SERPER_API_KEY").await
-                    .ok_or("SERPER_API_KEY 未配置。请在插件页面配置 API Key 或设置环境变量。")?;
+                    .ok_or("SERPER_API_KEY 未配置。获取: https://serper.dev/")?;
                 search_serper(&client, &key, query).await
             }
             "tavily" => {
                 let key = Self::get_api_key(&self.pool, "TAVILY_API_KEY").await
-                    .ok_or("TAVILY_API_KEY 未配置。请在插件页面配置 API Key 或设置环境变量。")?;
+                    .ok_or("TAVILY_API_KEY 未配置。获取: https://tavily.com/")?;
                 search_tavily(&client, &key, query).await
+            }
+            "firecrawl" => {
+                let key = Self::get_api_key(&self.pool, "FIRECRAWL_API_KEY").await
+                    .ok_or("FIRECRAWL_API_KEY 未配置。获取: https://www.firecrawl.dev/")?;
+                search_firecrawl(&client, &key, query, count).await
             }
             "duckduckgo" => {
                 search_duckduckgo(&client, query).await
             }
             _ => {
-                // auto: Serper → Tavily → DuckDuckGo → fallback
-                if let Some(key) = Self::get_api_key(&self.pool, "SERPER_API_KEY").await {
-                    if let Ok(r) = search_serper(&client, &key, query).await { return Ok(r); }
+                // auto: 按优先级检测有 key 的引擎，最后 fallback DuckDuckGo
+                for (provider, env_vars) in AUTO_DETECT_CHAIN {
+                    for env_var in *env_vars {
+                        if let Some(key) = Self::get_api_key(&self.pool, env_var).await {
+                            let result = match *provider {
+                                "brave" => search_brave(&client, &key, query, count).await,
+                                "exa" => search_exa(&client, &key, query, count).await,
+                                "serper" => search_serper(&client, &key, query).await,
+                                "tavily" => search_tavily(&client, &key, query).await,
+                                "firecrawl" => search_firecrawl(&client, &key, query, count).await,
+                                _ => continue,
+                            };
+                            if let Ok(r) = result {
+                                log::info!("auto-detect 使用 {} 搜索成功", provider);
+                                return Ok(r);
+                            }
+                            break; // 该引擎有 key 但失败，尝试下一个
+                        }
+                    }
                 }
-                if let Some(key) = Self::get_api_key(&self.pool, "TAVILY_API_KEY").await {
-                    if let Ok(r) = search_tavily(&client, &key, query).await { return Ok(r); }
-                }
+                // 所有付费引擎都不可用，fallback DuckDuckGo
                 match search_duckduckgo(&client, query).await {
                     Ok(r) => Ok(r),
                     Err(e) => Ok(format!("搜索暂不可用（{}）。可用 web_fetch 访问特定网页。", e)),
@@ -502,7 +554,7 @@ async fn search_duckduckgo(client: &reqwest::Client, query: &str) -> Result<Stri
     // DuckDuckGo Instant Answer API
     let url = format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1", urlencoding::encode(query));
     let resp = client.get(&url)
-        .header("User-Agent", "YonClaw/0.2 (AI Assistant)")
+        .header("User-Agent", "XianZhu/0.2 (AI Assistant)")
         .send().await.map_err(|e| format!("请求失败: {}", e))?;
 
     let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
@@ -593,10 +645,122 @@ async fn search_tavily(client: &reqwest::Client, api_key: &str, query: &str) -> 
     }
 }
 
+/// Brave Search API（https://brave.com/search/api/）
+async fn search_brave(client: &reqwest::Client, api_key: &str, query: &str, count: usize) -> Result<String, String> {
+    let resp = client.get("https://api.search.brave.com/res/v1/web/search")
+        .header("X-Subscription-Token", api_key)
+        .header("Accept", "application/json")
+        .query(&[("q", query), ("count", &count.to_string())])
+        .send().await.map_err(|e| format!("Brave 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Brave 返回 {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+    let mut results = Vec::new();
+
+    if let Some(web) = data["web"]["results"].as_array() {
+        for (i, item) in web.iter().take(count).enumerate() {
+            let title = item["title"].as_str().unwrap_or("");
+            let desc = item["description"].as_str().unwrap_or("");
+            let url = item["url"].as_str().unwrap_or("");
+            results.push(format!("{}. **{}**\n   {}\n   {}", i + 1, title, desc, url));
+        }
+    }
+
+    if results.is_empty() {
+        Err("Brave 无结果".into())
+    } else {
+        Ok(format!("[Brave] 搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
+    }
+}
+
+/// Exa AI 搜索（https://exa.ai/ — 神经搜索 + 内容提取）
+async fn search_exa(client: &reqwest::Client, api_key: &str, query: &str, count: usize) -> Result<String, String> {
+    let resp = client.post("https://api.exa.ai/search")
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "query": query,
+            "numResults": count,
+            "type": "auto",
+            "contents": {
+                "text": { "maxCharacters": 500 },
+                "highlights": true,
+            }
+        }))
+        .send().await.map_err(|e| format!("Exa 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Exa 返回 {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+    let mut results = Vec::new();
+
+    if let Some(items) = data["results"].as_array() {
+        for (i, item) in items.iter().take(count).enumerate() {
+            let title = item["title"].as_str().unwrap_or("");
+            let url = item["url"].as_str().unwrap_or("");
+            // Exa 返回 text 或 highlights
+            let text = item["text"].as_str().unwrap_or("");
+            let highlight = item["highlights"].as_array()
+                .and_then(|h| h.first())
+                .and_then(|h| h.as_str())
+                .unwrap_or("");
+            let snippet = if !highlight.is_empty() { highlight } else { text };
+            results.push(format!("{}. **{}**\n   {}\n   {}", i + 1, title, snippet, url));
+        }
+    }
+
+    if results.is_empty() {
+        Err("Exa 无结果".into())
+    } else {
+        Ok(format!("[Exa] 搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
+    }
+}
+
+/// Firecrawl 搜索（https://www.firecrawl.dev/ — 搜索 + 网页抓取）
+async fn search_firecrawl(client: &reqwest::Client, api_key: &str, query: &str, count: usize) -> Result<String, String> {
+    let resp = client.post("https://api.firecrawl.dev/v1/search")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "query": query,
+            "limit": count,
+        }))
+        .send().await.map_err(|e| format!("Firecrawl 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Firecrawl 返回 {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
+    let mut results = Vec::new();
+
+    if let Some(items) = data["data"].as_array() {
+        for (i, item) in items.iter().take(count).enumerate() {
+            let title = item["metadata"]["title"].as_str()
+                .or(item["title"].as_str()).unwrap_or("");
+            let url = item["url"].as_str().unwrap_or("");
+            let desc = item["metadata"]["description"].as_str()
+                .or(item["description"].as_str()).unwrap_or("");
+            results.push(format!("{}. **{}**\n   {}\n   {}", i + 1, title, desc, url));
+        }
+    }
+
+    if results.is_empty() {
+        Err("Firecrawl 无结果".into())
+    } else {
+        Ok(format!("[Firecrawl] 搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
+    }
+}
+
 async fn search_duckduckgo_lite(client: &reqwest::Client, query: &str) -> Result<String, String> {
     let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
     let resp = client.get(&url)
-        .header("User-Agent", "YonClaw/0.2 (AI Assistant)")
+        .header("User-Agent", "XianZhu/0.2 (AI Assistant)")
         .send().await.map_err(|e| format!("请求失败: {}", e))?;
 
     let html = resp.text().await.map_err(|e| format!("读取失败: {}", e))?;
@@ -1270,7 +1434,7 @@ impl Tool for WebFetchTool {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
-            .user_agent("YonClaw-Agent/0.1")
+            .user_agent("XianZhu-Agent/0.1")
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
@@ -1776,7 +1940,7 @@ impl Tool for SkillManageTool {
 
         match action {
             "list_installed" => {
-                let workspace = home.join(".yonclaw").join("agents").join(agent_id).join("skills");
+                let workspace = home.join(".xianzhu").join("agents").join(agent_id).join("skills");
                 if !workspace.exists() {
                     return Ok("当前 Agent 暂无已安装技能。可用 action=list_marketplace 查看可安装技能。".into());
                 }
@@ -1795,7 +1959,7 @@ impl Tool for SkillManageTool {
                 }
             }
             "list_marketplace" => {
-                let mp_dir = home.join(".yonclaw").join("marketplace");
+                let mp_dir = home.join(".xianzhu").join("marketplace");
                 if !mp_dir.exists() { return Ok("本地技能市场为空。用 action=search_online 从在线市场搜索。".into()); }
                 let mut skills = Vec::new();
                 if let Ok(entries) = std::fs::read_dir(&mp_dir) {
@@ -1810,9 +1974,9 @@ impl Tool for SkillManageTool {
             }
             "install" => {
                 let skill_name = args["skill_name"].as_str().ok_or("缺少 skill_name")?;
-                let src = home.join(".yonclaw").join("marketplace").join(skill_name);
+                let src = home.join(".xianzhu").join("marketplace").join(skill_name);
                 if !src.exists() { return Err(format!("技能 {} 不在本地市场。先用 search_online 下载。", skill_name)); }
-                let dst = home.join(".yonclaw").join("agents").join(agent_id).join("skills").join(skill_name);
+                let dst = home.join(".xianzhu").join("agents").join(agent_id).join("skills").join(skill_name);
                 if dst.exists() { return Ok(format!("技能 {} 已安装。", skill_name)); }
                 let _ = std::fs::create_dir_all(dst.parent().unwrap());
                 copy_dir_recursive(&src, &dst).map_err(|e| format!("安装失败: {}", e))?;
@@ -1820,7 +1984,7 @@ impl Tool for SkillManageTool {
             }
             "uninstall" => {
                 let skill_name = args["skill_name"].as_str().ok_or("缺少 skill_name")?;
-                let target = home.join(".yonclaw").join("agents").join(agent_id).join("skills").join(skill_name);
+                let target = home.join(".xianzhu").join("agents").join(agent_id).join("skills").join(skill_name);
                 if !target.exists() { return Err(format!("技能 {} 未安装。", skill_name)); }
                 std::fs::remove_dir_all(&target).map_err(|e| format!("卸载失败: {}", e))?;
                 Ok(format!("✅ 技能 {} 已卸载。", skill_name))
@@ -2284,7 +2448,7 @@ impl TtsTool {
     async fn tts_local(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
         let output_dir = dirs::home_dir()
             .ok_or("无法获取 home 目录")?
-            .join(".yonclaw/tts");
+            .join(".xianzhu/tts");
         let _ = std::fs::create_dir_all(&output_dir);
         #[cfg(target_os = "macos")]
         let filename = format!("tts_{}.m4a", chrono::Utc::now().timestamp_millis());
@@ -2443,7 +2607,7 @@ impl TtsTool {
         }
 
         let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败: {}", e))?;
-        let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".yonclaw/tts");
+        let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".xianzhu/tts");
         let _ = std::fs::create_dir_all(&output_dir);
         let filename = format!("tts_{}.mp3", chrono::Utc::now().timestamp_millis());
         let output_path = output_dir.join(&filename);
@@ -2471,5 +2635,1625 @@ impl TtsTool {
             }
         }
         Err("未找到 OpenAI Provider，请先配置。或使用 mode=local（免费）".to_string())
+    }
+}
+
+// ─── Patch 应用工具 ──────────────────────────────────────────
+
+/// 多文件 Patch 应用工具
+///
+/// 接收 unified diff 格式的 patch，应用到工作目录。
+/// 支持 dry-run 预检、备份原文件、回滚。
+pub struct ApplyPatchTool;
+
+#[async_trait]
+impl Tool for ApplyPatchTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "apply_patch".to_string(),
+            description: "应用 unified diff patch 到文件。支持多文件 patch、dry-run 预检、自动备份。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "unified diff 格式的 patch 内容"
+                    },
+                    "working_dir": {
+                        "type": "string",
+                        "description": "工作目录（patch 中的文件路径相对于此目录）"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "仅检查是否可以应用，不实际修改文件（默认 false）"
+                    }
+                },
+                "required": ["patch"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Approval }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let patch = arguments["patch"].as_str().ok_or("缺少 patch")?;
+        let working_dir = arguments["working_dir"].as_str().unwrap_or(".");
+        let dry_run = arguments["dry_run"].as_bool().unwrap_or(false);
+
+        let flag = if dry_run { "--dry-run" } else { "--backup" };
+
+        let _output = tokio::process::Command::new("patch")
+            .args(&["-p1", flag, "--verbose"])
+            .current_dir(working_dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("启动 patch 命令失败: {}。请确保已安装 patch 工具。", e))?
+            .wait_with_output().await
+            .map_err(|e| format!("patch 执行失败: {}", e))?;
+
+        // 如果 spawn 后需要写 stdin，重新执行
+        let mut child = tokio::process::Command::new("patch")
+            .args(&["-p1", flag, "--verbose"])
+            .current_dir(working_dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("启动 patch 失败: {}", e))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(patch.as_bytes()).await;
+            drop(stdin);
+        }
+
+        let output = child.wait_with_output().await
+            .map_err(|e| format!("patch 执行失败: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() {
+            if dry_run {
+                Ok(format!("Patch 预检通过（dry-run）:\n{}", stdout))
+            } else {
+                Ok(format!("Patch 已成功应用:\n{}", stdout))
+            }
+        } else {
+            Err(format!("Patch 应用失败:\n{}\n{}", stdout, stderr))
+        }
+    }
+}
+
+// ─── 浏览器工具（CDP 完整版）─────────────────────────────────
+
+/// 浏览器自动化工具
+///
+/// 支持两种模式：
+/// - **简单模式**：打开 URL、列出浏览器（无需 CDP）
+/// - **CDP 模式**：启动受管 Chrome，支持截图、页面快照、导航、
+///   JS 执行、点击、输入等自动化操作
+///
+/// CDP 模式需要系统安装 Chrome/Brave/Edge/Chromium。
+/// 首次调用 CDP 操作时自动启动隔离 Chrome 实例（端口 9222）。
+pub struct BrowserTool;
+
+/// CDP 默认端口
+const CDP_PORT: u16 = 9222;
+
+#[async_trait]
+impl Tool for BrowserTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "browser".to_string(),
+            description: "浏览器自动化工具。支持两种模式：隔离模式（新 Chrome）和用户模式（连接已登录的 Chrome）。操作：导航、截图、ARIA 快照、JS 执行、点击、输入、悬停、拖拽、表单填写、文件上传、对话框处理、滚动等。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作类型",
+                        "enum": ["open", "list_browsers", "navigate", "tabs", "screenshot", "screenshot_labels", "snapshot", "evaluate", "click", "double_click", "type", "press_key", "hover", "drag", "scroll", "fill_form", "upload_file", "handle_dialog", "resize", "wait_for", "page_info", "close_tab", "connect_user"]
+                    },
+                    "url": { "type": "string", "description": "URL（open/navigate 时需要）" },
+                    "browser": { "type": "string", "description": "指定浏览器: chrome/brave/edge/chromium/default" },
+                    "full_page": { "type": "boolean", "description": "全页截图（默认 false）" },
+                    "expression": { "type": "string", "description": "JavaScript 表达式（evaluate 时需要）" },
+                    "ref": { "type": "string", "description": "ARIA ref（如 ax15）— 从 snapshot 获取，可替代 x/y 坐标和 selector" },
+                    "x": { "type": "number", "description": "X 坐标（无 ref 时使用）" },
+                    "y": { "type": "number", "description": "Y 坐标（无 ref 时使用）" },
+                    "to_x": { "type": "number", "description": "拖拽目标 X（drag 时需要）" },
+                    "to_y": { "type": "number", "description": "拖拽目标 Y（drag 时需要）" },
+                    "delta_x": { "type": "number", "description": "滚动 X 偏移（scroll 时）" },
+                    "delta_y": { "type": "number", "description": "滚动 Y 偏移（scroll 时，负=向上）" },
+                    "text": { "type": "string", "description": "输入文本（type）/ 按键名（press_key）" },
+                    "key": { "type": "string", "description": "按键：Enter/Tab/Escape/Backspace/ArrowUp 等" },
+                    "selector": { "type": "string", "description": "CSS 选择器（fill_form/upload_file/wait_for 时）" },
+                    "fields": { "type": "array", "description": "表单字段（fill_form 时）", "items": { "type": "object", "properties": { "selector": { "type": "string" }, "value": { "type": "string" } } } },
+                    "file_paths": { "type": "array", "description": "文件路径列表（upload_file 时）", "items": { "type": "string" } },
+                    "accept": { "type": "boolean", "description": "接受/拒绝对话框（handle_dialog 时）" },
+                    "prompt_text": { "type": "string", "description": "对话框输入文本（handle_dialog + prompt 时）" },
+                    "width": { "type": "integer", "description": "视口宽度（resize 时）" },
+                    "height": { "type": "integer", "description": "视口高度（resize 时）" },
+                    "timeout_ms": { "type": "integer", "description": "超时毫秒（wait_for 时，默认 5000）" },
+                    "target_id": { "type": "string", "description": "目标 Tab ID（可选）" },
+                    "limit": { "type": "integer", "description": "快照节点上限（默认 500）" },
+                    "headless": { "type": "boolean", "description": "无头模式（默认 false）" }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel {
+        ToolSafetyLevel::Guarded
+    }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().unwrap_or("open");
+
+        match action {
+            // ── 简单模式（无需 CDP）──
+            "open" => {
+                let url = arguments["url"].as_str().ok_or("缺少 url")?;
+                let browser = arguments["browser"].as_str();
+                crate::agent::browser::open_url(url, browser)?;
+                Ok(format!("已在浏览器中打开: {}", url))
+            }
+            "list_browsers" => {
+                let browsers = crate::agent::browser::detect_browsers();
+                let list: Vec<String> = browsers.iter()
+                    .map(|b| format!("- **{}** (`{}`): {}", b.name, b.kind,
+                        if b.path.is_empty() { "系统默认".into() } else { b.path.clone() }))
+                    .collect();
+                Ok(format!("已检测到 {} 个浏览器:\n{}", browsers.len(), list.join("\n")))
+            }
+
+            // ── CDP 模式 ──
+            "tabs" => {
+                let tabs = crate::agent::cdp::list_tabs(CDP_PORT).await?;
+                if tabs.is_empty() {
+                    Ok("无打开的 Tab（Chrome CDP 可能未运行，先执行 action=navigate 启动）".into())
+                } else {
+                    let list: Vec<String> = tabs.iter()
+                        .map(|t| format!("- [{}] **{}**\n  {}", &t.id[..8.min(t.id.len())], t.title, t.url))
+                        .collect();
+                    Ok(format!("{} 个 Tab:\n{}", tabs.len(), list.join("\n")))
+                }
+            }
+            "navigate" => {
+                let url = arguments["url"].as_str().ok_or("缺少 url")?;
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err("安全限制：只能导航到 http/https URL".into());
+                }
+                let ws_url = get_or_launch_cdp(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.navigate(url).await?;
+                Ok(format!("已导航到: {}", url))
+            }
+            "screenshot" => {
+                let full_page = arguments["full_page"].as_bool().unwrap_or(false);
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                let base64 = client.screenshot(full_page).await?;
+
+                // 保存到临时文件
+                let path = std::env::temp_dir().join(format!("xianzhu-screenshot-{}.png", chrono::Utc::now().timestamp()));
+                let bytes = base64_decode(&base64)?;
+                tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+
+                Ok(format!("截图已保存: {} ({} bytes)\n[base64 数据长度: {}]", path.display(), bytes.len(), base64.len()))
+            }
+            "screenshot_labels" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                let max_labels = arguments["limit"].as_u64().unwrap_or(50) as usize;
+                let nodes = client.aria_snapshot(500).await?;
+                let base64 = client.screenshot_with_labels(&nodes, max_labels).await?;
+
+                let path = std::env::temp_dir().join(format!("xianzhu-labeled-{}.png", chrono::Utc::now().timestamp()));
+                let bytes = base64_decode(&base64)?;
+                tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+
+                Ok(format!("标注截图已保存: {} ({} bytes, {} labels)", path.display(), bytes.len(), nodes.len().min(max_labels)))
+            }
+            "snapshot" => {
+                let limit = arguments["limit"].as_u64().unwrap_or(500) as usize;
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                let nodes = client.aria_snapshot(limit).await?;
+                let formatted = crate::agent::cdp::format_aria_snapshot(&nodes);
+                Ok(format!("页面 ARIA 快照（{} 节点）:\n\n{}", nodes.len(), formatted))
+            }
+            "evaluate" => {
+                let expr = arguments["expression"].as_str().ok_or("缺少 expression")?;
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                let result = client.evaluate(expr).await?;
+                Ok(format!("JS 执行结果:\n{}", serde_json::to_string_pretty(&result).unwrap_or_default()))
+            }
+            "click" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                if let Some(ref_id) = arguments["ref"].as_str() {
+                    let nodes = client.aria_snapshot(1000).await?;
+                    client.click_ref(&nodes, ref_id).await?;
+                    Ok(format!("已点击 [ref={}]", ref_id))
+                } else {
+                    let x = arguments["x"].as_f64().ok_or("缺少 x 坐标或 ref")?;
+                    let y = arguments["y"].as_f64().ok_or("缺少 y")?;
+                    client.click(x, y).await?;
+                    Ok(format!("已点击 ({}, {})", x, y))
+                }
+            }
+            "type" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                if let Some(ref_id) = arguments["ref"].as_str() {
+                    let value = arguments["text"].as_str().ok_or("缺少 text")?;
+                    let nodes = client.aria_snapshot(1000).await?;
+                    client.fill_ref(&nodes, ref_id, value).await?;
+                    Ok(format!("已填入 [ref={}]: {}", ref_id, value))
+                } else {
+                    let text = arguments["text"].as_str().ok_or("缺少 text")?;
+                    client.type_text(text).await?;
+                    Ok(format!("已输入: {}", text))
+                }
+            }
+            "double_click" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                if let Some(ref_id) = arguments["ref"].as_str() {
+                    let nodes = client.aria_snapshot(1000).await?;
+                    let (x, y) = client.resolve_ref_coordinates(&nodes, ref_id).await?;
+                    client.double_click(x, y).await?;
+                    Ok(format!("已双击 [ref={}]", ref_id))
+                } else {
+                    let x = arguments["x"].as_f64().ok_or("缺少 x 或 ref")?;
+                    let y = arguments["y"].as_f64().ok_or("缺少 y")?;
+                    client.double_click(x, y).await?;
+                    Ok(format!("已双击 ({}, {})", x, y))
+                }
+            }
+            "hover" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                if let Some(ref_id) = arguments["ref"].as_str() {
+                    let nodes = client.aria_snapshot(1000).await?;
+                    client.hover_ref(&nodes, ref_id).await?;
+                    Ok(format!("已悬停 [ref={}]", ref_id))
+                } else {
+                    let x = arguments["x"].as_f64().ok_or("缺少 x 或 ref")?;
+                    let y = arguments["y"].as_f64().ok_or("缺少 y")?;
+                    client.hover(x, y).await?;
+                    Ok(format!("已悬停 ({}, {})", x, y))
+                }
+            }
+            "drag" => {
+                let x = arguments["x"].as_f64().ok_or("缺少 x")?;
+                let y = arguments["y"].as_f64().ok_or("缺少 y")?;
+                let to_x = arguments["to_x"].as_f64().ok_or("缺少 to_x")?;
+                let to_y = arguments["to_y"].as_f64().ok_or("缺少 to_y")?;
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.drag(x, y, to_x, to_y).await?;
+                Ok(format!("已拖拽 ({},{}) → ({},{})", x, y, to_x, to_y))
+            }
+            "press_key" => {
+                let key = arguments["key"].as_str().or(arguments["text"].as_str()).ok_or("缺少 key")?;
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.press_key(key).await?;
+                Ok(format!("已按键: {}", key))
+            }
+            "scroll" => {
+                let x = arguments["x"].as_f64().unwrap_or(400.0);
+                let y = arguments["y"].as_f64().unwrap_or(300.0);
+                let dx = arguments["delta_x"].as_f64().unwrap_or(0.0);
+                let dy = arguments["delta_y"].as_f64().unwrap_or(-300.0);
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.scroll(x, y, dx, dy).await?;
+                Ok(format!("已滚动 dx={} dy={}", dx, dy))
+            }
+            "fill_form" => {
+                let fields_val = arguments.get("fields").ok_or("缺少 fields")?;
+                let fields_arr = fields_val.as_array().ok_or("fields 需要是数组")?;
+                let fields: Vec<(String, String)> = fields_arr.iter().filter_map(|f| {
+                    let sel = f["selector"].as_str()?.to_string();
+                    let val = f["value"].as_str()?.to_string();
+                    Some((sel, val))
+                }).collect();
+                if fields.is_empty() { return Err("fields 为空".into()); }
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.fill_form(&fields).await
+            }
+            "upload_file" => {
+                let paths: Vec<String> = arguments["file_paths"].as_array()
+                    .ok_or("缺少 file_paths")?
+                    .iter().filter_map(|p| p.as_str().map(String::from)).collect();
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                if let Some(ref_id) = arguments["ref"].as_str() {
+                    let nodes = client.aria_snapshot(1000).await?;
+                    client.upload_ref(&nodes, ref_id, &paths).await?;
+                    Ok(format!("已上传 {} 个文件到 [ref={}]", paths.len(), ref_id))
+                } else {
+                    let selector = arguments["selector"].as_str().ok_or("缺少 selector 或 ref")?;
+                    client.set_file_input(selector, &paths).await?;
+                    Ok(format!("已上传 {} 个文件到 {}", paths.len(), selector))
+                }
+            }
+            "handle_dialog" => {
+                let accept = arguments["accept"].as_bool().unwrap_or(true);
+                let prompt_text = arguments["prompt_text"].as_str();
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.handle_dialog(accept, prompt_text).await?;
+                Ok(format!("对话框已{}", if accept { "接受" } else { "拒绝" }))
+            }
+            "resize" => {
+                let w = arguments["width"].as_u64().ok_or("缺少 width")? as u32;
+                let h = arguments["height"].as_u64().ok_or("缺少 height")? as u32;
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.resize(w, h).await?;
+                Ok(format!("视口已调整: {}x{}", w, h))
+            }
+            "wait_for" => {
+                let selector = arguments["selector"].as_str().ok_or("缺少 selector")?;
+                let timeout = arguments["timeout_ms"].as_u64().unwrap_or(5000);
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                client.wait_for_selector(selector, timeout).await?;
+                Ok(format!("元素 {} 已出现", selector))
+            }
+            "page_info" => {
+                let ws_url = get_tab_ws_url(&arguments).await?;
+                let client = crate::agent::cdp::CdpClient::connect(&ws_url).await?;
+                let (url, title) = client.get_page_info().await?;
+                Ok(format!("**{}**\n{}", title, url))
+            }
+            "connect_user" => {
+                // 连接用户已运行的 Chrome（existing-session 模式）
+                match crate::agent::cdp::connect_user_chrome().await {
+                    Ok((port, _ws)) => {
+                        let tabs = crate::agent::cdp::list_tabs(port).await?;
+                        let tab_list: Vec<String> = tabs.iter().take(10)
+                            .map(|t| format!("- **{}** — {}", t.title, t.url))
+                            .collect();
+                        Ok(format!("已连接用户 Chrome（端口 {}）\n{} 个 Tab:\n{}",
+                            port, tabs.len(), tab_list.join("\n")))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            "close_tab" => {
+                let target_id = arguments["target_id"].as_str().ok_or("缺少 target_id")?;
+                let tabs = crate::agent::cdp::list_tabs(CDP_PORT).await?;
+                if let Some(tab) = tabs.iter().find(|t| t.id == target_id || t.id.starts_with(target_id)) {
+                    if let Some(ref ws) = tab.ws_url {
+                        let client = crate::agent::cdp::CdpClient::connect(ws).await?;
+                        client.send("Target.closeTarget", Some(serde_json::json!({"targetId": tab.id}))).await?;
+                        return Ok(format!("已关闭 Tab: {}", tab.title));
+                    }
+                }
+                Err("未找到指定 Tab".into())
+            }
+            _ => Err(format!("未知操作: {}。支持: open/list_browsers/navigate/tabs/screenshot/snapshot/evaluate/click/double_click/type/press_key/hover/drag/scroll/fill_form/upload_file/handle_dialog/resize/wait_for/page_info/connect_user/close_tab", action)),
+        }
+    }
+}
+
+/// 获取或启动 CDP Chrome，返回第一个 page 的 WebSocket URL
+async fn get_or_launch_cdp(args: &serde_json::Value) -> Result<String, String> {
+    // 先尝试连接已有的
+    if let Ok(tabs) = crate::agent::cdp::list_tabs(CDP_PORT).await {
+        if let Some(tab) = tabs.first() {
+            if let Some(ref ws) = tab.ws_url {
+                return Ok(ws.clone());
+            }
+        }
+    }
+
+    // 启动新的 Chrome
+    let browsers = crate::agent::browser::detect_browsers();
+    let executable = browsers.iter()
+        .find(|b| b.kind != "default" && !b.path.is_empty())
+        .map(|b| b.path.clone())
+        .ok_or("未检测到 Chromium 浏览器（Chrome/Brave/Edge），请先安装。")?;
+
+    let headless = args["headless"].as_bool().unwrap_or(false);
+    let chrome = crate::agent::cdp::launch_chrome(&executable, CDP_PORT, headless).await?;
+    let ws_url = chrome.ws_url.clone();
+    // 泄漏 chrome 实例使其保持运行（不触发 Drop）
+    std::mem::forget(chrome);
+    Ok(ws_url)
+}
+
+/// 获取指定 Tab 的 WebSocket URL（优先 target_id，否则第一个 Tab）
+async fn get_tab_ws_url(args: &serde_json::Value) -> Result<String, String> {
+    let target_id = args["target_id"].as_str();
+
+    let tabs = crate::agent::cdp::list_tabs(CDP_PORT).await
+        .map_err(|_| "Chrome CDP 未运行。请先执行 action=navigate 启动浏览器。".to_string())?;
+
+    if tabs.is_empty() {
+        return Err("无打开的 Tab。请先执行 action=navigate 打开页面。".into());
+    }
+
+    let tab = if let Some(tid) = target_id {
+        tabs.iter().find(|t| t.id == tid || t.id.starts_with(tid))
+            .ok_or(format!("未找到 Tab: {}", tid))?
+    } else {
+        tabs.first().unwrap()
+    };
+
+    tab.ws_url.clone().ok_or("Tab 无 WebSocket URL".into())
+}
+
+/// base64 解码
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    // 简单的 base64 解码（不引入额外依赖）
+    let chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+
+    for c in input.chars() {
+        if c == '=' || c == '\n' || c == '\r' { continue; }
+        let val = chars.find(c).ok_or(format!("非法 base64 字符: {}", c))? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+
+    Ok(output)
+}
+
+// ─── 语音转文字工具 (STT) ────────────────────────────────────
+
+/// 语音转文字工具
+///
+/// 支持：
+/// - OpenAI Whisper API（需要 API Key）
+/// - macOS 原生 Speech Framework（免费）
+/// - Linux: whisper.cpp 本地推理（如安装）
+pub struct SttTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl SttTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl Tool for SttTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "speech_to_text".to_string(),
+            description: "将音频文件转为文字。支持 OpenAI Whisper API 和本地转录。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "音频文件路径（支持 mp3/wav/m4a/ogg/webm）"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "模式：whisper（OpenAI API）/ local（本地转录）。默认 auto。"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "语言代码（如 zh/en/ja）。不填自动检测。"
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let file_path = arguments["file_path"].as_str().ok_or("缺少 file_path")?;
+        let mode = arguments["mode"].as_str().unwrap_or("auto");
+        let language = arguments["language"].as_str();
+
+        // 校验文件存在
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("文件不存在: {}", file_path));
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if !["mp3", "wav", "m4a", "ogg", "webm", "flac", "mp4"].contains(&ext.as_str()) {
+            return Err(format!("不支持的音频格式: .{}", ext));
+        }
+
+        match mode {
+            "whisper" => self.whisper_api(file_path, language).await,
+            "local" => stt_local(file_path, language).await,
+            _ => {
+                // auto: 有 OpenAI key 用 Whisper，否则本地
+                if let Some(key) = self.get_openai_key().await {
+                    match whisper_api_call(&key, file_path, language).await {
+                        Ok(text) => Ok(text),
+                        Err(_) => stt_local(file_path, language).await,
+                    }
+                } else {
+                    stt_local(file_path, language).await
+                }
+            }
+        }
+    }
+}
+
+impl SttTool {
+    async fn get_openai_key(&self) -> Option<String> {
+        // 复用 TtsTool 的 key 查找逻辑
+        let json_str: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'providers'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+
+        let providers: Vec<serde_json::Value> = json_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        for p in &providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            let key = p["apiKey"].as_str().unwrap_or("");
+            if key.is_empty() { continue; }
+            if p["apiType"].as_str() == Some("openai") {
+                return Some(key.to_string());
+            }
+        }
+        None
+    }
+
+    async fn whisper_api(&self, file_path: &str, language: Option<&str>) -> Result<String, String> {
+        let key = self.get_openai_key().await
+            .ok_or("未找到 OpenAI Provider，无法使用 Whisper API")?;
+        whisper_api_call(&key, file_path, language).await
+    }
+}
+
+/// OpenAI Whisper API 调用
+async fn whisper_api_call(api_key: &str, file_path: &str, language: Option<&str>) -> Result<String, String> {
+    let file_bytes = tokio::fs::read(file_path).await
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    let file_name = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("audio.mp3")
+        .to_string();
+
+    let file_part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(file_name)
+        .mime_str("audio/mpeg").unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", "whisper-1")
+        .part("file", file_part);
+
+    if let Some(lang) = language {
+        form = form.text("language", lang.to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build().map_err(|e| e.to_string())?;
+
+    let resp = client.post("https://api.openai.com/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .multipart(form)
+        .send().await
+        .map_err(|e| format!("Whisper API 请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Whisper API 错误 {}: {}", status, &body[..body.len().min(200)]));
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| format!("解析失败: {}", e))?;
+
+    data["text"].as_str()
+        .map(|s| s.to_string())
+        .ok_or("Whisper 返回空结果".into())
+}
+
+/// 本地语音转文字
+async fn stt_local(file_path: &str, _language: Option<&str>) -> Result<String, String> {
+    // macOS: 使用 say -i 的逆操作不可行，改用 afplay + Python speech_recognition
+    // 简单方案: 检查是否安装了 whisper CLI
+    #[cfg(target_os = "macos")]
+    {
+        // 尝试 macOS 内置 SFSpeechRecognizer (通过 swift 脚本)
+        let output = tokio::process::Command::new("swift")
+            .arg("-e")
+            .arg(format!(r#"
+import Speech
+import Foundation
+let sem = DispatchSemaphore(value: 0)
+let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-Hans"))!
+let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: "{}"))
+recognizer.recognitionTask(with: request) {{ result, error in
+    if let r = result, r.isFinal {{ print(r.bestTranscription.formattedString); sem.signal() }}
+    else if error != nil {{ print("ERROR: \(error!.localizedDescription)"); sem.signal() }}
+}}
+sem.wait()
+"#, file_path))
+            .output().await;
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !text.is_empty() && !text.starts_with("ERROR:") {
+                    return Ok(text);
+                }
+            }
+        }
+    }
+
+    // 通用 fallback: whisper CLI（如果安装了）
+    let whisper_output = tokio::process::Command::new("whisper")
+        .args(&[file_path, "--model", "base", "--output_format", "txt"])
+        .output().await;
+
+    if let Ok(out) = whisper_output {
+        if out.status.success() {
+            // whisper 输出到同目录的 .txt 文件
+            let txt_path = format!("{}.txt", file_path.strip_suffix(&format!(".{}",
+                std::path::Path::new(file_path).extension().and_then(|e| e.to_str()).unwrap_or("")
+            )).unwrap_or(file_path));
+            if let Ok(text) = tokio::fs::read_to_string(&txt_path).await {
+                let _ = tokio::fs::remove_file(&txt_path).await;
+                return Ok(text.trim().to_string());
+            }
+        }
+    }
+
+    Err("本地语音转录不可用。请安装 whisper CLI（pip install openai-whisper）或配置 OpenAI Provider 使用 Whisper API。".into())
+}
+
+// ─── PDF/文档解析工具 ────────────────────────────────────────
+
+/// PDF/文档解析工具
+///
+/// 支持 PDF/DOCX/TXT/CSV 文件解析为纯文本。
+/// PDF: 优先使用 pdftotext（poppler），macOS 也可用 mdimport。
+/// DOCX: 使用 pandoc 或简单 XML 解压提取。
+pub struct DocParseTool;
+
+#[async_trait]
+impl Tool for DocParseTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "doc_parse".to_string(),
+            description: "解析文档文件为纯文本。支持 PDF、DOCX、TXT、CSV、Markdown 等格式。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "文档文件路径"
+                    },
+                    "pages": {
+                        "type": "string",
+                        "description": "PDF 页码范围（如 1-5, 3）。不填提取全部。"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "最大返回字符数（默认 50000）"
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let file_path = arguments["file_path"].as_str().ok_or("缺少 file_path")?;
+        let max_chars = arguments["max_chars"].as_u64().unwrap_or(50000) as usize;
+        let pages = arguments["pages"].as_str();
+
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("文件不存在: {}", file_path));
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+        let text = match ext.as_str() {
+            "pdf" => parse_pdf(file_path, pages).await?,
+            "txt" | "md" | "csv" | "tsv" | "log" | "json" | "xml" | "yaml" | "yml" | "toml" => {
+                tokio::fs::read_to_string(file_path).await
+                    .map_err(|e| format!("读取文件失败: {}", e))?
+            }
+            "docx" => parse_docx(file_path).await?,
+            _ => return Err(format!("不支持的文档格式: .{}。支持: pdf/docx/txt/md/csv/json/xml/yaml", ext)),
+        };
+
+        // 截断
+        if text.len() > max_chars {
+            let truncated: String = text.chars().take(max_chars).collect();
+            Ok(format!("{}\n\n[文档已截断：显示前 {} 字符，总 {} 字符]", truncated, max_chars, text.len()))
+        } else {
+            Ok(text)
+        }
+    }
+}
+
+/// PDF 解析（pdftotext 或 macOS textutil）
+async fn parse_pdf(file_path: &str, pages: Option<&str>) -> Result<String, String> {
+    // 方案 1: pdftotext (poppler-utils)
+    let mut args = vec![file_path.to_string(), "-".to_string()];
+    if let Some(p) = pages {
+        // 解析 "1-5" 或 "3"
+        if let Some((first, last)) = p.split_once('-') {
+            args.insert(0, "-l".to_string());
+            args.insert(1, last.to_string());
+            args.insert(0, "-f".to_string());
+            args.insert(1, first.to_string());
+        } else {
+            args.insert(0, "-f".to_string());
+            args.insert(1, p.to_string());
+            args.insert(0, "-l".to_string());
+            args.insert(1, p.to_string());
+        }
+    }
+
+    let output = tokio::process::Command::new("pdftotext")
+        .args(&args)
+        .output().await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            if !text.trim().is_empty() {
+                return Ok(text);
+            }
+        }
+    }
+
+    // 方案 2: macOS 的 mdimport + textutil
+    #[cfg(target_os = "macos")]
+    {
+        let output = tokio::process::Command::new("textutil")
+            .args(&["-convert", "txt", "-stdout", file_path])
+            .output().await;
+        if let Ok(out) = output {
+            if out.status.success() {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
+        }
+    }
+
+    // 方案 3: Python pdfminer
+    let output = tokio::process::Command::new("python3")
+        .args(&["-c", &format!(
+            "from pdfminer.high_level import extract_text; print(extract_text('{}'))",
+            file_path.replace('\'', "\\'")
+        )])
+        .output().await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+    }
+
+    Err("PDF 解析失败。请安装 pdftotext（brew install poppler / apt install poppler-utils）".into())
+}
+
+/// DOCX 解析
+async fn parse_docx(file_path: &str) -> Result<String, String> {
+    // 方案 1: pandoc
+    let output = tokio::process::Command::new("pandoc")
+        .args(&[file_path, "-t", "plain"])
+        .output().await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+    }
+
+    // 方案 2: macOS textutil
+    #[cfg(target_os = "macos")]
+    {
+        let output = tokio::process::Command::new("textutil")
+            .args(&["-convert", "txt", "-stdout", file_path])
+            .output().await;
+        if let Ok(out) = output {
+            if out.status.success() {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
+        }
+    }
+
+    // 方案 3: Python python-docx
+    let output = tokio::process::Command::new("python3")
+        .args(&["-c", &format!(
+            "from docx import Document; d=Document('{}'); print('\\n'.join(p.text for p in d.paragraphs))",
+            file_path.replace('\'', "\\'")
+        )])
+        .output().await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+    }
+
+    Err("DOCX 解析失败。请安装 pandoc（brew install pandoc / apt install pandoc）".into())
+}
+
+// ─── Agent 模板 ──────────────────────────────────────────────
+
+/// 预设 Agent 模板列表
+pub fn agent_templates() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "id": "translator",
+            "name": "翻译助手",
+            "description": "专业中英文翻译，保持原文风格",
+            "system_prompt": "你是一位专业翻译。用户发中文时翻译为英文，发英文时翻译为中文。保持原文的语气和风格。只输出翻译结果，不添加解释。",
+            "model": "gpt-4o-mini",
+            "icon": "🌐"
+        }),
+        serde_json::json!({
+            "id": "coder",
+            "name": "编程助手",
+            "description": "全栈开发助手，擅长代码编写和调试",
+            "system_prompt": "你是一位全栈开发专家。擅长 Python、JavaScript/TypeScript、Rust、Go 等语言。回答编程问题时给出完整代码示例，说明关键逻辑。遇到 bug 先分析原因再给修复方案。",
+            "model": "gpt-4o",
+            "icon": "💻"
+        }),
+        serde_json::json!({
+            "id": "writer",
+            "name": "写作助手",
+            "description": "文案写作、文章润色、内容创作",
+            "system_prompt": "你是一位优秀的写作助手。擅长各类文体创作、文章润色、内容优化。根据用户需求调整风格（正式/轻松/学术/营销等）。注重逻辑清晰、用词精准、表达流畅。",
+            "model": "gpt-4o",
+            "icon": "✍️"
+        }),
+        serde_json::json!({
+            "id": "analyst",
+            "name": "数据分析师",
+            "description": "数据分析、报表解读、趋势预测",
+            "system_prompt": "你是一位数据分析专家。擅长数据解读、统计分析、趋势预测。能够处理 CSV/Excel 数据，生成分析报告。使用图表描述和数字佐证来表达观点。",
+            "model": "gpt-4o",
+            "icon": "📊"
+        }),
+        serde_json::json!({
+            "id": "teacher",
+            "name": "学习导师",
+            "description": "知识讲解、概念解析、学习指导",
+            "system_prompt": "你是一位耐心的学习导师。用简单易懂的方式解释复杂概念，善于用类比和例子帮助理解。根据学生水平调整讲解深度，鼓励提问和思考。",
+            "model": "gpt-4o-mini",
+            "icon": "🎓"
+        }),
+        serde_json::json!({
+            "id": "assistant",
+            "name": "通用助理",
+            "description": "日常问答、信息整理、任务规划",
+            "system_prompt": "你是一位高效的个人助理。帮助用户处理日常问题、整理信息、规划任务。回答准确简洁，必要时提供多个方案供选择。",
+            "model": "gpt-4o-mini",
+            "icon": "🤖"
+        }),
+        serde_json::json!({
+            "id": "creative",
+            "name": "创意顾问",
+            "description": "头脑风暴、创意方案、营销策划",
+            "system_prompt": "你是一位创意顾问。擅长头脑风暴、创意方案设计、营销策划。善于跳出常规思维，提供新颖独特的视角和解决方案。",
+            "model": "gpt-4o",
+            "icon": "💡"
+        }),
+    ]
+}
+
+// ─── AutoResearch 自主实验工具 ────────────────────────────────
+
+/// 自主实验工具（参考 NuClaw AutoResearch）
+///
+/// Agent 可以设计实验 → 执行 → 评估结果 → 迭代优化。
+/// 用于 prompt 优化、参数调优、A/B 测试等。
+pub struct ResearchTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl ResearchTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl Tool for ResearchTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "research".to_string(),
+            description: "自主实验工具。设计实验、执行测试、记录结果、评估效果。用于 prompt 优化、方案对比等。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作：create/run/log/evaluate/list",
+                        "enum": ["create", "run", "log", "evaluate", "list"]
+                    },
+                    "experiment_name": { "type": "string", "description": "实验名称" },
+                    "hypothesis": { "type": "string", "description": "假设（create 时）" },
+                    "test_cases": { "type": "array", "description": "测试用例", "items": { "type": "object", "properties": { "input": { "type": "string" }, "expected": { "type": "string" } } } },
+                    "result": { "type": "string", "description": "执行结果（log 时）" },
+                    "metric": { "type": "string", "description": "评估指标（evaluate 时）" },
+                    "score": { "type": "number", "description": "评分 0-100（evaluate 时）" }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().unwrap_or("list");
+
+        // 实验数据存在 settings 表（简单方案）
+        let _experiments_key = "research_experiments";
+
+        match action {
+            "create" => {
+                let name = arguments["experiment_name"].as_str().ok_or("缺少 experiment_name")?;
+                let hypothesis = arguments["hypothesis"].as_str().unwrap_or("");
+                let id = format!("exp_{}", chrono::Utc::now().timestamp_millis() % 100000);
+                let exp = serde_json::json!({
+                    "id": id, "name": name, "hypothesis": hypothesis,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "status": "active", "runs": [], "score": null,
+                });
+
+                let mut experiments = self.load_experiments().await;
+                experiments.push(exp);
+                self.save_experiments(&experiments).await?;
+                Ok(format!("Experiment created: {} [{}]\nHypothesis: {}", name, id, hypothesis))
+            }
+            "log" => {
+                let name = arguments["experiment_name"].as_str().ok_or("缺少 experiment_name")?;
+                let result = arguments["result"].as_str().ok_or("缺少 result")?;
+                let mut experiments = self.load_experiments().await;
+                let found = experiments.iter_mut().find(|e| e["name"].as_str() == Some(name));
+                if let Some(exp) = found {
+                    if let Some(runs) = exp["runs"].as_array_mut() {
+                        runs.push(serde_json::json!({
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                            "result": result,
+                        }));
+                    }
+                    self.save_experiments(&experiments).await?;
+                    Ok(format!("Logged result for experiment '{}': {}", name, &result[..result.len().min(100)]))
+                } else {
+                    Err(format!("Experiment '{}' not found", name))
+                }
+            }
+            "evaluate" => {
+                let name = arguments["experiment_name"].as_str().ok_or("缺少 experiment_name")?;
+                let score = arguments["score"].as_f64().ok_or("缺少 score")?;
+                let metric = arguments["metric"].as_str().unwrap_or("overall");
+                let mut experiments = self.load_experiments().await;
+                let idx = experiments.iter().position(|e| e["name"].as_str() == Some(name));
+                if let Some(i) = idx {
+                    let status_str = if score >= 80.0 { "passed" } else { "needs_improvement" };
+                    experiments[i]["score"] = serde_json::json!(score);
+                    experiments[i]["metric"] = serde_json::json!(metric);
+                    experiments[i]["status"] = serde_json::json!(status_str);
+                    self.save_experiments(&experiments).await?;
+                    Ok(format!("Experiment '{}' evaluated: {} = {}/100 ({})", name, metric, score, status_str))
+                } else {
+                    Err(format!("Experiment '{}' not found", name))
+                }
+            }
+            "list" => {
+                let experiments = self.load_experiments().await;
+                if experiments.is_empty() {
+                    return Ok("No experiments. Use `research action=create experiment_name=\"...\" hypothesis=\"...\"`".into());
+                }
+                let list: Vec<String> = experiments.iter().map(|e| {
+                    let name = e["name"].as_str().unwrap_or("?");
+                    let status = e["status"].as_str().unwrap_or("?");
+                    let runs = e["runs"].as_array().map(|r| r.len()).unwrap_or(0);
+                    let score = e["score"].as_f64().map(|s| format!("{:.0}", s)).unwrap_or("-".into());
+                    format!("- {} [{}] runs={} score={}", name, status, runs, score)
+                }).collect();
+                Ok(format!("{} experiments:\n{}", experiments.len(), list.join("\n")))
+            }
+            _ => Err(format!("Unknown action: {}", action)),
+        }
+    }
+}
+
+impl ResearchTool {
+    async fn load_experiments(&self) -> Vec<serde_json::Value> {
+        let data: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'research_experiments'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+        data.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    async fn save_experiments(&self, experiments: &[serde_json::Value]) -> Result<(), String> {
+        let json = serde_json::to_string(experiments).map_err(|e| e.to_string())?;
+        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('research_experiments', ?)")
+            .bind(&json).execute(&self.pool).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+// ─── Outbound Webhook 工具 ──────────────────────────────────
+
+/// Outbound HTTP/Webhook 工具
+///
+/// Agent 可主动发 HTTP 请求到外部 API（POST/PUT/PATCH/DELETE）。
+/// 用于集成 Slack Webhook、IFTTT、Zapier、自建服务等。
+pub struct HttpRequestTool;
+
+#[async_trait]
+impl Tool for HttpRequestTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "http_request".to_string(),
+            description: "发送 HTTP 请求到外部 API/Webhook。支持 GET/POST/PUT/PATCH/DELETE，可设置 headers 和 JSON body。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "请求 URL" },
+                    "method": { "type": "string", "description": "HTTP 方法: GET/POST/PUT/PATCH/DELETE（默认 POST）", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+                    "headers": { "type": "object", "description": "请求头（键值对）" },
+                    "body": { "type": "object", "description": "JSON 请求体" },
+                    "timeout_secs": { "type": "integer", "description": "超时秒数（默认 30）" }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Approval }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let url = arguments["url"].as_str().ok_or("缺少 url")?;
+
+        // 安全：只允许 http/https
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("安全限制：只允许 http/https URL".into());
+        }
+
+        // 安全：禁止内网地址
+        if url.contains("127.0.0.1") || url.contains("localhost") || url.contains("0.0.0.0")
+            || url.contains("[::1]") || url.contains("169.254.") || url.contains("10.0.")
+            || url.contains("192.168.") || url.contains("172.16.") {
+            return Err("安全限制：禁止访问内网地址".into());
+        }
+
+        let method = arguments["method"].as_str().unwrap_or("POST").to_uppercase();
+        let timeout = arguments["timeout_secs"].as_u64().unwrap_or(30);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout))
+            .build().map_err(|e| e.to_string())?;
+
+        let mut req = match method.as_str() {
+            "GET" => client.get(url),
+            "POST" => client.post(url),
+            "PUT" => client.put(url),
+            "PATCH" => client.patch(url),
+            "DELETE" => client.delete(url),
+            _ => return Err(format!("不支持的 HTTP 方法: {}", method)),
+        };
+
+        // 设置 headers
+        if let Some(headers) = arguments["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(val) = v.as_str() {
+                    req = req.header(k.as_str(), val);
+                }
+            }
+        }
+
+        // 设置 body（非 GET 方法）
+        if method != "GET" {
+            if let Some(body) = arguments.get("body") {
+                req = req.header("Content-Type", "application/json")
+                    .json(body);
+            }
+        }
+
+        log::info!("HTTP 外发请求: {} {}", method, url);
+
+        let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
+        let status = resp.status().as_u16();
+        let headers_str: Vec<String> = resp.headers().iter().take(10)
+            .map(|(k, v)| format!("{}: {}", k, v.to_str().unwrap_or("?")))
+            .collect();
+
+        let body = resp.text().await.unwrap_or_default();
+        let truncated = if body.len() > 5000 { format!("{}...[truncated]", &body[..5000]) } else { body };
+
+        Ok(format!("HTTP {} {}\nStatus: {}\nHeaders: {}\n\n{}",
+            method, url, status, headers_str.join(", "), truncated))
+    }
+}
+
+// ─── Focus 管理工具（Agent 自治意识）────────────────────────
+
+/// Focus 管理工具 — Agent 自主管理工作记忆
+///
+/// 参考 Clawith Aware System。Agent 可以：
+/// - 添加/更新/完成 focus items（结构化工作记忆）
+/// - 查看当前 focus 状态
+/// - 创建关联 trigger（自动化任务）
+pub struct FocusTool;
+
+#[async_trait]
+impl Tool for FocusTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "focus".to_string(),
+            description: "管理 Agent 工作记忆（Focus Items）。可添加/更新/完成任务项，查看当前状态。Agent 的自治意识核心。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作：list/add/update/complete/remove",
+                        "enum": ["list", "add", "update", "complete", "remove"]
+                    },
+                    "item": { "type": "string", "description": "Focus item 内容（add/update 时）" },
+                    "id": { "type": "string", "description": "Item ID（update/complete/remove 时）" },
+                    "status": { "type": "string", "description": "状态标记：pending/in_progress/done", "enum": ["pending", "in_progress", "done"] },
+                    "priority": { "type": "string", "description": "优先级：high/medium/low", "enum": ["high", "medium", "low"] }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().unwrap_or("list");
+
+        // Focus 存储在 Agent 工作区的 FOCUS.md
+        let focus_dir = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".xianzhu/focus");
+        let _ = std::fs::create_dir_all(&focus_dir);
+        let focus_file = focus_dir.join("FOCUS.md");
+
+        match action {
+            "list" => {
+                let content = std::fs::read_to_string(&focus_file).unwrap_or_default();
+                if content.trim().is_empty() {
+                    Ok("No focus items. Use `focus action=add item=\"...\"` to add one.".into())
+                } else {
+                    Ok(format!("Current Focus:\n\n{}", content))
+                }
+            }
+            "add" => {
+                let item = arguments["item"].as_str().ok_or("缺少 item")?;
+                let priority = arguments["priority"].as_str().unwrap_or("medium");
+                let id = format!("f{}", chrono::Utc::now().timestamp_millis() % 10000);
+                let marker = "[ ]";
+                let line = format!("{} [{}] ({}) {}\n", marker, id, priority, item);
+
+                let mut content = std::fs::read_to_string(&focus_file).unwrap_or_default();
+                content.push_str(&line);
+                std::fs::write(&focus_file, &content).map_err(|e| e.to_string())?;
+                Ok(format!("Added focus item: {} — {}", id, item))
+            }
+            "update" => {
+                let id = arguments["id"].as_str().ok_or("缺少 id")?;
+                let new_item = arguments["item"].as_str();
+                let new_status = arguments["status"].as_str();
+                let content = std::fs::read_to_string(&focus_file).unwrap_or_default();
+                let mut updated = false;
+                let new_content: String = content.lines().map(|line| {
+                    if line.contains(&format!("[{}]", id)) {
+                        updated = true;
+                        let mut l = line.to_string();
+                        if let Some(status) = new_status {
+                            let marker = match status { "in_progress" => "[/]", "done" => "[x]", _ => "[ ]" };
+                            l = l.replacen("[ ]", marker, 1).replacen("[/]", marker, 1).replacen("[x]", marker, 1);
+                        }
+                        if let Some(item) = new_item {
+                            // 替换内容部分（保留标记和 ID）
+                            if let Some(pos) = l.rfind(')') {
+                                l = format!("{}) {}", &l[..pos], item);
+                            }
+                        }
+                        l
+                    } else { line.to_string() }
+                }).collect::<Vec<_>>().join("\n");
+                if updated {
+                    std::fs::write(&focus_file, format!("{}\n", new_content.trim())).map_err(|e| e.to_string())?;
+                    Ok(format!("Updated focus item: {}", id))
+                } else {
+                    Err(format!("Focus item {} not found", id))
+                }
+            }
+            "complete" => {
+                let id = arguments["id"].as_str().ok_or("缺少 id")?;
+                let content = std::fs::read_to_string(&focus_file).unwrap_or_default();
+                let new_content: String = content.lines().map(|line| {
+                    if line.contains(&format!("[{}]", id)) {
+                        line.replacen("[ ]", "[x]", 1).replacen("[/]", "[x]", 1)
+                    } else { line.to_string() }
+                }).collect::<Vec<_>>().join("\n");
+                std::fs::write(&focus_file, format!("{}\n", new_content.trim())).map_err(|e| e.to_string())?;
+                Ok(format!("Completed focus item: {}", id))
+            }
+            "remove" => {
+                let id = arguments["id"].as_str().ok_or("缺少 id")?;
+                let content = std::fs::read_to_string(&focus_file).unwrap_or_default();
+                let new_content: String = content.lines()
+                    .filter(|line| !line.contains(&format!("[{}]", id)))
+                    .collect::<Vec<_>>().join("\n");
+                std::fs::write(&focus_file, format!("{}\n", new_content.trim())).map_err(|e| e.to_string())?;
+                Ok(format!("Removed focus item: {}", id))
+            }
+            _ => Err(format!("Unknown action: {}", action)),
+        }
+    }
+}
+
+// ─── Session 管理工具 ────────────────────────────────────────
+
+/// Session 管理工具（创建/列表/切换/历史）
+pub struct SessionTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl SessionTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl Tool for SessionTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "session".to_string(),
+            description: "管理对话会话：创建新会话、列出会话、查看历史、导出。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作：list/create/history/export/compact",
+                        "enum": ["list", "create", "history", "export", "compact"]
+                    },
+                    "agent_id": { "type": "string", "description": "Agent ID（list/create 时需要）" },
+                    "session_id": { "type": "string", "description": "Session ID（history/export/compact 时需要）" },
+                    "title": { "type": "string", "description": "新会话标题（create 时可选）" }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().unwrap_or("list");
+
+        match action {
+            "list" => {
+                let agent_id = arguments["agent_id"].as_str().unwrap_or("");
+                let sessions: Vec<(String, String, i64)> = if agent_id.is_empty() {
+                    sqlx::query_as("SELECT id, title, created_at FROM chat_sessions ORDER BY COALESCE(last_message_at, created_at) DESC LIMIT 20")
+                        .fetch_all(&self.pool).await.unwrap_or_default()
+                } else {
+                    sqlx::query_as("SELECT id, title, created_at FROM chat_sessions WHERE agent_id = ? ORDER BY COALESCE(last_message_at, created_at) DESC LIMIT 20")
+                        .bind(agent_id).fetch_all(&self.pool).await.unwrap_or_default()
+                };
+                let list: Vec<String> = sessions.iter()
+                    .map(|(id, title, _)| format!("- {} [{}]", title, &id[..id.len().min(8)]))
+                    .collect();
+                Ok(format!("{} sessions:\n{}", sessions.len(), list.join("\n")))
+            }
+            "create" => {
+                let agent_id = arguments["agent_id"].as_str().ok_or("缺少 agent_id")?;
+                let title = arguments["title"].as_str().unwrap_or("New Session");
+                let id = uuid::Uuid::new_v4().to_string();
+                let now = chrono::Utc::now().timestamp_millis();
+                sqlx::query("INSERT INTO chat_sessions (id, agent_id, title, created_at) VALUES (?, ?, ?, ?)")
+                    .bind(&id).bind(agent_id).bind(title).bind(now)
+                    .execute(&self.pool).await.map_err(|e| e.to_string())?;
+                Ok(format!("Session created: {} [{}]", title, &id[..8]))
+            }
+            "history" => {
+                let session_id = arguments["session_id"].as_str().ok_or("缺少 session_id")?;
+                let messages: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? ORDER BY seq DESC LIMIT 10"
+                ).bind(session_id).fetch_all(&self.pool).await.unwrap_or_default();
+                let list: Vec<String> = messages.iter().rev()
+                    .map(|(role, content)| {
+                        let preview: String = content.chars().take(100).collect();
+                        format!("{}: {}", role, preview)
+                    }).collect();
+                Ok(format!("Last {} messages:\n{}", messages.len(), list.join("\n")))
+            }
+            "export" => {
+                let session_id = arguments["session_id"].as_str().ok_or("缺少 session_id")?;
+                let messages: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? ORDER BY seq ASC"
+                ).bind(session_id).fetch_all(&self.pool).await.unwrap_or_default();
+                let mut output = String::new();
+                for (role, content) in &messages {
+                    output.push_str(&format!("**{}**: {}\n\n", role, content));
+                }
+                Ok(output)
+            }
+            _ => Err(format!("未知操作: {}", action)),
+        }
+    }
+}
+
+// ─── 多 Agent 协作工具 ──────────────────────────────────────
+
+/// Agent 协作工具
+///
+/// 支持：
+/// - 向其他 Agent 发消息
+/// - 邀请 Agent 加入协作
+/// - 查看 Agent 列表和邮箱
+pub struct CollaborateTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl CollaborateTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl Tool for CollaborateTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "collaborate".to_string(),
+            description: "多 Agent 协作。发消息给其他 Agent、邀请协作、查看可用 Agent。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作：send_message/invite/list_agents/check_mailbox",
+                        "enum": ["send_message", "invite", "list_agents", "check_mailbox"]
+                    },
+                    "target_agent_id": { "type": "string", "description": "目标 Agent ID" },
+                    "message": { "type": "string", "description": "消息内容" },
+                    "task": { "type": "string", "description": "邀请协作的任务描述（invite 时）" }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().unwrap_or("list_agents");
+
+        match action {
+            "list_agents" => {
+                let agents: Vec<(String, String, String)> = sqlx::query_as(
+                    "SELECT id, name, model FROM agents ORDER BY name"
+                ).fetch_all(&self.pool).await.unwrap_or_default();
+                let list: Vec<String> = agents.iter()
+                    .map(|(id, name, model)| format!("- {} ({}) [{}]", name, model, &id[..id.len().min(8)]))
+                    .collect();
+                Ok(format!("{} agents:\n{}", agents.len(), list.join("\n")))
+            }
+            "send_message" => {
+                let target = arguments["target_agent_id"].as_str().ok_or("缺少 target_agent_id")?;
+                let message = arguments["message"].as_str().ok_or("缺少 message")?;
+                let now = chrono::Utc::now().timestamp_millis();
+                sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+                    .bind(format!("agent_msg_{}_{}", target, now))
+                    .bind(message)
+                    .execute(&self.pool).await.map_err(|e| e.to_string())?;
+                Ok(format!("Message sent to agent [{}]", &target[..target.len().min(8)]))
+            }
+            "check_mailbox" => {
+                let msgs: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT key, value FROM settings WHERE key LIKE 'agent_msg_%' ORDER BY key DESC LIMIT 10"
+                ).fetch_all(&self.pool).await.unwrap_or_default();
+                if msgs.is_empty() { return Ok("No messages.".into()); }
+                let list: Vec<String> = msgs.iter()
+                    .map(|(_, v)| { let p: String = v.chars().take(100).collect(); format!("- {}", p) })
+                    .collect();
+                Ok(format!("{} messages:\n{}", msgs.len(), list.join("\n")))
+            }
+            "invite" => {
+                let target = arguments["target_agent_id"].as_str().ok_or("缺少 target_agent_id")?;
+                let task = arguments["task"].as_str().ok_or("缺少 task")?;
+                let now = chrono::Utc::now().timestamp_millis();
+                sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+                    .bind(format!("collab_{}_{}", target, now))
+                    .bind(serde_json::json!({"task": task, "status": "pending", "created_at": chrono::Utc::now().to_rfc3339()}).to_string())
+                    .execute(&self.pool).await.map_err(|e| e.to_string())?;
+                Ok(format!("Invited agent [{}] for: {}", &target[..target.len().min(8)], task))
+            }
+            _ => Err(format!("Unknown action: {}", action)),
+        }
+    }
+}
+
+// ─── Yield 工具 ─────────────────────────────────────────────
+
+/// Sessions Yield 工具
+///
+/// Agent 调用此工具暂停当前轮次，等待子代理完成后恢复。
+/// 参考 OpenClaw sessions_yield。
+///
+/// 用法：
+/// 1. Agent 调用 delegate_task 派发任务
+/// 2. Agent 调用 sessions_yield 暂停自己
+/// 3. 子代理完成后，结果自动注入父 session
+/// 4. 父 Agent 恢复执行，看到子代理结果
+pub struct YieldTool;
+
+#[async_trait]
+impl Tool for YieldTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "sessions_yield".to_string(),
+            description: "暂停当前轮次，等待子代理完成。调用 delegate_task 后使用此工具等待结果。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "暂停时显示的消息"
+                    },
+                    "wait_run_id": {
+                        "type": "string",
+                        "description": "要等待的子代理 run_id（从 delegate_task 返回值获取）"
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let message = arguments["message"].as_str().unwrap_or("Turn yielded.");
+        let wait_run_id = arguments["wait_run_id"].as_str();
+
+        // 返回特殊前缀，agent_loop 检测到后暂停
+        if let Some(rid) = wait_run_id {
+            Ok(format!("YIELD:wait:{}", rid))
+        } else {
+            Ok(format!("YIELD:{}", message))
+        }
+    }
+}
+
+// ─── A2A Ping-Pong 工具 ─────────────────────────────────────
+
+/// Agent-to-Agent 多轮对话工具
+///
+/// 两个 Agent 交替对话，像人类聊天一样协作。
+/// Agent A 发起 → Agent B 回复 → Agent A 继续 → ...
+pub struct A2aTool {
+    pool: sqlx::SqlitePool,
+}
+
+impl A2aTool {
+    pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl Tool for A2aTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "agent_chat".to_string(),
+            description: "与另一个 Agent 进行多轮对话。发送消息并等待回复，支持多轮交替。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target_agent_id": { "type": "string", "description": "目标 Agent ID" },
+                    "message": { "type": "string", "description": "要发送的消息" },
+                    "max_turns": { "type": "integer", "description": "最大对话轮数（默认 3）" },
+                    "timeout_secs": { "type": "integer", "description": "每轮超时秒数（默认 30）" }
+                },
+                "required": ["target_agent_id", "message"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let target_id = arguments["target_agent_id"].as_str().ok_or("缺少 target_agent_id")?;
+        let message = arguments["message"].as_str().ok_or("缺少 message")?;
+        let max_turns = arguments["max_turns"].as_u64().unwrap_or(3) as usize;
+        let timeout = arguments["timeout_secs"].as_u64().unwrap_or(30);
+
+        // 验证目标 Agent 存在
+        let target: Option<(String, String)> = sqlx::query_as(
+            "SELECT name, model FROM agents WHERE id = ?"
+        ).bind(target_id).fetch_optional(&self.pool).await.map_err(|e| e.to_string())?;
+        let (target_name, target_model) = target.ok_or("目标 Agent 不存在")?;
+
+        // 创建 A2A session
+        let _a2a_session = format!("a2a-{}", chrono::Utc::now().timestamp_millis());
+        let mut conversation = Vec::new();
+        let mut current_msg = message.to_string();
+
+        // 查找 provider
+        let (_api_type, api_key, base_url) = crate::channels::find_provider(&self.pool, &target_model)
+            .await
+            .ok_or("目标 Agent 无可用 Provider")?;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout))
+            .build().map_err(|e| e.to_string())?;
+
+        // 获取目标 Agent 的 system prompt
+        let target_prompt: Option<String> = sqlx::query_scalar(
+            "SELECT system_prompt FROM agents WHERE id = ?"
+        ).bind(target_id).fetch_optional(&self.pool).await.ok().flatten();
+
+        for turn in 0..max_turns {
+            conversation.push(format!("Turn {}: You → {}: {}", turn + 1, target_name, current_msg));
+
+            // 调用目标 Agent 的 LLM
+            let url = if base_url.is_empty() {
+                "https://api.openai.com/v1/chat/completions".to_string()
+            } else {
+                format!("{}/chat/completions", base_url.trim_end_matches('/'))
+            };
+
+            let mut msgs = vec![];
+            if let Some(ref sp) = target_prompt {
+                msgs.push(serde_json::json!({"role": "system", "content": sp}));
+            }
+            msgs.push(serde_json::json!({"role": "user", "content": current_msg}));
+
+            let resp = client.post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .json(&serde_json::json!({
+                    "model": target_model,
+                    "messages": msgs,
+                    "max_tokens": 1024,
+                    "temperature": 0.7,
+                }))
+                .send().await.map_err(|e| format!("A2A turn {} 失败: {}", turn + 1, e))?;
+
+            let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let reply = data["choices"][0]["message"]["content"].as_str()
+                .or(data["content"][0]["text"].as_str())
+                .unwrap_or("(no reply)");
+
+            conversation.push(format!("Turn {}: {} → You: {}", turn + 1, target_name, reply));
+
+            // 检查是否需要继续
+            if reply.contains("[END]") || reply.contains("[DONE]") || reply.len() < 10 {
+                break;
+            }
+            current_msg = reply.to_string();
+        }
+
+        Ok(format!("A2A conversation with {} ({} turns):\n\n{}", target_name, conversation.len() / 2, conversation.join("\n\n")))
     }
 }

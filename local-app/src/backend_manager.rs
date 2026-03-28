@@ -2,7 +2,7 @@
 //!
 //! 用于管理 Node.js 后端进程的启动、健康检查和关闭。
 //! 提供统一的接口用于 Tauri 应用与后端进程的通信。
-//! 优先使用沙箱自带的 NodeRuntime（~/.yonclaw/runtime/node/）。
+//! 优先使用沙箱自带的 NodeRuntime（~/.xianzhu/runtime/node/）。
 
 use anyhow::{anyhow, Result};
 use log::{info, warn};
@@ -230,7 +230,7 @@ impl BackendManager {
     /// 确保 Node.js 运行时可用，返回可执行文件路径
     ///
     /// 查找顺序：
-    /// 1. 沙箱 NodeRuntime（~/.yonclaw/runtime/node/，未安装则自动下载）
+    /// 1. 沙箱 NodeRuntime（~/.xianzhu/runtime/node/，未安装则自动下载）
     /// 2. Bundled 版本（.app 资源目录中的 node）
     /// 3. 系统 PATH 中的 node（后备方案）
     async fn ensure_node_runtime(&self) -> Result<PathBuf> {
@@ -282,7 +282,7 @@ impl BackendManager {
     ///
     /// 查找顺序：
     /// 1. Bundled 版本（资源目录中的 admin-backend/dist/index.js）
-    /// 2. 环境变量 YONCLAW_BACKEND_PATH
+    /// 2. 环境变量 XIANZHU_BACKEND_PATH
     /// 3. 开发环境（当前目录下的 admin-backend/dist/index.js）
     /// 4. 开发环境（相对于可执行文件的项目根目录）
     fn get_backend_entry(&self) -> Result<PathBuf> {
@@ -300,17 +300,17 @@ impl BackendManager {
         }
 
         // 2. 环境变量
-        if let Ok(backend_path) = std::env::var("YONCLAW_BACKEND_PATH") {
+        if let Ok(backend_path) = std::env::var("XIANZHU_BACKEND_PATH") {
             let path = PathBuf::from(&backend_path);
             if path.exists() && path.is_file() {
                 if path.extension().map_or(false, |ext| ext == "js") {
                     info!("使用环境变量指定的后端: {}", backend_path);
                     return Ok(path);
                 } else {
-                    warn!("YONCLAW_BACKEND_PATH 指向非 JavaScript 文件: {}", path.display());
+                    warn!("XIANZHU_BACKEND_PATH 指向非 JavaScript 文件: {}", path.display());
                 }
             } else {
-                warn!("YONCLAW_BACKEND_PATH 指向的文件不存在或不是文件: {}", backend_path);
+                warn!("XIANZHU_BACKEND_PATH 指向的文件不存在或不是文件: {}", backend_path);
             }
         }
 

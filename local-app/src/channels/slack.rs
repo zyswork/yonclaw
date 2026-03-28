@@ -4,6 +4,7 @@
 //! Socket Mode 不需要公网 URL，完美适配桌面端。
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use crate::agent::Orchestrator;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use futures_util::{SinkExt, StreamExt};
@@ -12,33 +13,34 @@ use futures_util::{SinkExt, StreamExt};
 pub struct SlackConfig {
     pub bot_token: String,   // xoxb-...
     pub app_token: String,   // xapp-...
+    pub agent_id: String,
 }
 
-/// 防止重复启动
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 启动 Slack Socket Mode（后台 tokio task，单例）
-pub async fn start_socket_mode(
+/// 启动 Slack Socket Mode
+///
+/// 由 ChannelManager 调用，不再自行 spawn，通过 CancellationToken 控制生命周期。
+pub async fn start_slack(
     config: SlackConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
-) {
-    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("Slack: Socket Mode 已在运行，跳过重复启动");
-        return;
-    }
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    log::info!("Slack: 启动 Socket Mode (agent={})", config.agent_id);
 
-    log::info!("Slack: 启动 Socket Mode");
-
-    tokio::spawn(async move {
-        loop {
-            if let Err(e) = run_socket_mode(&config, &pool, &orchestrator, &app_handle).await {
-                log::warn!("Slack: Socket Mode 断开: {}，10秒后重连", e);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    loop {
+        if cancel.is_cancelled() {
+            log::info!("Slack: 收到取消信号，退出");
+            return Ok(());
         }
-    });
+        if let Err(e) = run_socket_mode(&config, &pool, &orchestrator, &app_handle, &cancel).await {
+            log::warn!("Slack: Socket Mode 断开: {}，10秒后重连", e);
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+        }
+    }
 }
 
 /// 运行 Socket Mode 主循环
@@ -47,6 +49,7 @@ async fn run_socket_mode(
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    cancel: &CancellationToken,
 ) -> Result<(), String> {
     // 1. 获取 WebSocket URL
     let client = reqwest::Client::new();
@@ -82,8 +85,19 @@ async fn run_socket_mode(
     log::info!("Slack: bot_user_id={}", bot_user_id);
 
     // 3. 事件循环
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
+    loop {
+        let ws_msg = tokio::select! {
+            _ = cancel.cancelled() => {
+                log::info!("Slack: 收到取消信号，关闭 Socket Mode");
+                break;
+            }
+            m = read.next() => match m {
+                Some(m) => m,
+                None => break,
+            },
+        };
+
+        let msg = match ws_msg {
             Ok(WsMessage::Text(t)) => t,
             Ok(WsMessage::Close(_)) => {
                 log::info!("Slack: Socket 关闭");
@@ -153,10 +167,11 @@ async fn run_socket_mode(
                 let p = pool.clone();
                 let o = orchestrator.clone();
                 let h = app_handle.clone();
+                let aid = config.agent_id.clone();
                 tokio::spawn(async move {
                     handle_message(
                         &bt, &channel, &thread_ts, &user_name, &clean_text,
-                        &p, &o, &h,
+                        &p, &o, &h, &aid,
                     ).await;
                 });
             }
@@ -198,18 +213,33 @@ async fn handle_message(
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    config_agent_id: &str,
 ) {
     log::info!("Slack: [{}] {}: {}", channel, user_name, &text[..text.len().min(80)]);
 
-    let agent = match orchestrator.list_agents().await {
-        Ok(agents) => match agents.into_iter().next() {
-            Some(a) => a,
-            None => {
-                log::warn!("Slack: 无可用 Agent");
-                return;
+    // 优先使用 config 中指定的 agent_id，fallback 到 Router
+    let agent_id = if !config_agent_id.is_empty() {
+        config_agent_id.to_string()
+    } else {
+        let router = crate::routing::Router::new(orchestrator.pool().clone());
+        let route = router.resolve("slack", Some(user_name)).await;
+        match route {
+            Ok(r) => r.agent_id,
+            Err(_) => {
+                let agents = orchestrator.list_agents().await.unwrap_or_default();
+                match agents.into_iter().next() {
+                    Some(a) => a.id,
+                    None => {
+                        log::warn!("Slack: 无可用 Agent");
+                        return;
+                    }
+                }
             }
-        },
-        Err(_) => return,
+        }
+    };
+    let agent = match orchestrator.get_agent_cached(&agent_id).await {
+        Ok(a) => a,
+        Err(e) => { log::warn!("Slack: 获取 Agent 失败: {}", e); return; }
     };
 
     let session_title = format!("[Slack] {}", user_name);
@@ -314,6 +344,11 @@ async fn handle_message(
         "content": reply,
         "source": "slack",
     }));
+
+    // Session 自动命名
+    crate::memory::conversation::auto_name_session(
+        pool, &session_id, &text, &api_key, &api_type, base_url_opt,
+    ).await;
 }
 
 /// 获取或创建 session

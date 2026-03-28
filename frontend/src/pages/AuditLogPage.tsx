@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
+import Select from '../components/Select'
 
 interface AuditEntry {
   id: string
@@ -69,15 +70,12 @@ export default function AuditLogPage() {
 
       {/* 筛选栏 */}
       <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', alignItems: 'center' }}>
-        <select
+        <Select
           value={selectedAgent}
-          onChange={(e) => { setSelectedAgent(e.target.value); setPage(0) }}
-          style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-subtle)', fontSize: '13px' }}
-        >
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
+          onChange={(v) => { setSelectedAgent(v); setPage(0) }}
+          options={agents.map((a) => ({ value: a.id, label: a.name }))}
+          style={{ minWidth: 160 }}
+        />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
           {t('audit.labelTotal')} {entries.length}{t('audit.labelEntries')}{entries.length === PAGE_SIZE ? '+' : ''}

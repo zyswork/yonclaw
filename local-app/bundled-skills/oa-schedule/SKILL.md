@@ -75,7 +75,7 @@ tools:
       command: bash
       args_template: [oa-schedule.sh, delete, --sid, "{sid}"]
 permissions:
-  read_paths: ["~/.yonclaw"]
+  read_paths: ["~/.xianzhu"]
   write_paths: []
   exec_commands: [bash, curl]
   network: true

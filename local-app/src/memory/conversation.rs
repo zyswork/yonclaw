@@ -124,6 +124,134 @@ pub async fn touch_session(
     Ok(())
 }
 
+/// 自动为 Session 生成标题（LLM fire-and-forget）
+///
+/// 在第一轮对话完成后异步调用 LLM 生成 2-4 词标题。
+/// 不阻塞对话流程，静默失败。
+pub async fn auto_name_session(
+    pool: &SqlitePool,
+    session_id: &str,
+    user_message: &str,
+    api_key: &str,
+    provider: &str,
+    base_url: Option<&str>,
+) {
+    // 仅在第一轮对话时触发（消息数 <= 1）
+    let msg_count = get_session_message_count(pool, session_id).await.unwrap_or(99);
+    if msg_count > 1 {
+        return;
+    }
+
+    // 检查当前标题是否是默认/通用标题（已手动命名的不覆盖）
+    let current_title: Option<String> = sqlx::query_scalar(
+        "SELECT title FROM chat_sessions WHERE id = ?"
+    ).bind(session_id).fetch_optional(pool).await.ok().flatten();
+
+    if let Some(ref title) = current_title {
+        let is_default = title == "New Session"
+            || title.starts_with("[Telegram]")
+            || title.starts_with("[飞书]")
+            || title.starts_with("[微信]")
+            || title.starts_with("[Discord]")
+            || title.starts_with("[Slack]")
+            || title.starts_with("Conversation");
+        if !is_default {
+            return; // 用户已手动命名
+        }
+    }
+
+    let pool = pool.clone();
+    let session_id = session_id.to_string();
+    let user_msg = user_message.chars().take(500).collect::<String>();
+    let api_key = api_key.to_string();
+    let provider = provider.to_string();
+    let base_url = base_url.map(|s| s.to_string());
+    let channel_prefix = current_title.as_deref()
+        .and_then(|t| {
+            if t.starts_with('[') {
+                t.find(']').map(|i| &t[..=i])
+            } else { None }
+        })
+        .map(|s| s.to_string());
+
+    // fire-and-forget：不阻塞对话
+    tokio::spawn(async move {
+        match generate_session_title(&api_key, &provider, base_url.as_deref(), &user_msg).await {
+            Ok(title) => {
+                let final_title = if let Some(prefix) = channel_prefix {
+                    format!("{} {}", prefix, title)
+                } else {
+                    title.clone()
+                };
+                if let Err(e) = rename_session(&pool, &session_id, &final_title).await {
+                    log::warn!("Session 自动命名失败: {}", e);
+                } else {
+                    log::info!("Session 自动命名: {} → {}", session_id, final_title);
+                }
+            }
+            Err(e) => log::debug!("Session 标题生成失败（静默）: {}", e),
+        }
+    });
+}
+
+/// 调 LLM 生成 session 标题（2-4 词，与消息同语言）
+async fn generate_session_title(
+    api_key: &str,
+    provider: &str,
+    base_url: Option<&str>,
+    user_message: &str,
+) -> Result<String, String> {
+    let prompt = format!(
+        "Generate a very short topic label (2-5 words, max 30 chars) for a chat based on the user's first message below. \
+         No emoji. Use the same language as the message. Be concise and descriptive. Return ONLY the topic name, nothing else.\n\n{}",
+        user_message
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let url = match base_url {
+        Some(u) => format!("{}/chat/completions", u.trim_end_matches('/')),
+        None => match provider {
+            "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
+            _ => "https://api.openai.com/v1/chat/completions".to_string(),
+        }
+    };
+
+    // OpenAI-compatible API（大多数 provider 都支持）
+    let body = serde_json::json!({
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 50,
+        "temperature": 0.3,
+    });
+
+    let resp = client.post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send().await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| format!("解析失败: {}", e))?;
+
+    let title = data["choices"][0]["message"]["content"].as_str()
+        .or(data["content"][0]["text"].as_str()) // Anthropic 格式
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"')
+        .chars().take(30).collect::<String>();
+
+    if title.is_empty() {
+        Err("LLM 返回空标题".into())
+    } else {
+        Ok(title)
+    }
+}
+
 /// 获取会话消息数
 pub async fn get_session_message_count(
     pool: &SqlitePool,

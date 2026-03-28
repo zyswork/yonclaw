@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 use prost::Message as ProstMessage;
+use tokio_util::sync::CancellationToken;
 use crate::agent::Orchestrator;
+use super::common::TokenCache;
 
 // ─── 飞书 WebSocket Protobuf 帧定义 ────────────────────
 #[derive(Clone, PartialEq, prost::Message)]
@@ -53,72 +55,79 @@ impl PbFrame {
 pub struct FeishuConfig {
     pub app_id: String,
     pub app_secret: String,
+    pub agent_id: String,
 }
 
 /// 飞书 API 基地址
 const FEISHU_BASE: &str = "https://open.feishu.cn/open-apis";
 
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 启动飞书长连接（后台 tokio task，单例）
+/// 启动飞书长连接
+///
+/// 由 ChannelManager 调用，不再自行 spawn，通过 CancellationToken 控制生命周期。
 pub async fn start_feishu(
     config: FeishuConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
-) {
-    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("飞书: 连接已在运行，跳过");
-        return;
-    }
+    cancel: CancellationToken,
+) -> Result<(), String> {
     let app_id = config.app_id.clone();
     let app_secret = config.app_secret.clone();
-    log::info!("飞书: 启动连接 (app_id: {}...)", &app_id[..app_id.len().min(10)]);
+    let agent_id = config.agent_id.clone();
+    log::info!("飞书: 启动连接 (app_id: {}..., agent={})", &app_id[..app_id.len().min(10)], agent_id);
 
-    tokio::spawn(async move {
-        loop {
-            match run_feishu_loop(&app_id, &app_secret, &pool, &orchestrator, &app_handle).await {
-                Ok(_) => log::info!("飞书: 连接正常关闭，5秒后重连"),
-                Err(e) => log::warn!("飞书: 连接异常: {}，10秒后重连", e),
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    loop {
+        if cancel.is_cancelled() {
+            log::info!("飞书: 收到取消信号，退出");
+            return Ok(());
         }
-    });
+        match run_feishu_loop(&app_id, &app_secret, &agent_id, &pool, &orchestrator, &app_handle, &cancel).await {
+            Ok(_) => log::info!("飞书: 连接正常关闭，5秒后重连"),
+            Err(e) => log::warn!("飞书: 连接异常: {}，10秒后重连", e),
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+        }
+    }
 }
 
 /// 飞书连接主循环
 async fn run_feishu_loop(
     app_id: &str,
     app_secret: &str,
+    agent_id: &str,
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    cancel: &CancellationToken,
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
 
-    // 1. 获取 tenant_access_token
-    let token = get_tenant_token(&client, app_id, app_secret).await?;
+    // 1. 获取 tenant_access_token（飞书 token 有效期 7200 秒）
+    let (initial_token, ttl) = fetch_tenant_token_raw(&client, app_id, app_secret).await?;
+    let token_cache = TokenCache::with_initial(initial_token.clone(), ttl);
     log::info!("飞书: tenant_access_token 获取成功");
 
     // 2. 尝试 WebSocket 模式
-    let ws_result = try_websocket_mode(&client, app_id, app_secret, &token, pool, orchestrator, app_handle).await;
+    let ws_result = try_websocket_mode(&client, app_id, app_secret, &initial_token, agent_id, pool, orchestrator, app_handle, cancel, &token_cache).await;
 
     match ws_result {
         Ok(_) => Ok(()),
         Err(e) => {
             log::warn!("飞书: WebSocket 模式失败 ({}), 降级为轮询模式", e);
             // 降级：定时拉取消息（飞书不支持长轮询，但可以用定时检查）
-            polling_fallback(&client, &token, pool, orchestrator, app_handle).await
+            polling_fallback(&client, &initial_token, pool, orchestrator, app_handle).await
         }
     }
 }
 
-/// 获取 tenant_access_token
-async fn get_tenant_token(
+/// 获取 tenant_access_token（原始版本，返回 token + ttl 秒数）
+async fn fetch_tenant_token_raw(
     client: &reqwest::Client,
     app_id: &str,
     app_secret: &str,
-) -> Result<String, String> {
+) -> Result<(String, u64), String> {
     let resp = client.post(format!("{}/auth/v3/tenant_access_token/internal", FEISHU_BASE))
         .json(&serde_json::json!({
             "app_id": app_id,
@@ -134,9 +143,26 @@ async fn get_tenant_token(
         return Err(format!("飞书 token 错误: {}", data["msg"].as_str().unwrap_or("unknown")));
     }
 
-    data["tenant_access_token"].as_str()
+    let token = data["tenant_access_token"].as_str()
         .map(|s| s.to_string())
-        .ok_or("token 字段缺失".to_string())
+        .ok_or("token 字段缺失".to_string())?;
+    // 飞书返回 expire 字段（秒），默认 7200
+    let ttl = data["expire"].as_u64().unwrap_or(7200);
+    Ok((token, ttl))
+}
+
+/// 通过 TokenCache 获取 tenant_access_token（自动缓存和刷新）
+async fn get_tenant_token_cached(
+    token_cache: &Arc<TokenCache>,
+    app_id: &str,
+    app_secret: &str,
+) -> Result<String, String> {
+    let aid = app_id.to_string();
+    let asec = app_secret.to_string();
+    token_cache.get_or_refresh(|| async {
+        let client = reqwest::Client::new();
+        fetch_tenant_token_raw(&client, &aid, &asec).await
+    }).await
 }
 
 /// WebSocket 模式（Protobuf 帧协议）
@@ -145,9 +171,12 @@ async fn try_websocket_mode(
     app_id: &str,
     app_secret: &str,
     _token: &str,
+    agent_id: &str,
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    cancel: &CancellationToken,
+    token_cache: &Arc<TokenCache>,
 ) -> Result<(), String> {
     // 获取 WebSocket endpoint
     let resp = client.post("https://open.feishu.cn/callback/ws/endpoint")
@@ -204,6 +233,10 @@ async fn try_websocket_mode(
 
     loop {
         tokio::select! {
+            _ = cancel.cancelled() => {
+                log::info!("飞书: 收到取消信号，关闭 WebSocket");
+                break;
+            }
             _ = ping_interval.tick() => {
                 seq += 1;
                 let ping = PbFrame {
@@ -264,12 +297,14 @@ async fn try_websocket_mode(
                                 // 并发处理
                                 let aid = app_id.to_string();
                                 let asec = app_secret.to_string();
+                                let cfg_agent = agent_id.to_string();
                                 let p = pool.clone();
                                 let o = orchestrator.clone();
                                 let h = app_handle.clone();
                                 let sids = seen_ids.clone();
+                                let tc = token_cache.clone();
                                 tokio::spawn(async move {
-                                    handle_feishu_event(&event, &sids, &aid, &asec, &p, &o, &h).await;
+                                    handle_feishu_event(&event, &sids, &aid, &asec, &cfg_agent, &p, &o, &h, &tc).await;
                                 });
                             }
                         }
@@ -279,12 +314,14 @@ async fn try_websocket_mode(
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
                             let aid = app_id.to_string();
                             let asec = app_secret.to_string();
+                            let cfg_agent = agent_id.to_string();
                             let p = pool.clone();
                             let o = orchestrator.clone();
                             let h = app_handle.clone();
-                            let mut sids = seen_ids.clone();
+                            let sids = seen_ids.clone();
+                            let tc = token_cache.clone();
                             tokio::spawn(async move {
-                                handle_feishu_event(&event, &mut sids, &aid, &asec, &p, &o, &h).await;
+                                handle_feishu_event(&event, &sids, &aid, &asec, &cfg_agent, &p, &o, &h, &tc).await;
                             });
                         }
                     }
@@ -307,9 +344,11 @@ async fn handle_feishu_event(
     seen_ids: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     app_id: &str,
     app_secret: &str,
+    config_agent_id: &str,
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    token_cache: &Arc<TokenCache>,
 ) {
     // URL 验证 challenge
     if let Some(challenge) = event["challenge"].as_str() {
@@ -385,13 +424,26 @@ async fn handle_feishu_event(
 
     log::info!("飞书: [{}] {}: {}", chat_id, sender_id, &clean_text[..clean_text.len().min(50)]);
 
-    // 获取本地 Agent
-    let agent = match orchestrator.list_agents().await {
-        Ok(agents) => match agents.into_iter().next() {
-            Some(a) => a,
-            None => { log::warn!("飞书: 无可用 Agent"); return; }
-        },
-        Err(_) => return,
+    // 优先使用 config 中指定的 agent_id，fallback 到 Router
+    let agent_id = if !config_agent_id.is_empty() {
+        config_agent_id.to_string()
+    } else {
+        let router = crate::routing::Router::new(orchestrator.pool().clone());
+        let route = router.resolve("feishu", Some(sender_id)).await;
+        match route {
+            Ok(r) => r.agent_id,
+            Err(_) => {
+                let agents = orchestrator.list_agents().await.unwrap_or_default();
+                match agents.into_iter().next() {
+                    Some(a) => a.id,
+                    None => { log::warn!("飞书: 无可用 Agent"); return; }
+                }
+            }
+        }
+    };
+    let agent = match orchestrator.get_agent_cached(&agent_id).await {
+        Ok(a) => a,
+        Err(e) => { log::warn!("飞书: 获取 Agent 失败: {}", e); return; }
     };
 
     // 获取或创建 session
@@ -402,7 +454,7 @@ async fn handle_feishu_event(
     let (api_type, api_key, base_url) = match super::find_provider(pool, &agent.model).await {
         Some(info) => info,
         None => {
-            send_feishu_message(app_id, app_secret, chat_id, "未配置 LLM Provider，请在桌面端设置中添加。").await;
+            send_feishu_message(app_id, app_secret, chat_id, "未配置 LLM Provider，请在桌面端设置中添加。", token_cache).await;
             return;
         }
     };
@@ -415,7 +467,7 @@ async fn handle_feishu_event(
     }));
 
     // 1. 先发一个"思考中"卡片
-    let card_msg_id = send_feishu_card(app_id, app_secret, chat_id, "思考中...", true).await;
+    let card_msg_id = send_feishu_card(app_id, app_secret, chat_id, "思考中...", true, token_cache).await;
 
     // 2. 流式调用 orchestrator
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -427,11 +479,12 @@ async fn handle_feishu_event(
     let asec = app_secret.to_string();
     let app_for_stream = app_handle.clone();
     let sid_for_stream = session_id.clone();
+    let tc_for_stream = token_cache.clone();
 
     let output_handle = tokio::spawn(async move {
         let mut accumulated = String::new();
         let mut last_update = std::time::Instant::now();
-        let update_interval = std::time::Duration::from_millis(1000); // 每秒更新一次卡片
+        let update_interval = std::time::Duration::from_millis(1000);
 
         while let Some(token) = rx.recv().await {
             accumulated.push_str(&token);
@@ -442,10 +495,11 @@ async fn handle_feishu_event(
                 "content": accumulated.clone(), "source": "feishu",
             }));
 
-            // 节流更新卡片（最多每秒一次，避免飞书限流）
+            // 节流更新卡片（reasoning 双轨渲染）
             if last_update.elapsed() >= update_interval && !accumulated.is_empty() {
                 if let Some(ref msg_id) = card_id {
-                    patch_feishu_card(&aid, &asec, msg_id, &format!("{}▌", accumulated)).await;
+                    let card_text = format_feishu_reasoning(&accumulated);
+                    patch_feishu_card(&aid, &asec, msg_id, &format!("{}▌", card_text), &tc_for_stream).await;
                 }
                 last_update = std::time::Instant::now();
             }
@@ -465,14 +519,15 @@ async fn handle_feishu_event(
         Err(e) => format!("处理出错: {}", &e[..e.len().min(100)]),
     };
 
-    // 3. 最终更新卡片为完整回复（去掉光标）
+    // 3. 最终更新卡片为完整回复（reasoning 双轨渲染，去掉光标）
     if let Some(ref msg_id) = card_msg_id {
         if !reply.is_empty() {
-            patch_feishu_card(app_id, app_secret, msg_id, &reply).await;
+            let final_text = format_feishu_reasoning(&reply);
+            patch_feishu_card(app_id, app_secret, msg_id, &final_text, token_cache).await;
         }
     } else if !reply.is_empty() {
         // 卡片发送失败的降级：发纯文本
-        send_feishu_message(app_id, app_secret, chat_id, &reply).await;
+        send_feishu_message(app_id, app_secret, chat_id, &reply, token_cache).await;
     }
 
     log::info!("飞书: 回复 [{}] {}字符", chat_id, reply.len());
@@ -482,13 +537,18 @@ async fn handle_feishu_event(
         "type": "done", "sessionId": session_id,
         "role": "assistant", "content": reply, "source": "feishu",
     }));
+
+    // Session 自动命名
+    crate::memory::conversation::auto_name_session(
+        pool, &session_id, &clean_text, &api_key, &api_type, base_url_opt,
+    ).await;
 }
 
 /// 发送飞书交互卡片（用于流式更新）
 /// 返回 message_id（用于后续 PATCH 更新）
-async fn send_feishu_card(app_id: &str, app_secret: &str, chat_id: &str, text: &str, thinking: bool) -> Option<String> {
+async fn send_feishu_card(app_id: &str, app_secret: &str, chat_id: &str, text: &str, thinking: bool, token_cache: &Arc<TokenCache>) -> Option<String> {
     let client = reqwest::Client::new();
-    let token = get_tenant_token(&client, app_id, app_secret).await.ok()?;
+    let token = get_tenant_token_cached(token_cache, app_id, app_secret).await.ok()?;
 
     let header_text = if thinking { "思考中..." } else { "小爪" };
     let card = serde_json::json!({
@@ -524,13 +584,83 @@ async fn send_feishu_card(app_id: &str, app_secret: &str, chat_id: &str, text: &
     msg_id
 }
 
+/// 飞书 reasoning 双轨渲染
+///
+/// 将含 <think>...</think> 或 Reasoning:\n 的内容格式化为：
+/// - thinking 部分 → blockquote（> 💭 **Thinking** ...）
+/// - answer 部分 → 正常 markdown
+/// - 两者之间用 --- 分隔
+fn format_feishu_reasoning(text: &str) -> String {
+    // 检测 <think>...</think> 格式
+    if let Some(think_start) = text.find("<think>") {
+        let after_tag = think_start + 7;
+        let (thinking, answer) = if let Some(think_end) = text.find("</think>") {
+            let thinking = text[after_tag..think_end].trim();
+            let answer = text[think_end + 8..].trim();
+            (thinking.to_string(), answer.to_string())
+        } else {
+            // <think> 还没结束（还在 thinking 中）
+            let thinking = text[after_tag..].trim();
+            (thinking.to_string(), String::new())
+        };
+        return build_reasoning_card(&thinking, &answer);
+    }
+
+    // 检测 Reasoning:\n 格式
+    if text.starts_with("Reasoning:\n") || text.starts_with("Reasoning:\r\n") {
+        let without_label = text.strip_prefix("Reasoning:\n")
+            .or(text.strip_prefix("Reasoning:\r\n"))
+            .unwrap_or(text);
+        // 找到 reasoning 结束（通常以空行分隔后是 answer）
+        if let Some(sep) = without_label.find("\n\n") {
+            let thinking = without_label[..sep].trim();
+            let answer = without_label[sep + 2..].trim();
+            return build_reasoning_card(thinking, answer);
+        }
+        // 全部是 thinking
+        return build_reasoning_card(without_label.trim(), "");
+    }
+
+    // 无 reasoning 标记，原样返回
+    text.to_string()
+}
+
+/// 构建 thinking + answer 双轨卡片文本
+fn build_reasoning_card(thinking: &str, answer: &str) -> String {
+    let mut parts = Vec::new();
+    if !thinking.is_empty() {
+        // 去掉 italic markers（_text_）
+        let plain = thinking.lines()
+            .map(|line| {
+                let l = line.trim();
+                let l = l.strip_prefix('_').unwrap_or(l);
+                let l = l.strip_suffix('_').unwrap_or(l);
+                format!("> {}", l)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("> 💭 **Thinking**\n{}", plain));
+    }
+    if !thinking.is_empty() && !answer.is_empty() {
+        parts.push("\n---\n".to_string());
+    }
+    if !answer.is_empty() {
+        parts.push(answer.to_string());
+    }
+    if parts.is_empty() {
+        "思考中...".to_string()
+    } else {
+        parts.join("")
+    }
+}
+
 /// 更新飞书卡片内容（PATCH，用于流式输出）
-async fn patch_feishu_card(app_id: &str, app_secret: &str, message_id: &str, text: &str) {
-    let client = reqwest::Client::new();
-    let token = match get_tenant_token(&client, app_id, app_secret).await {
+async fn patch_feishu_card(app_id: &str, app_secret: &str, message_id: &str, text: &str, token_cache: &Arc<TokenCache>) {
+    let token = match get_tenant_token_cached(token_cache, app_id, app_secret).await {
         Ok(t) => t,
         Err(_) => return,
     };
+    let client = reqwest::Client::new();
 
     let card = serde_json::json!({
         "config": {"update_multi": true},
@@ -550,14 +680,14 @@ async fn patch_feishu_card(app_id: &str, app_secret: &str, message_id: &str, tex
 }
 
 /// 发送飞书纯文本消息（降级用）
-async fn send_feishu_message(app_id: &str, app_secret: &str, chat_id: &str, text: &str) {
-    let client = reqwest::Client::new();
-
-    // 获取 token
-    let token = match get_tenant_token(&client, app_id, app_secret).await {
+async fn send_feishu_message(app_id: &str, app_secret: &str, chat_id: &str, text: &str, token_cache: &Arc<TokenCache>) {
+    // 获取 token（走缓存）
+    let token = match get_tenant_token_cached(token_cache, app_id, app_secret).await {
         Ok(t) => t,
         Err(e) => { log::warn!("飞书: 发送消息失败（token）: {}", e); return; }
     };
+
+    let client = reqwest::Client::new();
 
     let body = serde_json::json!({
         "receive_id": chat_id,

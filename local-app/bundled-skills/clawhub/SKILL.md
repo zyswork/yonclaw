@@ -76,7 +76,7 @@ Notes
 - Default workdir: cwd (falls back to OpenClaw workspace); install dir: ./skills (override with --workdir / --dir / CLAWHUB_WORKDIR)
 - Update command hashes local files, resolves matching version, and upgrades to latest unless --version is set
 
-## YonClaw 使用要点
+## XianZhu 使用要点
 
 **关键：必须用 `--workdir` 指向 Agent 工作区，技能才能被 Agent 使用。**
 
@@ -85,9 +85,9 @@ Notes
 clawhub search "关键词"
 
 # 安装技能到当前 Agent（自动装到 skills/ 目录）
-clawhub install <slug> --workdir ~/.yonclaw/agents/<agent_id>
+clawhub install <slug> --workdir ~/.xianzhu/agents/<agent_id>
 
 # 安装后技能立即生效，不需要重启
 ```
 
-安装后同时复制到 `~/.yonclaw/marketplace/` 让其他 Agent 也能安装。
+安装后同时复制到 `~/.xianzhu/marketplace/` 让其他 Agent 也能安装。

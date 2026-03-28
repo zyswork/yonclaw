@@ -425,6 +425,122 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "#,
     ).execute(pool).await?;
 
+    // 频道连接表（每个 Agent 可以绑定自己的 Telegram bot / 飞书应用等）
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_channels (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            channel_type TEXT NOT NULL,
+            credentials_json TEXT NOT NULL,
+            display_name TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'configured',
+            status_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        )
+        "#,
+    ).execute(pool).await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_agent_channels_agent ON agent_channels(agent_id)")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_agent_channels_type ON agent_channels(channel_type, enabled)")
+        .execute(pool).await?;
+
+    // 迁移：把旧的全局频道 token（settings 表）转到 agent_channels 表
+    {
+        let existing_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_channels")
+            .fetch_one(pool).await.unwrap_or((0,));
+        if existing_count.0 == 0 {
+            // 找第一个 agent 作为迁移目标
+            let first_agent: Option<(String,)> = sqlx::query_as(
+                "SELECT id FROM agents ORDER BY created_at ASC LIMIT 1"
+            ).fetch_optional(pool).await.unwrap_or(None);
+
+            if let Some((agent_id,)) = first_agent {
+                let now = chrono::Utc::now().timestamp();
+                // Telegram
+                let tg_token: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'telegram_bot_token'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                if let Some((token,)) = tg_token {
+                    if !token.is_empty() {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let creds = serde_json::json!({"bot_token": token}).to_string();
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO agent_channels (id, agent_id, channel_type, credentials_json, enabled, status, created_at, updated_at) VALUES (?, ?, 'telegram', ?, 1, 'configured', ?, ?)"
+                        ).bind(&id).bind(&agent_id).bind(&creds).bind(now).bind(now).execute(pool).await;
+                        log::info!("迁移 Telegram 频道到 agent_channels: agent={}", agent_id);
+                    }
+                }
+                // 飞书
+                let fs_id: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'feishu_app_id'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                let fs_secret: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'feishu_app_secret'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                if let (Some((app_id,)), Some((app_secret,))) = (fs_id, fs_secret) {
+                    if !app_id.is_empty() {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let creds = serde_json::json!({"app_id": app_id, "app_secret": app_secret}).to_string();
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO agent_channels (id, agent_id, channel_type, credentials_json, enabled, status, created_at, updated_at) VALUES (?, ?, 'feishu', ?, 1, 'configured', ?, ?)"
+                        ).bind(&id).bind(&agent_id).bind(&creds).bind(now).bind(now).execute(pool).await;
+                        log::info!("迁移飞书频道到 agent_channels: agent={}", agent_id);
+                    }
+                }
+                // Discord
+                let dc_token: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'discord_bot_token'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                if let Some((token,)) = dc_token {
+                    if !token.is_empty() {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let creds = serde_json::json!({"bot_token": token}).to_string();
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO agent_channels (id, agent_id, channel_type, credentials_json, enabled, status, created_at, updated_at) VALUES (?, ?, 'discord', ?, 1, 'configured', ?, ?)"
+                        ).bind(&id).bind(&agent_id).bind(&creds).bind(now).bind(now).execute(pool).await;
+                        log::info!("迁移 Discord 频道到 agent_channels: agent={}", agent_id);
+                    }
+                }
+                // Slack
+                let sl_bot: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'slack_bot_token'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                let sl_app: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'slack_app_token'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                if let (Some((bot_token,)), Some((app_token,))) = (sl_bot, sl_app) {
+                    if !bot_token.is_empty() {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let creds = serde_json::json!({"bot_token": bot_token, "app_token": app_token}).to_string();
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO agent_channels (id, agent_id, channel_type, credentials_json, enabled, status, created_at, updated_at) VALUES (?, ?, 'slack', ?, 1, 'configured', ?, ?)"
+                        ).bind(&id).bind(&agent_id).bind(&creds).bind(now).bind(now).execute(pool).await;
+                        log::info!("迁移 Slack 频道到 agent_channels: agent={}", agent_id);
+                    }
+                }
+                // 微信
+                let wx_token: Option<(String,)> = sqlx::query_as(
+                    "SELECT value FROM settings WHERE key = 'weixin_bot_token'"
+                ).fetch_optional(pool).await.unwrap_or(None);
+                if let Some((token,)) = wx_token {
+                    if !token.is_empty() {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let creds = serde_json::json!({"bot_token": token}).to_string();
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO agent_channels (id, agent_id, channel_type, credentials_json, enabled, status, created_at, updated_at) VALUES (?, ?, 'weixin', ?, 1, 'configured', ?, ?)"
+                        ).bind(&id).bind(&agent_id).bind(&creds).bind(now).bind(now).execute(pool).await;
+                        log::info!("迁移微信频道到 agent_channels: agent={}", agent_id);
+                    }
+                }
+            }
+        }
+    }
+
     // 插件全局配置
     sqlx::query(
         r#"

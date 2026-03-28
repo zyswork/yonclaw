@@ -1,7 +1,7 @@
 //! LanceDB 向量存储
 //!
 //! 替代 SQLite BLOB 存储向量，提供原生 ANN 索引搜索。
-//! 数据存储在 ~/.yonclaw/lance/ 目录下。
+//! 数据存储在 ~/.xianzhu/lance/ 目录下。
 
 use std::sync::Arc;
 use arrow_array::{RecordBatch, RecordBatchIterator, StringArray, Float32Array, Int64Array, FixedSizeListArray, ArrayRef};
@@ -46,7 +46,7 @@ impl LanceVectorStore {
     /// 获取 LanceDB 存储路径
     pub fn default_path() -> String {
         let home = dirs::home_dir().unwrap_or_default();
-        home.join(".yonclaw").join("lance").to_string_lossy().to_string()
+        home.join(".xianzhu").join("lance").to_string_lossy().to_string()
     }
 
     /// 确保表存在

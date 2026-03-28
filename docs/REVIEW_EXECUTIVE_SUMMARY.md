@@ -2,7 +2,7 @@
 
 **评审日期**: 2026-03-15
 **评审者**: Gemini (前端 UX 专家)
-**项目**: YonClaw Local App (Tauri + React + Node.js)
+**项目**: XianZhu Local App (Tauri + React + Node.js)
 
 ---
 

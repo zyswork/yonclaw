@@ -8,7 +8,6 @@
 //! - register_tts: 注册语音合成
 //! - on_hook: 注册生命周期 hook
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::agent::tools::{Tool, ToolDefinition};
@@ -248,7 +247,7 @@ impl PluginManager {
 
     /// 转为 JSON（前端展示）
     pub fn to_json(&self) -> Vec<serde_json::Value> {
-        let mut result: Vec<serde_json::Value> = self.plugins.iter().map(|p| {
+        let result: Vec<serde_json::Value> = self.plugins.iter().map(|p| {
             serde_json::json!({
                 "id": p.id,
                 "name": p.name,

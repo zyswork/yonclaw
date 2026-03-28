@@ -62,7 +62,7 @@ tools:
       command: bash
       args_template: [oa-task.sh, complete, "{task_id}"]
 permissions:
-  read_paths: ["~/.yonclaw"]
+  read_paths: ["~/.xianzhu"]
   write_paths: []
   exec_commands: [bash, curl]
   network: true

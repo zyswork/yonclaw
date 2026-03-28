@@ -34,8 +34,10 @@ pub fn estimate_cost(model: &str, input_tokens: u64, output_tokens: u64) -> f64 
         (0.15, 0.6)
     } else if m.starts_with("gpt-4o") || m.starts_with("gpt-4-turbo") {
         (2.5, 10.0)
-    } else if m.starts_with("gpt-5") {
-        (2.5, 10.0)
+    } else if m.contains("gpt-5") && m.contains("mini") {
+        (0.30, 1.20)
+    } else if m.starts_with("gpt-5") || m.starts_with("gpt-4.5") {
+        (5.0, 20.0)
     } else if m.starts_with("deepseek") {
         (0.14, 0.28)
     } else if m.starts_with("qwen") {

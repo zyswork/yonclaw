@@ -11,7 +11,7 @@ trigger_keywords:
   - email
   - inbox
 permissions:
-  read_paths: ["~/.yonclaw"]
+  read_paths: ["~/.xianzhu"]
   write_paths: []
   exec_commands: [python3, security]
   network: true

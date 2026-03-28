@@ -43,6 +43,10 @@ pub fn next_run_after(schedule: &Schedule, after: i64) -> Result<Option<i64>, St
             // 按间隔轮询
             Ok(Some(after + *interval_secs as i64))
         }
+        Schedule::OnMessage { .. } | Schedule::OnAgentEvent { .. } => {
+            // 事件驱动，不需要定时调度
+            Ok(None)
+        }
     }
 }
 
@@ -106,6 +110,16 @@ pub fn validate_schedule(schedule: &Schedule) -> Result<(), String> {
                 return Err("安全限制：Poll URL 不能指向内网地址".to_string());
             }
             Ok(())
+        }
+        Schedule::OnMessage { channel, .. } => {
+            if channel.is_empty() {
+                Err("OnMessage channel 不能为空（使用 * 匹配全部）".into())
+            } else { Ok(()) }
+        }
+        Schedule::OnAgentEvent { source_agent, event_type } => {
+            if source_agent.is_empty() || event_type.is_empty() {
+                Err("OnAgentEvent 需要 source_agent 和 event_type".into())
+            } else { Ok(()) }
         }
     }
 }

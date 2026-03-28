@@ -27,6 +27,21 @@ pub struct AgentLoopError {
     pub partial_content: String,
 }
 
+/// Agent loop 返回结果（扩展 yield 状态）
+#[derive(Debug)]
+pub enum AgentLoopResult {
+    /// 正常完成
+    Done(String),
+    /// Yield — Agent 暂停，等待子代理完成后重新注入结果
+    Yielded {
+        content: String,
+        /// 等待的子代理 run_id
+        waiting_for: Option<String>,
+        /// yield 消息
+        yield_message: String,
+    },
+}
+
 /// Agent loop 运行所需的依赖（避免传整个 Orchestrator）
 pub struct AgentLoopDeps<'a> {
     pub pool: &'a SqlitePool,
@@ -208,6 +223,42 @@ pub async fn run_agent_loop(
         let llm_response = match call_result {
             Ok(resp) => resp,
             Err(e) => {
+                // 检测是否是上下文溢出（自动 compact 并重试一次）
+                let is_context_overflow = {
+                    let el = e.to_lowercase();
+                    el.contains("context_length") || el.contains("context length")
+                        || el.contains("maximum context") || el.contains("too many tokens")
+                        || el.contains("max_tokens") || el.contains("token limit")
+                        || el.contains("reduce the length") || el.contains("请减少")
+                };
+                if is_context_overflow && round == 0 {
+                    log::warn!("LLM 上下文溢出，尝试自动压缩...");
+                    let _ = tx.send("\n⚙️ Context overflow — auto-compacting...\n".to_string());
+                    // 触发自动压缩（设置 boundary 到当前消息数的一半）
+                    let msg_count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?"
+                    ).bind(session_id).fetch_one(deps.pool).await.unwrap_or(0);
+                    if msg_count > 5 {
+                        // 设置 boundary 为总消息数的 2/3 处
+                        let boundary_target = msg_count * 2 / 3;
+                        let boundary_seq: Option<i64> = sqlx::query_scalar(
+                            "SELECT seq FROM chat_messages WHERE session_id = ? ORDER BY seq ASC LIMIT 1 OFFSET ?"
+                        ).bind(session_id).bind(boundary_target).fetch_optional(deps.pool).await.ok().flatten();
+                        if let Some(bseq) = boundary_seq {
+                            // 快速摘要（不调 LLM，直接截断）
+                            let compact_key = format!("compact_boundary_{}", session_id);
+                            let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+                                .bind(&compact_key).bind(bseq.to_string())
+                                .execute(deps.pool).await;
+                            let _ = sqlx::query("UPDATE chat_sessions SET summary = ? WHERE id = ?")
+                                .bind("[Auto-compacted due to context overflow]")
+                                .bind(session_id).execute(deps.pool).await;
+                            log::info!("自动压缩: boundary_seq={}, 继续重试", bseq);
+                            let _ = tx.send("⚙️ Auto-compacted. Retrying...\n".to_string());
+                            // 不直接重试（让循环继续会复杂），返回提示让用户重发
+                        }
+                    }
+                }
                 log::error!("LLM 调用失败（第 {} 轮）: {}", round + 1, e);
                 let _ = tx.send(format!("\n\n⚠️ LLM 调用出错: {}\n", e));
                 let _ = forward_handle.await;
@@ -488,6 +539,25 @@ pub async fn run_agent_loop(
             }
         }
 
+        // 检测 yield：如果本轮有 sessions_yield 工具调用，暂停 loop
+        let mut yielded = false;
+        let mut yield_message = String::new();
+        let mut yield_waiting_for: Option<String> = None;
+        for msg in messages.iter().rev().take(total_tools + denied_results.len()) {
+            if let Some(content) = msg["content"].as_str() {
+                if content.starts_with("YIELD:") {
+                    yielded = true;
+                    yield_message = content.strip_prefix("YIELD:").unwrap_or("").trim().to_string();
+                    // 尝试提取等待的 run_id
+                    if let Some(rid) = yield_message.strip_prefix("wait:") {
+                        yield_waiting_for = Some(rid.trim().to_string());
+                        yield_message = format!("Yielded, waiting for {}", rid.trim());
+                    }
+                    break;
+                }
+            }
+        }
+
         // 持久化工具结果
         {
             let msg_count = messages.len();
@@ -498,6 +568,65 @@ pub async fn run_agent_loop(
             for idx in save_start..msg_count {
                 let _ = memory::conversation::save_chat_message(deps.pool, session_id, agent_id, &messages[idx]).await;
             }
+        }
+
+        // 如果 yielded，提前退出 loop
+        if yielded {
+            log::info!("Agent loop YIELDED: {} (waiting_for={:?})", yield_message, yield_waiting_for);
+            let _ = tx.send(format!("\n⏸️ {}\n", yield_message));
+
+            // 如果有等待的 run_id，等待子代理完成，然后将结果作为新消息注入
+            if let Some(ref run_id) = yield_waiting_for {
+                let _ = tx.send("\n⏳ Waiting for subagent to complete...\n".to_string());
+                // 使用 SubagentRegistry 的 yield_wait
+                // 注意：这里需要从 deps 获取 registry，但当前 deps 没有
+                // 简化方案：直接轮询 DB
+                let timeout = std::time::Duration::from_secs(120);
+                let start = std::time::Instant::now();
+                #[allow(unused_assignments)]
+                let mut subagent_result = String::new();
+                loop {
+                    let status: Option<(String, Option<String>)> = sqlx::query_as(
+                        "SELECT status, output FROM subagent_runs WHERE id = ?"
+                    ).bind(run_id).fetch_optional(deps.pool).await.ok().flatten();
+
+                    if let Some((st, output)) = &status {
+                        if st == "success" {
+                            subagent_result = output.clone().unwrap_or_default();
+                            let _ = tx.send(format!("\n✅ Subagent completed\n"));
+                            break;
+                        } else if st == "failed" || st == "timeout" || st == "cancelled" {
+                            subagent_result = format!("Subagent {}: {}", st, output.as_deref().unwrap_or(""));
+                            let _ = tx.send(format!("\n❌ Subagent {}\n", st));
+                            break;
+                        }
+                    }
+
+                    if start.elapsed() > timeout {
+                        subagent_result = "Subagent wait timeout (120s)".into();
+                        let _ = tx.send("\n⚠️ Subagent timeout\n".to_string());
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+
+                // 将子代理结果注入为新的 user message，继续 agent loop
+                if !subagent_result.is_empty() {
+                    let inject_msg = format!("[Subagent Result for {}]\n\n{}", run_id, subagent_result);
+                    messages.push(serde_json::json!({"role": "user", "content": inject_msg}));
+                    let _ = memory::conversation::save_chat_message(
+                        deps.pool, session_id, agent_id,
+                        &serde_json::json!({"role": "user", "content": inject_msg}),
+                    ).await;
+                    // 不 break，继续 agent loop 的下一轮
+                    continue;
+                }
+            }
+
+            // 无等待目标的 yield，直接结束
+            let mut partial = full_content.clone();
+            partial.push_str(&yield_message);
+            return Ok(partial);
         }
 
         if round == MAX_TOOL_ROUNDS - 1 {

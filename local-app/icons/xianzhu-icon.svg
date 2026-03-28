@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0c1118"/>
+      <stop offset="100%" stop-color="#131c26"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0.5" y1="1" x2="0.5" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="50%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="dragon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0.6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.32" r="0.35">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+    </radialGradient>
+    <!-- macOS squircle 裁切蒙版 -->
+    <clipPath id="squircle">
+      <rect width="512" height="512" rx="112" ry="112"/>
+    </clipPath>
+  </defs>
+
+  <!-- 用 squircle 裁切所有内容 -->
+  <g clip-path="url(#squircle)">
+    <!-- 背景 -->
+    <rect width="512" height="512" fill="url(#bg)"/>
+
+    <!-- 光晕 -->
+    <circle cx="256" cy="165" r="180" fill="url(#glow)"/>
+
+    <!-- 龙身弧线（左） -->
+    <path d="M148 260 C120 210, 130 145, 170 115 C185 105, 200 108, 218 118"
+          stroke="url(#dragon)" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.85"/>
+    <path d="M148 260 C135 275, 120 272, 110 258"
+          stroke="#34d399" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.5"/>
+
+    <!-- 龙身弧线（右） -->
+    <path d="M364 260 C392 210, 382 145, 342 115 C327 105, 312 108, 294 118"
+          stroke="url(#dragon)" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.85"/>
+    <path d="M364 260 C377 275, 392 272, 402 258"
+          stroke="#34d399" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.5"/>
+
+    <!-- 龙眼 -->
+    <circle cx="162" cy="195" r="6" fill="#5eead4"/>
+    <circle cx="162" cy="195" r="3" fill="#fff"/>
+    <circle cx="350" cy="195" r="6" fill="#5eead4"/>
+    <circle cx="350" cy="195" r="3" fill="#fff"/>
+
+    <!-- 火焰外层 -->
+    <path d="M256 90
+             C256 90, 306 155, 306 200
+             C306 235, 288 258, 278 270
+             C290 255, 298 235, 298 215
+             C298 190, 278 160, 272 150
+             C282 178, 288 200, 278 225
+             C268 250, 256 265, 256 290
+             C256 265, 244 250, 234 225
+             C224 200, 230 178, 240 150
+             C234 160, 214 190, 214 215
+             C214 235, 222 255, 234 270
+             C224 258, 206 235, 206 200
+             C206 155, 256 90, 256 90Z"
+          fill="url(#flame)" opacity="0.95"/>
+
+    <!-- 火焰内芯 -->
+    <path d="M256 145
+             C256 145, 280 185, 280 210
+             C280 235, 268 255, 256 270
+             C244 255, 232 235, 232 210
+             C232 185, 256 145, 256 145Z"
+          fill="#fff" opacity="0.55"/>
+
+    <!-- 烛身 -->
+    <rect x="242" y="290" width="28" height="90" rx="5" fill="#34d399" opacity="0.5"/>
+    <!-- 烛座 -->
+    <rect x="228" y="375" width="56" height="14" rx="7" fill="#34d399" opacity="0.4"/>
+
+    <!-- 底部装饰线 -->
+    <rect x="160" y="430" width="192" height="2.5" rx="1.25" fill="url(#flame)" opacity="0.3"/>
+  </g>
+</svg>

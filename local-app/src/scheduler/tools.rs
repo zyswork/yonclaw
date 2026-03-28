@@ -102,6 +102,8 @@ impl Tool for CronListTool {
                 Schedule::At { ts } => format!("定时: {}", ts),
                 Schedule::Webhook { token, .. } => format!("webhook: {}", &token[..token.len().min(8)]),
                 Schedule::Poll { url, interval_secs, .. } => format!("poll: {} (每 {}s)", url, interval_secs),
+                Schedule::OnMessage { channel, keyword_pattern, .. } => format!("on_message: {} ({})", channel, keyword_pattern.as_deref().unwrap_or("*")),
+                Schedule::OnAgentEvent { source_agent, event_type } => format!("on_agent_event: {}:{}", source_agent, event_type),
             };
             output.push_str(&format!(
                 "\n[{}] {} [{}] {} (ID: {})",

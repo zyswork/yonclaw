@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n'
+import Select from '../components/Select'
 
 interface ProviderModel {
   id: string
@@ -42,10 +43,13 @@ interface Agent {
 
 /** 预置 Agent 模板 */
 const TEMPLATES = [
-  { nameKey: 'chatPage.templateGeneral', prompt: '你是一个有用的AI助手，擅长回答各种问题。', icon: '💬' },
-  { nameKey: 'chatPage.templateCoding', prompt: '你是一个资深编程助手，擅长代码编写、调试和架构设计。请用简洁专业的方式回答。', icon: '👨‍💻' },
-  { nameKey: 'chatPage.templateTranslator', prompt: '你是一个专业翻译，擅长中英互译。保持原文风格和语气，翻译要自然流畅。', icon: '🌐' },
-  { nameKey: 'chatPage.templateWriter', prompt: '你是一个专业写作助手，擅长文章撰写、润色和创意写作。', icon: '✍️' },
+  { nameKey: 'chatPage.templateGeneral', name: '通用助理', prompt: '你是一个有用的AI助手，擅长回答各种问题。', icon: 'AI', desc: '日常问答、信息整理' },
+  { nameKey: 'chatPage.templateCoding', name: '编程助手', prompt: '你是一个资深编程助手，擅长代码编写、调试和架构设计。请用简洁专业的方式回答。', icon: '<>', desc: '全栈开发、代码调试' },
+  { nameKey: 'chatPage.templateTranslator', name: '翻译助手', prompt: '你是一个专业翻译，擅长中英互译。保持原文风格和语气，翻译要自然流畅。', icon: 'Aa', desc: '中英互译、多语言' },
+  { nameKey: 'chatPage.templateWriter', name: '写作助手', prompt: '你是一个专业写作助手，擅长文章撰写、润色和创意写作。', icon: 'W', desc: '文案创作、内容润色' },
+  { nameKey: '', name: '数据分析师', prompt: '你是一位数据分析专家。擅长数据解读、统计分析、趋势预测。能够处理 CSV/Excel 数据，生成分析报告。', icon: '#', desc: '数据分析、报表解读' },
+  { nameKey: '', name: '学习导师', prompt: '你是一位耐心的学习导师。用简单易懂的方式解释复杂概念，善于用类比和例子帮助理解。根据学生水平调整讲解深度。', icon: 'E', desc: '知识讲解、学习指导' },
+  { nameKey: '', name: '创意顾问', prompt: '你是一位创意顾问。擅长头脑风暴、创意方案设计、营销策划。善于跳出常规思维，提供新颖独特的视角和解决方案。', icon: '*', desc: '头脑风暴、营销策划' },
 ]
 
 /** 温度预设 */
@@ -308,28 +312,30 @@ export default function AgentCreatePage() {
             <label style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
               {t('agentCreate.quickTemplates')}
             </label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {TEMPLATES.map((tpl) => (
-                <button
-                  key={tpl.nameKey}
-                  onClick={() => applyTemplate(tpl)}
-                  style={{
-                    padding: '10px 12px',
-                    border: name === t(tpl.nameKey) ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
-                    borderRadius: 8,
-                    backgroundColor: name === t(tpl.nameKey) ? 'var(--accent-bg)' : 'var(--bg-elevated)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    fontSize: 13,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <span style={{ fontSize: 20 }}>{tpl.icon}</span>
-                  <span>{t(tpl.nameKey)}</span>
-                </button>
-              ))}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+              {TEMPLATES.map((tpl, idx) => {
+                const tplName = tpl.nameKey ? t(tpl.nameKey) : tpl.name
+                const isSelected = name === tplName
+                return (
+                  <button
+                    key={tpl.nameKey || idx}
+                    onClick={() => { setName(tplName); setSystemPrompt(tpl.prompt) }}
+                    style={{
+                      padding: '12px 10px',
+                      border: isSelected ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
+                      borderRadius: 10,
+                      backgroundColor: isSelected ? 'var(--accent-bg)' : 'var(--bg-elevated)',
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      fontSize: 12,
+                    }}
+                  >
+                    <div style={{ fontSize: 24, marginBottom: 4 }}>{tpl.icon}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{tplName}</div>
+                    {tpl.desc && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{tpl.desc}</div>}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -393,25 +399,16 @@ export default function AgentCreatePage() {
                 {t('agentCreate.warningNoModels')}
               </div>
             ) : (
-              <select
+              <Select
                 value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 6,
-                  fontSize: 14,
-                  backgroundColor: 'var(--bg-elevated)',
-                  boxSizing: 'border-box',
-                }}
-              >
-                {allModels.map((m) => (
-                  <option key={m.id} value={m.id} disabled={!m.available}>
-                    {m.label} ({m.providerName}){!m.available ? ` — ${t('settings.labelNoKey')}` : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedModel}
+                options={allModels.map((m) => ({
+                  value: m.id,
+                  label: `${m.label} (${m.providerName})${!m.available ? ` — ${t('settings.labelNoKey')}` : ''}`,
+                }))}
+                searchable
+                style={{ width: '100%' }}
+              />
             )}
           </div>
 

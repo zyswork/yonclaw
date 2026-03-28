@@ -26,18 +26,20 @@
         "fullscreen": false,
         "height": 800,
         "resizable": true,
-        "title": "YonClaw",
+        "title": "XianZhu",
         "width": 1200,
-        "fileDropEnabled": false
+        "fileDropEnabled": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: tauri: asset: https://asset.localhost; img-src 'self' data: blob: asset: https://asset.localhost https://*.weixin.qq.com https://*.qq.com https://*; media-src 'self' data: blob: asset: https://asset.localhost"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: tauri: asset: https://asset.localhost; connect-src 'self' https: wss: http:; img-src 'self' data: blob: asset: https://asset.localhost https://*; media-src 'self' data: blob: asset: https://asset.localhost"
     },
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.yonclaw.app",
+      "identifier": "com.xianzhu.app",
       "resources": [
         "bundled-skills/**/*"
       ],
@@ -51,7 +53,7 @@
     }
   },
   "package": {
-    "productName": "YonClaw",
+    "productName": "XianZhu",
     "version": "0.1.0"
   }
 }

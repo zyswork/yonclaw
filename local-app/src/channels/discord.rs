@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use tokio_util::sync::CancellationToken;
 use crate::agent::Orchestrator;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use futures_util::{SinkExt, StreamExt};
@@ -12,43 +13,46 @@ use futures_util::{SinkExt, StreamExt};
 /// Discord Bot 配置
 pub struct DiscordConfig {
     pub bot_token: String,
+    pub agent_id: String,
 }
 
-/// 防止重复启动
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 启动 Discord Gateway（后台 tokio task，单例）
-pub async fn start_gateway(
+/// 启动 Discord Gateway
+///
+/// 由 ChannelManager 调用，不再自行 spawn，通过 CancellationToken 控制生命周期。
+pub async fn start_discord(
     config: DiscordConfig,
     pool: sqlx::SqlitePool,
     orchestrator: Arc<Orchestrator>,
     app_handle: tauri::AppHandle,
-) {
-    // 防止重复启动（已有 Gateway 在运行则跳过）
-    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("Discord: Gateway 已在运行，跳过重复启动");
-        return;
-    }
-
+    cancel: CancellationToken,
+) -> Result<(), String> {
     let token = config.bot_token.clone();
-    log::info!("Discord: 启动 Gateway 连接 (token: {}...)", &token[..token.len().min(20)]);
+    let agent_id = config.agent_id.clone();
+    log::info!("Discord: 启动 Gateway 连接 (token: {}..., agent={})", &token[..token.len().min(20)], agent_id);
 
-    tokio::spawn(async move {
-        loop {
-            if let Err(e) = run_gateway(&token, &pool, &orchestrator, &app_handle).await {
-                log::warn!("Discord: Gateway 断开: {}，10秒后重连", e);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    loop {
+        if cancel.is_cancelled() {
+            log::info!("Discord: 收到取消信号，退出");
+            return Ok(());
         }
-    });
+        if let Err(e) = run_gateway(&token, &agent_id, &pool, &orchestrator, &app_handle, &cancel).await {
+            log::warn!("Discord: Gateway 断开: {}，10秒后重连", e);
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+        }
+    }
 }
 
 /// 运行 Gateway 连接主循环
 async fn run_gateway(
     token: &str,
+    agent_id: &str,
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    cancel: &CancellationToken,
 ) -> Result<(), String> {
     // 1. 获取 Gateway URL
     let client = reqwest::Client::new();
@@ -90,8 +94,8 @@ async fn run_gateway(
             "intents": 37377,
             "properties": {
                 "os": "macos",
-                "browser": "yonclaw",
-                "device": "yonclaw"
+                "browser": "xianzhu",
+                "device": "xianzhu"
             }
         }
     });
@@ -136,8 +140,20 @@ async fn run_gateway(
     let mut bot_user_id = String::new();
 
     // 6. 事件循环
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
+    loop {
+        let ws_msg = tokio::select! {
+            _ = cancel.cancelled() => {
+                log::info!("Discord: 收到取消信号，关闭 Gateway");
+                shutdown.store(true, Ordering::Relaxed);
+                break;
+            }
+            m = read.next() => match m {
+                Some(m) => m,
+                None => break,
+            },
+        };
+
+        let msg = match ws_msg {
             Ok(WsMessage::Text(t)) => t,
             Ok(WsMessage::Close(_)) => {
                 log::info!("Discord: Gateway 关闭");
@@ -205,8 +221,9 @@ async fn run_gateway(
                         let p = pool.clone();
                         let o = orchestrator.clone();
                         let h = app_handle.clone();
+                        let aid = agent_id.to_string();
                         tokio::spawn(async move {
-                            handle_message(&t, &channel_id, &author_name, &text, &p, &o, &h).await;
+                            handle_message(&t, &channel_id, &author_name, &text, &p, &o, &h, &aid).await;
                         });
                     }
                     _ => {}
@@ -243,16 +260,30 @@ async fn handle_message(
     pool: &sqlx::SqlitePool,
     orchestrator: &Arc<Orchestrator>,
     app_handle: &tauri::AppHandle,
+    config_agent_id: &str,
 ) {
     log::info!("Discord: [{}] {}: {}", channel_id, author_name, &text[..text.len().min(80)]);
 
-    // 获取本地 Agent
-    let agent = match orchestrator.list_agents().await {
-        Ok(agents) => match agents.into_iter().next() {
-            Some(a) => a,
-            None => { log::warn!("Discord: 无可用 Agent"); return; }
-        },
-        Err(_) => return,
+    // 优先使用 config 中指定的 agent_id，fallback 到 Router
+    let agent_id = if !config_agent_id.is_empty() {
+        config_agent_id.to_string()
+    } else {
+        let router = crate::routing::Router::new(orchestrator.pool().clone());
+        let route = router.resolve("discord", Some(author_name)).await;
+        match route {
+            Ok(r) => r.agent_id,
+            Err(_) => {
+                let agents = orchestrator.list_agents().await.unwrap_or_default();
+                match agents.into_iter().next() {
+                    Some(a) => a.id,
+                    None => { log::warn!("Discord: 无可用 Agent"); return; }
+                }
+            }
+        }
+    };
+    let agent = match orchestrator.get_agent_cached(&agent_id).await {
+        Ok(a) => a,
+        Err(e) => { log::warn!("Discord: 获取 Agent 失败: {}", e); return; }
     };
 
     // 获取或创建 session
@@ -346,6 +377,11 @@ async fn handle_message(
         "content": reply,
         "source": "discord",
     }));
+
+    // Session 自动命名
+    crate::memory::conversation::auto_name_session(
+        pool, &session_id, &text, &api_key, &api_type, base_url_opt,
+    ).await;
 }
 
 /// 获取或创建 Discord session

@@ -7,6 +7,8 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
 import { useConfirm } from '../hooks/useConfirm'
+import Modal from '../components/Modal'
+import Select from '../components/Select'
 
 async function cloudApi(method: string, path: string, body?: any): Promise<any> {
   return invoke('cloud_api_proxy', { method, path, body: body || null })
@@ -19,12 +21,12 @@ interface ChannelInfo {
 }
 
 const CHANNEL_DEFS: Omit<ChannelInfo, 'desc'>[] = [
-  { id: 'telegram', name: 'Telegram', icon: '\u{1F4E8}', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF...', type: 'password' }] },
-  { id: 'feishu', name: '飞书 (Lark)', icon: '\u{1F426}', connected: false, configFields: [{ key: 'appId', label: 'App ID', placeholder: 'cli_xxx' }, { key: 'appSecret', label: 'App Secret', placeholder: '', type: 'password' }] },
-  { id: 'dingtalk', name: '钉钉', icon: '\u{1F4AC}', connected: false },
-  { id: 'wechat', name: '微信', icon: '\u{1F4F1}', connected: false },
-  { id: 'discord', name: 'Discord', icon: '\u{1F3AE}', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: 'MTIz...NzY.Gw...', type: 'password' }] },
-  { id: 'slack', name: 'Slack', icon: '\u{1F4BC}', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token (xoxb-)', placeholder: 'xoxb-...', type: 'password' }, { key: 'appToken', label: 'App Token (xapp-)', placeholder: 'xapp-...', type: 'password' }] },
+  { id: 'telegram', name: 'Telegram', icon: 'TG', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF...', type: 'password' }] },
+  { id: 'feishu', name: 'Feishu / Lark', icon: 'FS', connected: false, configFields: [{ key: 'appId', label: 'App ID', placeholder: 'cli_xxx' }, { key: 'appSecret', label: 'App Secret', placeholder: '', type: 'password' }] },
+  { id: 'dingtalk', name: 'DingTalk', icon: 'DD', connected: false },
+  { id: 'wechat', name: 'WeChat', icon: 'WX', connected: false },
+  { id: 'discord', name: 'Discord', icon: 'DC', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token', placeholder: 'MTIz...NzY.Gw...', type: 'password' }] },
+  { id: 'slack', name: 'Slack', icon: 'SK', connected: false, configFields: [{ key: 'botToken', label: 'Bot Token (xoxb-)', placeholder: 'xoxb-...', type: 'password' }, { key: 'appToken', label: 'App Token (xapp-)', placeholder: 'xapp-...', type: 'password' }] },
 ]
 
 const DESC_KEYS: Record<string, string> = {
@@ -47,8 +49,24 @@ export default function ChannelsPage() {
   const [error, setError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [weixinQr, setWeixinQr] = useState('')
+  const [allAgents, setAllAgents] = useState<{ id: string; name: string; model: string }[]>([])
+  const [agentChannels, setAgentChannels] = useState<any[]>([])
+  const [addingChannel, setAddingChannel] = useState<{ channelType: string } | null>(null)
+  const [addAgentId, setAddAgentId] = useState('')
+  const [addFormValues, setAddFormValues] = useState<Record<string, string>>({})
 
-  useEffect(() => { checkStatuses() }, [])
+  const loadAgentChannels = async () => {
+    try {
+      const [agents, channels] = await Promise.all([
+        invoke<any[]>('list_agents'),
+        invoke<any[]>('list_agent_channels', { agentId: null }),
+      ])
+      setAllAgents(agents || [])
+      setAgentChannels(channels || [])
+    } catch (e) { console.error('loadAgentChannels failed:', e) }
+  }
+
+  useEffect(() => { checkStatuses(); loadAgentChannels() }, [])
 
   const checkStatuses = async () => {
     setLoadError('')
@@ -221,7 +239,7 @@ export default function ChannelsPage() {
 
   const handleDisconnect = async (channelId: string) => {
     if (!await confirm(t('channels.confirmDisconnect'))) return
-    try { await cloudApi('POST', `/api/v1/channels/${channelId}/disconnect`); checkStatuses() } catch {}
+    try { await cloudApi('POST', `/api/v1/channels/${channelId}/disconnect`); checkStatuses() } catch (e) { setError(String(e)) }
   }
 
   return (
@@ -301,9 +319,106 @@ export default function ChannelsPage() {
                 {ch.id === 'wechat' ? t('channels.btnScanConnect') : t('channels.btnConfigure')}
               </button>
             ))}
+
+            {/* Agent Bot 列表 */}
+            {(() => {
+              const chAgents = agentChannels.filter(ac => ac.channelType === ch.id)
+              return chAgents.length > 0 ? (
+                <div style={{ marginTop: 12, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>Agent Bot</div>
+                  {chAgents.map((ac: any) => {
+                    const agent = allAgents.find(a => a.id === ac.agentId)
+                    return (
+                      <div key={ac.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', fontSize: 12,
+                      }}>
+                        <span style={{
+                          width: 6, height: 6, borderRadius: '50%',
+                          backgroundColor: ac.status === 'running' ? '#22c55e' : ac.status === 'error' ? '#ef4444' : '#9ca3af',
+                        }} />
+                        <span style={{ fontWeight: 500 }}>{agent?.name || agent?.model || ac.agentId.slice(0, 8)}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>{ac.status}</span>
+                        <span style={{ flex: 1 }} />
+                        <button onClick={async () => {
+                          try {
+                            await invoke('toggle_agent_channel', { id: ac.id, enabled: !ac.enabled })
+                            loadAgentChannels()
+                          } catch (e) { toast.error(String(e)) }
+                        }} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border-subtle)', cursor: 'pointer', color: ac.enabled ? 'var(--success)' : 'var(--text-muted)' }}>
+                          {ac.enabled ? 'ON' : 'OFF'}
+                        </button>
+                        <button onClick={async () => {
+                          try {
+                            await invoke('delete_agent_channel', { id: ac.id })
+                            loadAgentChannels()
+                          } catch (e) { toast.error(String(e)) }
+                        }} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border-subtle)', cursor: 'pointer', color: 'var(--error)' }}>
+                          ×
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null
+            })()}
+
+            {/* 添加 Agent Bot 按钮 */}
+            <button onClick={() => { setAddingChannel({ channelType: ch.id }); setAddAgentId(''); setAddFormValues({}) }}
+              style={{ marginTop: 8, padding: '4px 10px', fontSize: 11, borderRadius: 4, border: '1px dashed var(--border-subtle)', cursor: 'pointer', color: 'var(--text-muted)', backgroundColor: 'transparent', width: '100%' }}>
+              + {t('channels.addAgentBot')}
+            </button>
           </div>
         ))}
       </div>
+
+      {/* 添加 Agent Bot 弹窗 */}
+      {(() => {
+        const def = addingChannel ? CHANNEL_DEFS.find(d => d.id === addingChannel.channelType) : null
+        return (
+          <Modal open={!!addingChannel && !!def} onClose={() => setAddingChannel(null)}
+            title={def ? `${def.icon} ${t('channels.addAgentBot')} — ${def.name}` : ''}
+            footer={
+              <>
+                <button onClick={() => setAddingChannel(null)}
+                  style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border-subtle)', cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>
+                  {t('common.cancel')}
+                </button>
+                <button disabled={!addAgentId} onClick={async () => {
+                  if (!addingChannel) return
+                  try {
+                    await invoke('create_agent_channel', { agentId: addAgentId, channelType: addingChannel.channelType, credentials: addFormValues, displayName: null })
+                    toast.success(t('agentChannels.created'))
+                    setAddingChannel(null)
+                    loadAgentChannels()
+                  } catch (e) { toast.error(String(e)) }
+                }}
+                  style={{ padding: '8px 20px', borderRadius: 6, border: 'none', backgroundColor: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13, opacity: addAgentId ? 1 : 0.5 }}>
+                  {t('agentChannels.connect')}
+                </button>
+              </>
+            }
+          >
+            {/* 选择 Agent */}
+            <label style={{ fontSize: 12, fontWeight: 500, display: 'block', marginBottom: 4, color: 'var(--text-secondary)' }}>
+              {t('channels.selectAgent')}
+            </label>
+            <Select value={addAgentId} onChange={setAddAgentId}
+              placeholder={t('channels.chooseAgent')}
+              options={allAgents.map(a => ({ value: a.id, label: a.name || a.model || a.id.slice(0, 8) }))}
+              style={{ width: '100%', marginBottom: 12 }} />
+
+            {/* Bot 凭证 */}
+            {def?.configFields?.map(f => (
+              <div key={f.key} style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, display: 'block', marginBottom: 4, color: 'var(--text-secondary)' }}>{f.label}</label>
+                <input type={f.type || 'text'} value={addFormValues[f.key] || ''} onChange={e => setAddFormValues(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  placeholder={f.placeholder}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: 6, fontSize: 13, border: '1px solid var(--border-subtle)', boxSizing: 'border-box', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }} />
+              </div>
+            ))}
+          </Modal>
+        )
+      })()}
     </div>
   )
 }

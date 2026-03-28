@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 /// 应用配置（所有子系统汇聚于此）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    /// 数据目录（默认 ~/Library/Application Support/com.yonclaw.app/）
+    /// 数据目录（默认 ~/Library/Application Support/com.xianzhu.app/）
     pub data_dir: PathBuf,
-    /// Agent 工作区根目录（默认 ~/.yonclaw/agents/）
+    /// Agent 工作区根目录（默认 ~/.xianzhu/agents/）
     pub agents_dir: PathBuf,
     /// LLM 配置
     pub llm: LlmDefaults,
@@ -61,10 +61,10 @@ impl Default for AppConfig {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| home.clone())
-            .join("com.yonclaw.app");
+            .join("com.xianzhu.app");
         Self {
             data_dir,
-            agents_dir: home.join(".yonclaw").join("agents"),
+            agents_dir: home.join(".xianzhu").join("agents"),
             llm: LlmDefaults::default(),
             scheduler: SchedulerDefaults::default(),
             memory: MemoryDefaults::default(),
@@ -119,13 +119,13 @@ impl AppConfig {
         };
 
         // 环境变量覆盖
-        if let Ok(v) = std::env::var("YONCLAW_DEFAULT_MODEL") {
+        if let Ok(v) = std::env::var("XIANZHU_DEFAULT_MODEL") {
             config.llm.default_model = v;
         }
-        if let Ok(v) = std::env::var("YONCLAW_DAILY_TOKEN_LIMIT") {
+        if let Ok(v) = std::env::var("XIANZHU_DAILY_TOKEN_LIMIT") {
             if let Ok(n) = v.parse() { config.llm.daily_token_limit = n; }
         }
-        if let Ok(v) = std::env::var("YONCLAW_AGENTS_DIR") {
+        if let Ok(v) = std::env::var("XIANZHU_AGENTS_DIR") {
             config.agents_dir = PathBuf::from(v);
         }
 
@@ -147,7 +147,7 @@ impl AppConfig {
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".yonclaw")
+            .join(".xianzhu")
             .join("config.json")
     }
 }

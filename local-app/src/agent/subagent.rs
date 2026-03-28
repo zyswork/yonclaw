@@ -300,6 +300,55 @@ impl SubagentRegistry {
         }
     }
 
+    /// Yield: 暂停当前 Agent，等待指定子代理完成
+    ///
+    /// 参考 OpenClaw sessions_yield。Agent A 可以：
+    /// 1. 派发任务给 Agent B
+    /// 2. yield 等待 B 完成
+    /// 3. B 完成后 A 自动恢复，获取 B 的结果
+    pub async fn yield_wait(&self, run_id: &str, timeout_secs: u64) -> Result<String, String> {
+        log::info!("Agent yield: 等待子代理 {} 完成 (timeout={}s)", run_id, timeout_secs);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let poll_interval = std::time::Duration::from_millis(500);
+
+        loop {
+            // 检查子代理是否完成
+            {
+                let records = self.records.lock().await;
+                if let Some(record) = records.get(run_id) {
+                    match &record.status {
+                        SubagentStatus::Completed => {
+                            let output = record.result.clone().unwrap_or_default();
+                            log::info!("Agent yield: {} 已完成，恢复执行", run_id);
+                            return Ok(output);
+                        }
+                        SubagentStatus::Failed(err) => {
+                            return Err(format!("子代理 {} 失败: {}", run_id, err));
+                        }
+                        SubagentStatus::Timeout => {
+                            return Err(format!("子代理 {} 超时", run_id));
+                        }
+                        SubagentStatus::Cancelled => {
+                            return Err(format!("子代理 {} 已取消", run_id));
+                        }
+                        SubagentStatus::Running => {
+                            // 继续等待
+                        }
+                    }
+                } else {
+                    return Err(format!("子代理 {} 不存在", run_id));
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("yield 超时（{}s），子代理 {} 仍在运行", timeout_secs, run_id));
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
     /// 清理已完成的记录（内存，DB 保留）
     pub async fn cleanup(&self) {
         let mut records = self.records.lock().await;

@@ -23,10 +23,10 @@ interface AgentConfigPanelProps {
 type TabId = 'soul' | 'tools' | 'params' | 'mcp'
 
 const TABS: { id: TabId; icon: string; label: string }[] = [
-  { id: 'soul', icon: '🎭', label: 'Soul' },
-  { id: 'tools', icon: '🔧', label: 'Tools' },
-  { id: 'params', icon: '⚙️', label: 'Params' },
-  { id: 'mcp', icon: '🔌', label: 'MCP' },
+  { id: 'soul', icon: 'S', label: 'Soul' },
+  { id: 'tools', icon: 'T', label: 'Tools' },
+  { id: 'params', icon: 'P', label: 'Params' },
+  { id: 'mcp', icon: 'M', label: 'MCP' },
 ]
 
 export default function AgentConfigPanel({ agentId, onClose }: AgentConfigPanelProps) {

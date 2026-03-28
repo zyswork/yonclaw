@@ -1,15 +1,15 @@
-# YonClaw 插件系统设计方案
+# XianZhu 插件系统设计方案
 
 ## 背景
 
-OpenClaw 有 47 个插件，覆盖渠道（Telegram/Discord/Slack）、模型提供商（Ollama/vLLM）、功能扩展（语音/记忆增强）三大类。YonClaw 当前这些能力全部硬编码，无法扩展。
+OpenClaw 有 47 个插件，覆盖渠道（Telegram/Discord/Slack）、模型提供商（Ollama/vLLM）、功能扩展（语音/记忆增强）三大类。XianZhu 当前这些能力全部硬编码，无法扩展。
 
 **参考架构**：
 - **IronClaw**：最成熟，WASM + MCP + Native 三种插件格式，有在线注册表和热加载
 - **ZeroClaw**：纯 Rust trait，15+ provider 实现，20+ channel 实现
 - **OpenCrust**：WASM 沙箱 + plugin.toml manifest
 
-**YonClaw 现状**：
+**XianZhu 现状**：
 - `channel.rs` 已有 Channel trait（80% 就绪）
 - `memory/mod.rs` 已有 Memory trait（85% 就绪）
 - `plugin_sdk.rs` 有插件清单骨架（60% 就绪）
@@ -26,7 +26,7 @@ OpenClaw 有 47 个插件，覆盖渠道（Telegram/Discord/Slack）、模型提
 
 ```
 ┌─────────────────────────────────────────────┐
-│                  YonClaw App                │
+│                  XianZhu App                │
 │                                              │
 │  ┌──────────────────────────────────────┐   │
 │  │         Plugin Registry              │   │
@@ -260,7 +260,7 @@ impl PluginManager {
 ### 2.1 插件目录结构
 
 ```
-~/.yonclaw/plugins/
+~/.xianzhu/plugins/
 ├── builtin/                    ← 内置插件（随 app 安装）
 │   ├── openai-provider/
 │   │   └── manifest.json

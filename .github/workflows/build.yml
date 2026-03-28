@@ -73,21 +73,21 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: YonClaw-${{ matrix.label }}
+          name: XianZhu-${{ matrix.label }}
           path: local-app/target/**/release/bundle/dmg/*.dmg
 
       - name: Upload artifacts (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: YonClaw-${{ matrix.label }}
+          name: XianZhu-${{ matrix.label }}
           path: local-app/target/release/bundle/msi/*.msi
 
       - name: Upload artifacts (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: YonClaw-${{ matrix.label }}
+          name: XianZhu-${{ matrix.label }}
           path: |
             local-app/target/release/bundle/appimage/*.AppImage
             local-app/target/release/bundle/deb/*.deb

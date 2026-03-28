@@ -5,121 +5,19 @@
  * 复用已有的 SoulFileTab, ToolsTab, McpTab, ParamsTab 组件
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/tauri'
-import { listen } from '@tauri-apps/api/event'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
-import { useConfirm, showConfirm } from '../hooks/useConfirm'
 
-marked.setOptions({ breaks: true, gfm: true })
-
-/** Markdown 渲染 */
-function renderMd(text: string) {
-  const html = marked.parse(text, { async: false }) as string
-  const clean = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['a','b','blockquote','br','code','del','div','em','h1','h2','h3','h4','hr','i','li','ol','p','pre','span','strong','table','tbody','td','th','thead','tr','ul','img'],
-    ALLOWED_ATTR: ['class','href','rel','target','title','src','alt','start'],
-  })
-  // 检测多媒体内容（音频/图片路径）
-  const mediaElements = extractMediaFromText(text)
-  return (
-    <div>
-      <div className="markdown-body" dangerouslySetInnerHTML={{ __html: clean }} />
-      {mediaElements}
-    </div>
-  )
-}
-
-/** 从文本中检测音频/图片文件路径，返回内嵌播放器/图片 */
-function extractMediaFromText(text: string): React.ReactNode[] {
-  const elements: React.ReactNode[] = []
-
-  // 检测音频文件路径：~/.yonclaw/tts/tts_xxx.mp3 或 .aiff 或 .wav
-  const audioRegex = /(\/[^\s]+\.(mp3|aiff|wav|ogg|m4a))/gi
-  const audioMatches = text.match(audioRegex)
-  if (audioMatches) {
-    const seen = new Set<string>()
-    audioMatches.forEach((path, i) => {
-      if (seen.has(path)) return
-      seen.add(path)
-      const src = convertLocalPath(path.trim())
-      elements.push(
-        <div key={`audio-${i}`} style={{
-          marginTop: 8, padding: '10px 14px', borderRadius: 10,
-          backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-          display: 'flex', alignItems: 'center', gap: 10,
-        }}>
-          <span style={{ fontSize: 20 }}>{'\u{1F50A}'}</span>
-          <audio controls preload="metadata" style={{ flex: 1, height: 36 }}>
-            <source src={src} />
-          </audio>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {path.split('/').pop()}
-          </span>
-        </div>
-      )
-    })
-  }
-
-  // 检测远程图片 URL（非 markdown 格式的裸 URL）
-  const imgUrlRegex = /(https?:\/\/[^\s]+\.(png|jpg|jpeg|gif|webp|svg)(\?[^\s]*)?)/gi
-  const imgMatches = text.match(imgUrlRegex)
-  if (imgMatches) {
-    // 只渲染不在 markdown ![](url) 中的裸 URL
-    const mdImgRegex = /!\[[^\]]*\]\([^)]+\)/g
-    const mdImgs = text.match(mdImgRegex)?.map(m => {
-      const urlMatch = m.match(/\(([^)]+)\)/)
-      return urlMatch?.[1] || ''
-    }) || []
-
-    const seen = new Set<string>()
-    imgMatches.forEach((url, i) => {
-      if (seen.has(url) || mdImgs.includes(url)) return
-      seen.add(url)
-      elements.push(
-        <img key={`img-${i}`} src={url} alt=""
-          style={{ maxWidth: '100%', maxHeight: 400, borderRadius: 8, marginTop: 8, display: 'block' }}
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-        />
-      )
-    })
-  }
-
-  return elements
-}
-/** 思考中动画 */
-function ThinkingIndicator() {
-  const { t } = useI18n()
-  const [dots, setDots] = useState('')
-  const [elapsed, setElapsed] = useState(0)
-
-  useEffect(() => {
-    const dotTimer = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500)
-    const elapsedTimer = setInterval(() => setElapsed(e => e + 1), 1000)
-    return () => { clearInterval(dotTimer); clearInterval(elapsedTimer) }
-  }, [])
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 13 }}>
-      <span style={{
-        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-        backgroundColor: 'var(--accent)', animation: 'pulse 1.5s ease-in-out infinite',
-      }} />
-      <span>{t('agentDetail.thinking')}{dots}</span>
-      {elapsed > 3 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{elapsed}s</span>}
-      <style>{`@keyframes pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }`}</style>
-    </div>
-  )
-}
-
+import ChatTab from '../components/ChatTab'
 import SoulFileTab from '../components/SoulFileTab'
 import ToolsTab from '../components/ToolsTab'
 import ParamsTab from '../components/ParamsTab'
 import McpTab from '../components/McpTab'
+import ChannelsTab from '../components/ChannelsTab'
+import Select from '../components/Select'
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -134,31 +32,11 @@ interface Agent {
   updatedAt: number
 }
 
-interface Session {
-  id: string
-  agentId: string
-  title: string
-  createdAt: number
-  lastMessageAt: number | null
-}
-
-interface Message {
-  role: 'user' | 'assistant' | 'tool' | 'system'
-  content: string
-  toolName?: string
-}
-
 interface Skill {
   name: string
   description: string
   enabled: boolean
   path: string
-}
-
-interface SubagentInfo {
-  id: string
-  name: string
-  status: string
 }
 
 interface ProviderInfo {
@@ -191,7 +69,19 @@ function formatSchedule(s: CronJob['schedule'], t: (key: string, params?: Record
   return JSON.stringify(s)
 }
 
-type TabId = 'chat' | 'soul' | 'tools' | 'mcp' | 'skills' | 'cron' | 'autonomy' | 'plugins' | 'relations' | 'settings' | 'subagents' | 'audit'
+interface SubagentRecord {
+  id: string
+  parentId: string
+  name: string
+  task: string
+  status: string
+  result: string | null
+  createdAt: number
+  finishedAt: number | null
+  timeoutSecs: number
+}
+
+type TabId = 'chat' | 'soul' | 'tools' | 'mcp' | 'skills' | 'cron' | 'channels' | 'autonomy' | 'plugins' | 'relations' | 'settings' | 'subagents' | 'audit'
 
 const TAB_KEYS: { id: TabId; labelKey: string }[] = [
   { id: 'chat', labelKey: 'agentDetail.tabChat' },
@@ -200,6 +90,7 @@ const TAB_KEYS: { id: TabId; labelKey: string }[] = [
   { id: 'mcp', labelKey: 'agentDetail.tabMcp' },
   { id: 'skills', labelKey: 'agentDetail.tabSkills' },
   { id: 'cron', labelKey: 'agentDetail.tabCron' },
+  { id: 'channels', labelKey: 'agentDetail.tabChannels' },
   { id: 'autonomy', labelKey: 'agentDetail.tabAutonomy' },
   { id: 'plugins', labelKey: 'agentDetail.tabPlugins' },
   { id: 'relations', labelKey: 'agentDetail.tabRelations' },
@@ -284,1143 +175,13 @@ export default function AgentDetailPage() {
         {activeTab === 'mcp' && <div style={{ padding: 16 }}><McpTab agentId={agentId} /></div>}
         {activeTab === 'skills' && <SkillsTab agentId={agentId} />}
         {activeTab === 'cron' && <CronTab agentId={agentId} />}
+        {activeTab === 'channels' && <ChannelsTab agentId={agentId} />}
         {activeTab === 'autonomy' && <AutonomyTab agentId={agentId} />}
         {activeTab === 'plugins' && <PluginsTab />}
         {activeTab === 'relations' && <RelationsTab agentId={agentId} />}
         {activeTab === 'subagents' && <SubagentsTab agentId={agentId} />}
         {activeTab === 'audit' && <AuditTab agentId={agentId} />}
         {activeTab === 'settings' && <SettingsTab agentId={agentId} agent={agent} onUpdate={setAgent} onDelete={() => navigate('/agents')} />}
-      </div>
-    </div>
-  )
-}
-
-// ─── Chat Tab ────────────────────────────────────────────────
-
-function SessionItem({ s, activeSession, onSelect, onDelete, renamingSession, renameValue, setRenameValue, onStartRename, onFinishRename, onCancelRename, isSystem }: {
-  s: Session; activeSession: string; onSelect: () => void; onDelete: () => void
-  renamingSession: string; renameValue: string; setRenameValue: (v: string) => void
-  onStartRename: () => void; onFinishRename: (v: string) => void; onCancelRename: () => void
-  isSystem?: boolean
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center',
-      padding: '8px 12px', cursor: 'pointer', fontSize: isSystem ? 12 : 13,
-      backgroundColor: s.id === activeSession ? 'var(--accent-bg)' : 'transparent',
-      borderBottom: '1px solid var(--border-subtle)',
-      borderLeft: s.id === activeSession ? '3px solid var(--accent)' : '3px solid transparent',
-      opacity: isSystem ? 0.7 : 1,
-    }}>
-      {renamingSession === s.id ? (
-        <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
-          onBlur={() => onFinishRename(renameValue)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onFinishRename(renameValue); if (e.key === 'Escape') onCancelRename() }}
-          style={{ flex: 1, padding: '2px 4px', border: '1px solid var(--accent)', borderRadius: 3, fontSize: 13, outline: 'none' }}
-        />
-      ) : (
-        <div onClick={onSelect} onDoubleClick={onStartRename}
-          style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          title={isSystem ? s.title : useI18n.getState().t('agentDetail.hintRename')}
-        >
-          {isSystem && <span style={{ color: 'var(--text-muted)', marginRight: 4 }}>&#x23F0;</span>}
-          {s.title}
-        </div>
-      )}
-      <button onClick={(e) => { e.stopPropagation(); onDelete() }}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: '0 4px', flexShrink: 0 }}
-        onMouseEnter={(e) => { (e.target as HTMLElement).style.color = '#ef4444' }}
-        onMouseLeave={(e) => { (e.target as HTMLElement).style.color = 'var(--border-subtle)' }}
-        title={useI18n.getState().t('agentDetailSub.deleteTitle')}
-      >×</button>
-    </div>
-  )
-}
-
-/** 用户消息内容渲染（支持 ![图片](/path) 显示缩略图） */
-function UserMessageContent({ content }: { content: string }) {
-  // 检测 Markdown 图片引用: ![图片](/path/to/file.jpg)
-  const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
-  const parts: Array<{ type: 'text' | 'image'; value: string }> = []
-  let lastIdx = 0
-  let match
-  while ((match = imgRegex.exec(content)) !== null) {
-    if (match.index > lastIdx) {
-      const text = content.slice(lastIdx, match.index).trim()
-      if (text) parts.push({ type: 'text', value: text })
-    }
-    parts.push({ type: 'image', value: match[2] })
-    lastIdx = match.index + match[0].length
-  }
-  if (lastIdx < content.length) {
-    const text = content.slice(lastIdx).trim()
-    if (text) parts.push({ type: 'text', value: text })
-  }
-
-  if (parts.length === 0 || !parts.some(p => p.type === 'image')) {
-    return <>{content}</>
-  }
-
-  return (
-    <div>
-      {parts.map((p, i) =>
-        p.type === 'image' ? (
-          <img
-            key={i}
-            src={convertLocalPath(p.value)}
-            alt="image"
-            style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 8, marginTop: 4, display: 'block' }}
-            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-          />
-        ) : (
-          <span key={i}>{p.value}</span>
-        )
-      )}
-    </div>
-  )
-}
-
-/** 把本地文件路径转为 Tauri asset URL */
-function convertLocalPath(path: string): string {
-  // Tauri 1.x: 用 asset protocol 访问本地文件
-  // macOS/Linux: /path/to/file 或 ~/path
-  // Windows: C:\path\to\file 或 D:/path
-  if (path.startsWith('/') || path.startsWith('~') || /^[A-Z]:[/\\]/i.test(path)) {
-    return `https://asset.localhost/${encodeURIComponent(path)}`
-  }
-  return path
-}
-
-/** 功能栏：消息计数 + 压缩按钮（带 loading 和结果提示） */
-function ToolBar({ messageCount, showCompact, onCompact }: {
-  messageCount: number; showCompact: boolean; onCompact: () => Promise<string>
-}) {
-  const { t } = useI18n()
-  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [msg, setMsg] = useState('')
-
-  const handleCompact = async () => {
-    setStatus('loading')
-    setMsg('')
-    try {
-      const r = await onCompact()
-      setStatus('done')
-      setMsg(r)
-      setTimeout(() => { setStatus('idle'); setMsg('') }, 3000)
-    } catch (e) {
-      setStatus('error')
-      setMsg(t('agentDetail.errorCompact') + ': ' + e)
-      setTimeout(() => { setStatus('idle'); setMsg('') }, 4000)
-    }
-  }
-
-  return (
-    <div style={{ padding: '4px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-muted)' }}>
-      <span>{messageCount}{t('agentDetail.messages')}</span>
-      {msg && (
-        <span style={{ color: status === 'error' ? '#ef4444' : '#22c55e', fontSize: 11 }}>{msg}</span>
-      )}
-      <span style={{ flex: 1 }} />
-      {showCompact && (
-        <button
-          onClick={handleCompact}
-          disabled={status === 'loading'}
-          style={{
-            background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 4,
-            padding: '2px 8px', fontSize: 11, cursor: status === 'loading' ? 'wait' : 'pointer',
-            color: status === 'loading' ? 'var(--border-subtle)' : 'var(--text-secondary)',
-          }}
-        >
-          {status === 'loading' ? t('agentDetail.compacting') : t('agentDetail.compactHistory')}
-        </button>
-      )}
-    </div>
-  )
-}
-
-/** 格式化工具调用内容（尝试 JSON 美化） */
-function formatToolContent(content: string): string {
-  try {
-    const parsed = JSON.parse(content)
-    return JSON.stringify(parsed, null, 2)
-  } catch {
-    return content
-  }
-}
-
-const isSystemSession = (title: string) =>
-  title.startsWith('cron-') || title.startsWith('[cron]') ||
-  title.startsWith('heartbeat-') || title.startsWith('[heartbeat]')
-
-function ChatTab({ agentId }: { agentId: string }) {
-  const { t } = useI18n()
-  const confirm = useConfirm()
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [activeSession, setActiveSession] = useState('')
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
-  const [streaming, setStreaming] = useState(false)
-  const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // 安全超时：streaming 超过 120 秒自动恢复
-  useEffect(() => {
-    if (streaming) {
-      streamingTimerRef.current = setTimeout(() => setStreaming(false), 120_000)
-    } else if (streamingTimerRef.current) {
-      clearTimeout(streamingTimerRef.current)
-      streamingTimerRef.current = null
-    }
-    return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current) }
-  }, [streaming])
-  const [renamingSession, setRenamingSession] = useState('')
-  const [renameValue, setRenameValue] = useState('')
-  const [pendingImages, setPendingImages] = useState<string[]>([]) // base64 data URLs
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [showSystemSessions, setShowSystemSessions] = useState(false)
-  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set())
-  const [selectMode, setSelectMode] = useState(false)
-  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set())
-  const toggleTool = (idx: number) => setExpandedTools(prev => {
-    const next = new Set(prev)
-    next.has(idx) ? next.delete(idx) : next.add(idx)
-    return next
-  })
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  // 图片处理：文件→压缩后 base64（最大 1200px，JPEG 质量 0.7）
-  const addImageFiles = (files: FileList | File[]) => {
-    Array.from(files).forEach(file => {
-      if (!file.type.startsWith('image/')) return
-      const reader = new FileReader()
-      reader.onload = () => {
-        const img = new Image()
-        img.onload = () => {
-          const MAX_DIM = 1200
-          let w = img.width, h = img.height
-          if (w > MAX_DIM || h > MAX_DIM) {
-            const scale = MAX_DIM / Math.max(w, h)
-            w = Math.round(w * scale)
-            h = Math.round(h * scale)
-          }
-          const canvas = document.createElement('canvas')
-          canvas.width = w; canvas.height = h
-          const ctx = canvas.getContext('2d')!
-          ctx.drawImage(img, 0, 0, w, h)
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
-          setPendingImages(prev => [...prev, dataUrl])
-
-          // 持久化到磁盘（异步，不阻塞 UI）
-          try {
-            const base64 = dataUrl.split(',')[1]
-            if (base64) {
-              invoke('save_chat_image', { agentId, base64Data: base64 }).catch(() => {})
-            }
-          } catch {}
-        }
-        img.src = reader.result as string
-      }
-      reader.readAsDataURL(file)
-    })
-  }
-
-  // 粘贴处理
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-    const imageFiles: File[] = []
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile()
-        if (file) imageFiles.push(file)
-      }
-    }
-    if (imageFiles.length > 0) {
-      e.preventDefault()
-      addImageFiles(imageFiles)
-    }
-  }
-
-  // 拖拽处理
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.dataTransfer.files.length > 0) {
-      addImageFiles(Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/')))
-    }
-  }
-  const streamBuf = useRef('')
-
-  // 序列计数器：防止快速切换会话/session 时旧请求覆盖新数据
-  const sessionLoadSeqRef = useRef(0)
-  const messageLoadSeqRef = useRef(0)
-
-  const loadSessions = useCallback(async () => {
-    const seq = ++sessionLoadSeqRef.current
-    try {
-      const result = await invoke<Session[]>('list_sessions', { agentId })
-      if (sessionLoadSeqRef.current !== seq) return // 过期响应，丢弃
-      setSessions(result)
-      if (result.length > 0 && !activeSession) {
-        setActiveSession(result[0].id)
-      }
-    } catch (e) {
-      if (sessionLoadSeqRef.current !== seq) return
-      console.error(e)
-    }
-  }, [agentId, activeSession])
-
-  useEffect(() => { loadSessions() }, [loadSessions])
-
-  const loadMessages = useCallback(async () => {
-    if (!activeSession) return
-    const seq = ++messageLoadSeqRef.current
-    try {
-      const structured = await invoke<any[]>('load_structured_messages', { sessionId: activeSession, limit: 50 })
-      if (messageLoadSeqRef.current !== seq) return // 过期响应，丢弃
-      if (structured && structured.length > 0) {
-        const parsed: Message[] = []
-        for (const m of structured) {
-          if (m.role === 'system') continue
-          if (m.role === 'tool') {
-            parsed.push({ role: 'tool', content: m.content || '', toolName: m.name || t('common.tools') })
-          } else if (m.role === 'assistant' && m.tool_calls) {
-            if (m.content) parsed.push({ role: 'assistant', content: m.content })
-            for (const tc of (Array.isArray(m.tool_calls) ? m.tool_calls : [])) {
-              parsed.push({ role: 'tool', content: '', toolName: tc.function?.name || tc.name || t('common.tools') })
-            }
-          } else {
-            // 过滤 Anthropic 格式的 tool_result 消息（不显示原始 JSON）
-            const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
-            if (contentStr.includes('"tool_result"') || contentStr.includes('"tool_use"')) continue
-            parsed.push({ role: m.role, content: contentStr })
-          }
-        }
-        setMessages(parsed)
-      } else {
-        const msgs = await invoke<Message[]>('get_session_messages', { agentId, sessionId: activeSession })
-        if (messageLoadSeqRef.current !== seq) return // 二次检查（fallback 路径）
-        setMessages(msgs)
-      }
-    } catch (e) {
-      if (messageLoadSeqRef.current !== seq) return
-      console.error(e)
-    }
-  }, [agentId, activeSession])
-
-  useEffect(() => { loadMessages() }, [loadMessages])
-
-  // 定时检查当前会话是否有新消息（兼容 Telegram/外部消息）
-  useEffect(() => {
-    if (!activeSession || streaming) return
-    const msgCountRef = { current: messages.length }
-    const interval = setInterval(async () => {
-      try {
-        const structured = await invoke<any[]>('load_structured_messages', { sessionId: activeSession, limit: 50 })
-        const newCount = structured?.length || 0
-        if (newCount !== msgCountRef.current) {
-          msgCountRef.current = newCount
-          loadMessagesRef.current()
-        }
-      } catch { /* ignore */ }
-    }, 3000) // 每 3 秒检查一次
-    return () => clearInterval(interval)
-  }, [activeSession, streaming])
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  // 用 ref 跟踪最新的 activeSession（避免闭包陷阱）
-  const activeSessionRef = useRef(activeSession)
-  useEffect(() => { activeSessionRef.current = activeSession }, [activeSession])
-  const loadSessionsRef = useRef(loadSessions)
-  useEffect(() => { loadSessionsRef.current = loadSessions }, [loadSessions])
-  const loadMessagesRef = useRef(loadMessages)
-  useEffect(() => { loadMessagesRef.current = loadMessages }, [loadMessages])
-
-  // 统一事件监听（参考 OpenClaw：事件直接携带消息内容，带 sessionId 过滤）
-  useEffect(() => {
-    // 桌面对话的流式 token（无 sessionId，来自 main.rs 的 send_message）
-    const unlisten1 = listen<string>('llm-token', (e) => {
-      streamBuf.current += e.payload
-      setMessages((prev) => {
-        const copy = [...prev]
-        if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
-          copy[copy.length - 1] = { ...copy[copy.length - 1], content: streamBuf.current }
-        }
-        return copy
-      })
-    })
-    const unlisten2 = listen('llm-done', () => {
-      setStreaming(false)
-      streamBuf.current = ''
-    })
-    const unlisten3 = listen<string>('llm-error', (e) => {
-      setStreaming(false)
-      streamBuf.current = ''
-      setMessages((prev) => [...prev, { role: 'system', content: `${t('common.error')}: ${e.payload}` }])
-    })
-
-    // 外部消息事件（Telegram/Mobile）— 带 sessionId 和消息内容
-    const unlisten4 = listen<any>('chat-event', (e) => {
-      const { type, sessionId, role, content, source } = e.payload || {}
-
-      // 始终刷新会话列表（新消息可能创建了新 session）
-      if (type === 'message' || type === 'done') {
-        loadSessionsRef.current()
-      }
-
-      // 只处理当前正在查看的 session
-      if (sessionId !== activeSessionRef.current) return
-
-      switch (type) {
-        case 'message':
-          // 外部用户消息直接追加（不读 DB）
-          setMessages((prev) => [...prev, { role: role || 'user', content: content || '' }])
-          break
-
-        case 'thinking':
-          // 追加空的 assistant 消息（显示思考动画）
-          setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
-          setStreaming(true)
-          break
-
-        case 'token':
-          // 流式更新最后一条 assistant 消息
-          setMessages((prev) => {
-            const copy = [...prev]
-            if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
-              copy[copy.length - 1] = { ...copy[copy.length - 1], content: content || '' }
-            }
-            return copy
-          })
-          break
-
-        case 'done':
-          // 完成：更新最后一条为完整回复
-          setStreaming(false)
-          setMessages((prev) => {
-            const copy = [...prev]
-            if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
-              copy[copy.length - 1] = { ...copy[copy.length - 1], content: content || '' }
-            } else {
-              copy.push({ role: 'assistant', content: content || '' })
-            }
-            return copy
-          })
-          break
-      }
-    })
-
-    return () => {
-      unlisten1.then((f) => f())
-      unlisten2.then((f) => f())
-      unlisten3.then((f) => f())
-      unlisten4.then((f) => f())
-    }
-  }, [])
-
-  const createSession = async () => {
-    try {
-      const session = await invoke<Session>('create_session', {
-        agentId,
-        title: t('agentDetailSub.conversationN', { n: sessions.length + 1 }),
-      })
-      setSessions((prev) => [session, ...prev])
-      setActiveSession(session.id)
-      setMessages([])
-    } catch (e) { console.error(e) }
-  }
-
-  const renameSession = async (sessionId: string, newTitle: string) => {
-    if (!newTitle.trim()) { setRenamingSession(''); return }
-    try {
-      await invoke('rename_session', { sessionId, title: newTitle.trim() })
-      setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, title: newTitle.trim() } : s))
-    } catch (e) { console.error(e) }
-    setRenamingSession('')
-  }
-
-  const deleteSession = async (sessionId: string) => {
-    if (!await confirm(t('agentDetail.confirmDeleteSession'))) return
-    try {
-      await invoke('delete_session', { sessionId })
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
-      if (activeSession === sessionId) {
-        setActiveSession('')
-        setMessages([])
-      }
-    } catch (e) { console.error(e) }
-  }
-
-  const batchDeleteSessions = async () => {
-    if (selectedSessions.size === 0) return
-    if (!await confirm(t('agentDetail.confirmBatchDelete', { count: selectedSessions.size }))) return
-    try {
-      for (const sid of selectedSessions) {
-        await invoke('delete_session', { sessionId: sid })
-      }
-      setSessions(prev => prev.filter(s => !selectedSessions.has(s.id)))
-      if (selectedSessions.has(activeSession)) {
-        setActiveSession('')
-        setMessages([])
-      }
-      setSelectedSessions(new Set())
-      setSelectMode(false)
-      toast.success(t('agentDetail.batchDeleteDone', { count: selectedSessions.size }))
-    } catch (e) { toast.error(String(e)) }
-  }
-
-  const toggleSessionSelect = (sid: string) => {
-    setSelectedSessions(prev => {
-      const next = new Set(prev)
-      if (next.has(sid)) next.delete(sid); else next.add(sid)
-      return next
-    })
-  }
-
-  // ─── 斜杠命令处理 ─────────────────────────────
-  const handleSlashCommand = async (cmd: string, args: string): Promise<string | null> => {
-    switch (cmd) {
-      case 'help':
-        return t('agentDetailSub.slashHelp')
-
-      case 'new':
-        await createSession()
-        return t('agentDetail.successNewSession')
-
-      case 'clear':
-        if (activeSession) {
-          await invoke('clear_history', { sessionId: activeSession })
-          setMessages([])
-          return t('agentDetail.successCleared')
-        }
-        return t('agentDetail.errorNoSession')
-
-      case 'compact':
-        if (activeSession) {
-          try {
-            const r = await invoke<string>('compact_session', { agentId, sessionId: activeSession })
-            return r
-          } catch (e) { return t('agentDetail.errorCompact') + ': ' + e }
-        }
-        return t('agentDetail.errorNoSession')
-
-      case 'rename': {
-        if (!args.trim()) return t('chatPage.renameUsage')
-        if (activeSession) {
-          await invoke('rename_session', { sessionId: activeSession, title: args.trim() })
-          setSessions((prev) => prev.map((s) => s.id === activeSession ? { ...s, title: args.trim() } : s))
-          return t('agentDetail.successRenamed', { name: args.trim() })
-        }
-        return t('agentDetail.errorNoSession')
-      }
-
-      case 'model': {
-        if (!args.trim()) {
-          try {
-            const detail = await invoke<Record<string, any>>('get_agent_detail', { agentId })
-            return `${t('agentDetail.currentModel')}: **${detail?.model}**\nTemperature: ${detail?.temperature ?? 'default'}\nMax Tokens: ${detail?.maxTokens ?? 'default'}`
-          } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-        }
-        try {
-          await invoke('update_agent', { agentId, model: args.trim() })
-          return `${t('agentDetail.switchedTo')} **${args.trim()}**`
-        } catch (e) { return t('agentDetailSub.switchFailed') + ': ' + e }
-      }
-
-      case 'temp': {
-        const tempVal = parseFloat(args)
-        if (isNaN(tempVal) || tempVal < 0 || tempVal > 2) return '/temp <0-2>, e.g. /temp 0.7'
-        try {
-          await invoke('update_agent', { agentId, temperature: tempVal })
-          return `${t('agentDetail.tempAdjusted')} **${tempVal}**`
-        } catch (e) { return 'Failed: ' + e }
-      }
-
-      case 'status': {
-        try {
-          const h = await invoke<any>('health_check')
-          return `## ${t('agentDetailSub.systemStatus')}\n- ${t('agentDetailSub.statusLabel')}: ${h.status}\n- ${t('agentDetailSub.agentCount')}: ${h.agents}\n- ${t('agentDetailSub.memoryCount')}: ${h.memories}\n- ${t('agentDetailSub.todayToken')}: ${h.today_tokens?.toLocaleString()}\n- ${t('agentDetailSub.responseCacheCount')}: ${h.response_cache_entries}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'usage': {
-        try {
-          const stats = await invoke<any>('get_token_stats', { agentId, days: 7 })
-          const total = stats?.totalTokens || 0
-          const cost = stats?.estimatedCost || 0
-          return `## ${t('agentDetailSub.tokenUsage')}\n- ${t('agentDetailSub.totalTokens')}: ${total.toLocaleString()} tokens\n- ${t('agentDetailSub.inputTokens')}: ${(stats?.inputTokens || 0).toLocaleString()}\n- ${t('agentDetailSub.outputTokens')}: ${(stats?.outputTokens || 0).toLocaleString()}\n- ${t('agentDetailSub.estimatedCost')}: $${cost.toFixed(4)}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'tools': {
-        try {
-          const detail = await invoke<Record<string, any>>('get_agent_detail', { agentId })
-          return `## ${t('agentDetailSub.availableTools')} (${detail?.toolCount || 0})\n\n${t('agentDetailSub.toolsDesc')}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'skills': {
-        try {
-          const list = await invoke<Skill[]>('list_skills', { agentId })
-          if (!list?.length) return t('agentDetailSub.noInstalledSkills')
-          return `## ${t('agentDetailSub.installedSkills')} (${list.length})\n\n${list.map((s: Skill) => `- **${s.name}** ${s.enabled ? '✓' : '✗'} ${s.description || ''}`).join('\n')}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'providers': {
-        try {
-          const providers = await invoke<ProviderInfo[]>('get_providers')
-          return `## ${t('agentDetailSub.providerConfig')} (${providers?.length || 0})\n\n${(providers || []).map((p: ProviderInfo) => {
-            const hasKey = p.apiKey && p.apiKey.length > 0
-            const models = (p.models || []).map((m: { id: string; name?: string }) => m.name || m.id).join(', ')
-            return `- **${p.name}** (${p.apiType}) ${p.enabled ? '✓' : '✗'} Key:${hasKey ? t('agentDetailSub.keyYes') : t('agentDetailSub.keyNo')}\n  ${t('agentDetailSub.modelLabel')}: ${models || t('agentDetailSub.keyNo')}\n  ${t('agentDetailSub.urlLabel')}: ${p.baseUrl || t('agentDetailSub.defaultLabel')}`
-          }).join('\n')}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'memory': {
-        try {
-          const detail = await invoke<Record<string, any>>('get_agent_detail', { agentId })
-          return `## ${t('agentDetailSub.memoryStats')}\n- ${t('agentDetailSub.memoryCount')}: ${detail?.memories?.length || 0}\n- ${t('agentDetailSub.vectorCount')}: ${detail?.vectorCount || 0}\n- ${t('agentDetailSub.embeddingCacheCount')}: ${detail?.embeddingCacheCount || 0}\n- ${t('agentDetailSub.sessionCount')}: ${detail?.sessionCount || 0}\n- ${t('agentDetailSub.messageCount')}: ${detail?.messageCount || 0}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'sessions': {
-        return `## ${t('agentDetailSub.sessionList')} (${sessions.length})\n\n${sessions.map((s) => {
-          const active = s.id === activeSession ? ' ' + t('agentDetailSub.currentSession') : ''
-          const sys = isSystemSession(s.title) ? ' ' + t('agentDetailSub.systemLabel') : ''
-          return `- ${s.title}${sys}${active}`
-        }).join('\n')}`
-      }
-
-      case 'reset': {
-        if (activeSession) {
-          await invoke('clear_history', { sessionId: activeSession })
-          setMessages([])
-          return 'Session reset (history cleared, session preserved)'
-        }
-        return t('agentDetail.errorNoSession')
-      }
-
-      case 'stop': {
-        if (streaming) {
-          setStreaming(false)
-          streamBuf.current = ''
-          return 'Generation stopped'
-        }
-        return 'No active generation'
-      }
-
-      case 'export': {
-        if (!activeSession || messages.length === 0) return t('agentDetail.noMessagesExport')
-        const md = messages.map((m) => {
-          if (m.role === 'user') return `${t('agentDetail.exportUser')} ${m.content}`
-          if (m.role === 'assistant') return `${t('agentDetail.exportAssistant')} ${m.content}`
-          if (m.role === 'tool') return `> 🔧 ${m.toolName}: ${m.content}`
-          return `> ${m.content}`
-        }).join('\n\n---\n\n')
-        const title = sessions.find(s => s.id === activeSession)?.title || t('agentDetailSub.conversation')
-        const blob = new Blob([`# ${title}\n\n${md}`], { type: 'text/markdown' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url; a.download = `${title}.md`; a.click()
-        URL.revokeObjectURL(url)
-        return t('agentDetailSub.exportedAs', { title })
-      }
-
-      case 'agents': {
-        try {
-          const list = await invoke<Agent[]>('list_agents')
-          if (!list?.length) return t('agentDetailSub.noAgents')
-          return `## ${t('agentDetailSub.agentList')} (${list.length})\n\n${list.map((a: Agent) =>
-            `- **${a.name}** (\`${a.model}\`) ID: \`${a.id?.substring(0, 8)}...\``
-          ).join('\n')}`
-        } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-      }
-
-      case 'kill': {
-        if (!args.trim()) return t('agentDetailSub.killUsage')
-        try {
-          const subagents = await invoke<SubagentInfo[]>('list_subagents', { agentId })
-          const running = subagents?.filter((s: SubagentInfo) => s.status === 'Running') || []
-          if (running.length === 0) return t('agentDetailSub.noRunningSubagents')
-          if (args.trim().toLowerCase() === 'all') {
-            for (const sa of running) { await invoke('cancel_subagent', { subagentId: sa.id }) }
-            return t('agentDetailSub.terminatedN', { n: running.length })
-          }
-          const target = running.find((s: SubagentInfo) => s.id.startsWith(args.trim()) || s.name === args.trim())
-          if (!target) return t('agentDetailSub.notFoundSubagent') + ': ' + args.trim()
-          await invoke('cancel_subagent', { subagentId: target.id })
-          return t('agentDetailSub.terminatedSubagent', { name: target.name })
-        } catch (e) { return t('agentDetailSub.terminateFailed') + ': ' + e }
-      }
-
-      case 'skill': {
-        if (!args.trim()) {
-          try {
-            const list = await invoke<Skill[]>('list_skills', { agentId })
-            if (!list?.length) return t('agentDetailSub.noSkills') + '. ' + t('agentDetailSub.skillUsageHint')
-            return `${t('agentDetailSub.availableSkills')}:\n${list.map((s: Skill) => `- ${s.name} ${s.enabled ? '✓' : '✗'}`).join('\n')}\n\n${t('agentDetailSub.activateSkillHint')}`
-          } catch (e) { return t('agentDetailSub.queryFailed') + ': ' + e }
-        }
-        // 激活技能（发送带技能关键词的消息给 LLM）
-        return null // 返回 null 让消息走正常 LLM 流程，技能会被 skill_mgr.activate_for_message 匹配
-      }
-
-      case 'think': {
-        const levels = ['off', 'minimal', 'low', 'medium', 'high']
-        if (!args.trim() || !levels.includes(args.trim().toLowerCase())) {
-          return `用法: /think <off|minimal|low|medium|high>\n当前可选推理级别：${levels.join(' / ')}`
-        }
-        try {
-          // 通过 Agent config 存储 thinking level
-          const detail = await invoke<any>('get_agent_detail', { agentId })
-          const config = detail?.config ? JSON.parse(detail.config) : {}
-          config.thinkingLevel = args.trim().toLowerCase()
-          await invoke('update_agent', { agentId, config: JSON.stringify(config) })
-          return `推理级别已设为 **${args.trim().toLowerCase()}**`
-        } catch (e) { return '设置失败: ' + e }
-      }
-
-      case 'fast': {
-        const arg = args.trim().toLowerCase()
-        if (!arg || arg === 'status') {
-          try {
-            const detail = await invoke<any>('get_agent_detail', { agentId })
-            const config = detail?.config ? JSON.parse(detail.config) : {}
-            return `快速模式: **${config.fastMode ? 'ON' : 'OFF'}**\n使用 /fast on 或 /fast off 切换`
-          } catch { return '查询失败' }
-        }
-        try {
-          const detail = await invoke<any>('get_agent_detail', { agentId })
-          const config = detail?.config ? JSON.parse(detail.config) : {}
-          config.fastMode = arg === 'on'
-          await invoke('update_agent', { agentId, config: JSON.stringify(config) })
-          return `快速模式已${arg === 'on' ? '开启' : '关闭'}`
-        } catch (e) { return '设置失败: ' + e }
-      }
-
-      case 'models': {
-        try {
-          const providers = await invoke<any[]>('get_providers')
-          const lines: string[] = ['## 可用模型\n']
-          for (const p of (providers || [])) {
-            if (!p.enabled) continue
-            const models = (p.models || []).map((m: any) => m.name || m.id).join(', ')
-            if (models) {
-              lines.push(`**${p.name}** (${p.apiType}): ${models}`)
-            }
-          }
-          lines.push('\n使用 /model provider_id/model_name 切换')
-          return lines.join('\n')
-        } catch (e) { return '查询失败: ' + e }
-      }
-
-      default:
-        return t('agentDetailSub.unknownSlashCmd', { cmd })
-    }
-  }
-
-  const handleSend = async () => {
-    if ((!input.trim() && pendingImages.length === 0) || streaming || !activeSession) return
-    const userMsg = input.trim()
-    setInput('')
-
-    // 把待发送图片拼为 attachment 标记
-    let fullMessage = userMsg
-    if (pendingImages.length > 0) {
-      const attachments = pendingImages.map(img => `[attachment:${img}]`).join('\n')
-      fullMessage = fullMessage ? `${fullMessage}\n${attachments}` : attachments
-      setPendingImages([])
-    }
-
-    // 斜杠命令拦截
-    if (userMsg.startsWith('/')) {
-      const spaceIdx = userMsg.indexOf(' ')
-      const cmd = spaceIdx > 0 ? userMsg.substring(1, spaceIdx) : userMsg.substring(1)
-      const cmdArgs = spaceIdx > 0 ? userMsg.substring(spaceIdx + 1) : ''
-      const result = await handleSlashCommand(cmd.toLowerCase(), cmdArgs)
-      if (result !== null) {
-        // 命令处理了，显示结果
-        setMessages((prev) => [...prev, { role: 'user', content: userMsg }])
-        setMessages((prev) => [...prev, { role: 'system', content: result }])
-        return
-      }
-      // result === null: 命令要求走正常 LLM 流程（如 /skill <name>）
-    }
-
-    // 前端显示不含 base64（防止渲染卡死），只显示文字 + 图片标记
-    const displayMsg = pendingImages.length > 0
-      ? (userMsg ? `${userMsg}\n[${t('agentDetailSub.imageCount', { n: pendingImages.length })}]` : `[${t('agentDetailSub.imageCount', { n: pendingImages.length })}]`)
-      : userMsg
-    setMessages((prev) => [...prev, { role: 'user', content: displayMsg }])
-    setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
-    setStreaming(true)
-    streamBuf.current = ''
-
-    try {
-      await invoke('send_message', {
-        agentId,
-        sessionId: activeSession,
-        message: fullMessage,
-      })
-      // invoke 完成意味着 orchestrator 已结束，兜底清除 streaming 状态
-      // （llm-done 事件可能因竞态尚未到达）
-      setStreaming(false)
-      // 如果 AI 返回空内容，移除空的 assistant 气泡
-      setMessages((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
-          return prev.slice(0, -1)
-        }
-        return prev
-      })
-    } catch (e) {
-      setStreaming(false)
-      setMessages((prev) => [...prev, { role: 'system', content: String(e) }])
-    }
-  }
-
-  return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
-      {/* 会话列表 */}
-      <div style={{ width: 200, minWidth: 200, flexShrink: 0, borderRight: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <button onClick={createSession} style={{
-            width: '100%', padding: '8px', backgroundColor: 'var(--accent)', color: 'white',
-            border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 13,
-          }}>
-            {t('agentDetail.newSession')}
-          </button>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button onClick={() => { setSelectMode(!selectMode); setSelectedSessions(new Set()) }}
-              style={{ flex: 1, padding: '4px', fontSize: 10, border: '1px solid var(--border-subtle)', borderRadius: 3, cursor: 'pointer', backgroundColor: selectMode ? 'var(--accent-bg)' : 'transparent', color: 'var(--text-muted)' }}>
-              {selectMode ? t('agentDetail.cancelSelect') : t('agentDetail.batchSelect')}
-            </button>
-            {selectMode && selectedSessions.size > 0 && (
-              <button onClick={batchDeleteSessions}
-                style={{ flex: 1, padding: '4px', fontSize: 10, border: 'none', borderRadius: 3, cursor: 'pointer', backgroundColor: 'var(--error)', color: '#fff' }}>
-                {t('agentDetail.batchDeleteBtn', { count: selectedSessions.size })}
-              </button>
-            )}
-          </div>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {/* 用户对话 */}
-          {sessions.filter(s => !isSystemSession(s.title)).map((s) => (
-            <div key={s.id} style={{ display: 'flex', alignItems: 'center' }}>
-              {selectMode && (
-                <input type="checkbox" checked={selectedSessions.has(s.id)}
-                  onChange={() => toggleSessionSelect(s.id)}
-                  style={{ margin: '0 4px 0 8px', cursor: 'pointer' }}
-                />
-              )}
-              <div style={{ flex: 1 }}>
-                <SessionItem s={s} activeSession={activeSession}
-                  onSelect={() => { if (!selectMode) { setActiveSession(s.id); setMessages([]) } else { toggleSessionSelect(s.id) } }}
-                  onDelete={() => deleteSession(s.id)}
-                  renamingSession={renamingSession} renameValue={renameValue}
-                  setRenameValue={setRenameValue}
-                  onStartRename={() => { setRenamingSession(s.id); setRenameValue(s.title) }}
-                  onFinishRename={(v: string) => renameSession(s.id, v)}
-                  onCancelRename={() => setRenamingSession('')}
-                />
-              </div>
-            </div>
-          ))}
-
-          {/* 系统对话（cron/heartbeat）折叠区 */}
-          {sessions.some(s => isSystemSession(s.title)) && (
-            <>
-              <div
-                onClick={() => setShowSystemSessions(!showSystemSessions)}
-                style={{
-                  padding: '6px 12px', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer',
-                  borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 4,
-                }}
-              >
-                <span style={{ fontSize: 10 }}>{showSystemSessions ? '▼' : '▶'}</span>
-                {t('agentDetailSub.systemSessions')} ({sessions.filter(s => isSystemSession(s.title)).length})
-                <span style={{ flex: 1 }} />
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation()
-                    if (!await showConfirm(t('agentDetailSub.cleanupConfirm'))) return
-                    try {
-                      const r = await invoke<any>('cleanup_system_sessions', { agentId, keepDays: 7 })
-                      toast.success(t('agentDetailSub.cleanupDone', { sessions: r.deletedSessions, messages: r.deletedMessages }))
-                      loadSessions()
-                    } catch (err) { toast.error(t('agentDetailSub.cleanupFailed') + ': ' + err) }
-                  }}
-                  style={{ fontSize: 10, padding: '1px 6px', border: '1px solid var(--border-subtle)', borderRadius: 3, background: 'var(--bg-elevated)', cursor: 'pointer', color: 'var(--text-muted)' }}
-                >
-                  {t('agentDetailSub.cleanupBtn')}
-                </button>
-              </div>
-              {showSystemSessions && sessions.filter(s => isSystemSession(s.title)).map((s) => (
-                <SessionItem key={s.id} s={s} activeSession={activeSession}
-                  onSelect={() => { setActiveSession(s.id); setMessages([]) }}
-                  onDelete={() => deleteSession(s.id)}
-                  renamingSession={renamingSession} renameValue={renameValue}
-                  setRenameValue={setRenameValue}
-                  onStartRename={() => { setRenamingSession(s.id); setRenameValue(s.title) }}
-                  onFinishRename={(v: string) => renameSession(s.id, v)}
-                  onCancelRename={() => setRenamingSession('')}
-                  isSystem
-                />
-              ))}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* 对话区（整个区域支持拖拽图片） */}
-      <div
-        style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}
-        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy' }}
-        onDragEnter={(e) => { e.preventDefault(); e.stopPropagation() }}
-        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e) }}
-      >
-        {!activeSession ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-            {t('chat.selectConversation')}
-          </div>
-        ) : (
-          <>
-            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16 }}>
-              {messages.map((msg, i) => {
-                // 工具调用标记（历史加载的结构化消息）
-                if (msg.role === 'tool') {
-                  const isExpanded = expandedTools.has(i)
-                  return (
-                    <div key={i} style={{ marginBottom: 6, maxWidth: '85%' }}>
-                      <div
-                        onClick={() => toggleTool(i)}
-                        style={{
-                          padding: '3px 10px', borderRadius: isExpanded ? '6px 6px 0 0' : 6,
-                          backgroundColor: 'var(--warning-bg)', border: '1px solid rgba(251,191,36,0.3)',
-                          fontSize: 12, color: 'var(--warning)', display: 'inline-flex', alignItems: 'center', gap: 5,
-                          cursor: 'pointer', userSelect: 'none', maxWidth: '100%', overflow: 'hidden',
-                        }}
-                      >
-                        <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)' }}>{isExpanded ? '\u25BC' : '\u25B6'}</span>
-                        <span style={{ flexShrink: 0 }}>{'\u{1F527}'}</span>
-                        <strong style={{ flexShrink: 0 }}>{msg.toolName || t('common.tools')}</strong>
-                        {!isExpanded && msg.content && (
-                          <span style={{ color: 'var(--text-muted)', fontSize: 12, marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                            {msg.content.slice(0, 80)}
-                          </span>
-                        )}
-                      </div>
-                      {isExpanded && msg.content && (
-                        <div style={{
-                          padding: '6px 10px', backgroundColor: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', borderTop: 'none',
-                          borderRadius: '0 0 6px 6px', fontSize: 11, lineHeight: 1.4, maxWidth: '80%',
-                        }}>
-                          <pre style={{
-                            margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                            fontFamily: "'SF Mono', Monaco, monospace", fontSize: 11,
-                            color: 'var(--text-secondary)', maxHeight: 200, overflow: 'auto',
-                          }}>
-                            {formatToolContent(msg.content)}
-                          </pre>
-                        </div>
-                      )}
-                    </div>
-                  )
-                }
-
-                // assistant 消息：分离内嵌的 [工具: xxx] 标记
-                if (msg.role === 'assistant' && msg.content && typeof msg.content === 'string') {
-                  const toolPattern = /\n?\[(?:工具|MCP 工具|技能工具): (.+?) 执行中\.\.\.\]\n?/g
-                  const parts: Array<{ type: 'text' | 'tool'; content: string }> = []
-                  let lastIdx = 0
-                  let match
-                  while ((match = toolPattern.exec(msg.content)) !== null) {
-                    if (match.index > lastIdx) {
-                      const text = msg.content.slice(lastIdx, match.index).trim()
-                      if (text) parts.push({ type: 'text', content: text })
-                    }
-                    parts.push({ type: 'tool', content: match[1] })
-                    lastIdx = match.index + match[0].length
-                  }
-                  if (lastIdx < msg.content.length) {
-                    const text = msg.content.slice(lastIdx).trim()
-                    if (text) parts.push({ type: 'text', content: text })
-                  }
-
-                  // 如果有工具标记，分段渲染
-                  if (parts.length > 1 || (parts.length === 1 && parts[0].type === 'tool')) {
-                    return (
-                      <div key={i} style={{ marginBottom: 12 }}>
-                        {parts.map((part, pi) =>
-                          part.type === 'tool' ? (
-                            <div key={pi} style={{ marginBottom: 6 }}>
-                              <span style={{
-                                display: 'inline-flex', alignItems: 'center', gap: 6,
-                                padding: '4px 10px', borderRadius: 6,
-                                backgroundColor: 'var(--warning-bg)', border: '1px solid rgba(251,191,36,0.3)',
-                                fontSize: 12, color: 'var(--warning)',
-                              }}>
-                                {'\u{1F527}'} <strong>{part.content}</strong>
-                              </span>
-                            </div>
-                          ) : (
-                            <div key={pi} style={{
-                              maxWidth: '70%', minWidth: 0, padding: '10px 14px', borderRadius: 12,
-                              backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
-                              fontSize: 14, lineHeight: 1.6, wordBreak: 'break-word', overflowWrap: 'anywhere',
-                              marginBottom: 4,
-                            }}>
-                              {renderMd(part.content)}
-                            </div>
-                          )
-                        )}
-                        {streaming && i === messages.length - 1 && !parts.some(p => p.type === 'text') && <ThinkingIndicator />}
-                      </div>
-                    )
-                  }
-                }
-
-                const isUser = msg.role === 'user'
-                const isSystem = msg.role === 'system'
-                const avatar = isUser ? '/avatar-user.png' : '/avatar-ai.png'
-
-                return (
-                  <div key={i} style={{
-                    marginBottom: 12, display: 'flex',
-                    justifyContent: isUser ? 'flex-end' : 'flex-start',
-                    alignItems: 'flex-start', gap: 8,
-                    overflow: 'hidden',
-                  }}>
-                    {/* 左侧头像（AI / system） */}
-                    {!isUser && (
-                      <img src={avatar} alt="" style={{
-                        width: 32, height: 32, borderRadius: '50%', flexShrink: 0, marginTop: 2,
-                        objectFit: 'cover',
-                      }} />
-                    )}
-                    <div style={{
-                      maxWidth: isSystem ? '85%' : '70%',
-                      minWidth: 0,
-                      padding: '10px 14px', borderRadius: 12,
-                      backgroundColor: isUser ? 'var(--accent)' : isSystem ? 'var(--success-bg)' : 'var(--assistant-bubble)',
-                      color: isUser ? '#fff' : 'var(--text-primary)',
-                      border: isSystem ? '1px solid var(--border-subtle)' : 'none',
-                      fontSize: isSystem ? 13 : 14,
-                      lineHeight: 1.6, wordBreak: 'break-word', overflowWrap: 'anywhere',
-                      minHeight: streaming && i === messages.length - 1 && !msg.content ? 40 : undefined,
-                    }}>
-                      {(msg.role === 'assistant' || isSystem) ? (
-                        msg.content
-                          ? renderMd(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content))
-                          : streaming && i === messages.length - 1
-                            ? <ThinkingIndicator />
-                            : null
-                      ) : (
-                        <UserMessageContent content={typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '')} />
-                      )}
-                    </div>
-                    {/* 右侧头像（用户） */}
-                    {isUser && (
-                      <img src={avatar} alt="" style={{
-                        width: 32, height: 32, borderRadius: '50%', flexShrink: 0, marginTop: 2,
-                        objectFit: 'cover',
-                      }} />
-                    )}
-                  </div>
-                )
-              })}
-              <div ref={messagesEndRef} />
-            </div>
-            {/* 功能栏 */}
-            <ToolBar
-              messageCount={messages.filter(m => m.role !== 'system').length}
-              showCompact={messages.length > 20}
-              onCompact={async () => {
-                const r = await invoke<string>('compact_session', { agentId, sessionId: activeSession })
-                return r
-              }}
-            />
-            {/* 命令提示 */}
-            {input.startsWith('/') && !input.includes(' ') && (
-              <div style={{
-                padding: '8px 16px', borderTop: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
-                fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 12px',
-              }}>
-                {['/help','/new','/model','/status','/usage','/tools','/skills','/providers','/memory','/compact','/clear','/reset','/export','/stop','/agents','/kill','/rename','/sessions','/skill'].filter(c =>
-                  c.startsWith(input.toLowerCase())
-                ).map(c => (
-                  <span key={c} onClick={() => { setInput(c === '/model' || c === '/rename' || c === '/temp' || c === '/kill' || c === '/skill' ? c + ' ' : c); }} style={{ cursor: 'pointer', color: 'var(--accent)', fontFamily: 'monospace', padding: '2px 6px', backgroundColor: 'var(--accent-bg)', borderRadius: 4 }}>{c}</span>
-                ))}
-              </div>
-            )}
-            {/* 附件预览 */}
-            {pendingImages.length > 0 && (
-              <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {pendingImages.map((img, idx) => (
-                  <div key={idx} style={{ position: 'relative', display: 'inline-block' }}>
-                    <img src={img} alt="" style={{ height: 48, borderRadius: 6, border: '1px solid var(--border-subtle)' }} />
-                    <button
-                      onClick={() => setPendingImages(prev => prev.filter((_, i) => i !== idx))}
-                      style={{
-                        position: 'absolute', top: -6, right: -6, width: 18, height: 18,
-                        borderRadius: '50%', backgroundColor: '#ef4444', color: 'white',
-                        border: 'none', fontSize: 10, cursor: 'pointer', lineHeight: '18px', padding: 0,
-                      }}
-                    >x</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* 输入区 */}
-            <div
-              style={{ padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}
-              onDrop={handleDrop}
-              onDragOver={(e) => e.preventDefault()}
-            >
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={streaming}
-                  title={t('agentDetailSub.addImage')}
-                  style={{
-                    padding: '8px', backgroundColor: 'transparent', border: '1px solid #d1d5db',
-                    borderRadius: 6, cursor: 'pointer', fontSize: 16, lineHeight: 1, color: 'var(--text-secondary)', flexShrink: 0,
-                  }}
-                >{'\u{1F4CE}'}</button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(e) => { if (e.target.files) addImageFiles(e.target.files); e.target.value = '' }}
-                />
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleSend() } }}
-                  onPaste={handlePaste}
-                  placeholder={t('agentDetail.inputHint')}
-                  disabled={streaming}
-                  style={{ flex: 1, padding: '10px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14 }}
-                />
-                <button
-                  onClick={handleSend}
-                  disabled={streaming || !input.trim()}
-                  style={{
-                    padding: '10px 20px', backgroundColor: 'var(--accent)', color: 'white',
-                    border: 'none', borderRadius: 6, cursor: streaming || !input.trim() ? 'not-allowed' : 'pointer',
-                    opacity: streaming || !input.trim() ? 0.6 : 1,
-                  }}
-                >
-                  {streaming ? t('agentDetail.generating') : t('common.send')}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
       </div>
     </div>
   )
@@ -1685,73 +446,164 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
     } catch (e) { setMsg(String(e)) }
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '10px 14px', border: '1px solid var(--border-subtle)',
+    borderRadius: 10, fontSize: 14, boxSizing: 'border-box',
+    backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)',
+    outline: 'none', transition: 'border-color 0.15s',
+  }
+  const cardStyle: React.CSSProperties = {
+    padding: '20px', borderRadius: 14, border: '1px solid var(--border-subtle)',
+    backgroundColor: 'var(--bg-elevated)', marginBottom: 16,
+  }
+
   return (
-    <div style={{ padding: 20, maxWidth: 500 }}>
-      <h3 style={{ margin: '0 0 20px', fontSize: 16 }}>{t('agentDetailSub.settingsTitle')}</h3>
+    <div style={{ padding: 20, maxWidth: 560 }}>
+      {msg && <div style={{ padding: '10px 14px', backgroundColor: msg === t('settings.successSaved') ? 'var(--success-bg)' : 'var(--error-bg)', color: msg === t('settings.successSaved') ? 'var(--success)' : 'var(--error)', borderRadius: 10, marginBottom: 16, fontSize: 13 }}>{msg}</div>}
 
-      {msg && <div style={{ padding: 8, backgroundColor: msg === t('settings.successSaved') ? 'var(--success-bg)' : 'var(--error-bg)', color: msg === t('settings.successSaved') ? 'var(--success)' : 'var(--error)', borderRadius: 6, marginBottom: 16, fontSize: 13 }}>{msg}</div>}
+      {/* 基本信息卡片 */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          {t('agentDetailSub.settingsTitle')}
+        </div>
 
-      {/* 名称 */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('common.name')}</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }} />
-      </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6, color: 'var(--text-muted)' }}>{t('common.name')}</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+        </div>
 
-      {/* 模型 */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('common.model')}</label>
-        <select value={model} onChange={(e) => setModel(e.target.value)} style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}>
-          {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          {!models.find((m) => m.id === model) && <option value={model}>{model}</option>}
-        </select>
-      </div>
-
-      {/* Temperature */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Temperature: {temperature.toFixed(1)}</label>
-        <input type="range" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))} style={{ width: '100%' }} />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)' }}>
-          <span>{t('agentCreate.tempPrecise')} 0</span><span>{t('agentCreate.tempBalanced')} 0.7</span><span>{t('agentCreate.tempCreative')} 2.0</span>
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6, color: 'var(--text-muted)' }}>{t('common.model')}</label>
+          <Select
+            value={model}
+            onChange={setModel}
+            searchable
+            options={[
+              ...models.map(m => ({ value: m.id, label: m.label })),
+              ...(!models.find(m => m.id === model) ? [{ value: model, label: model }] : []),
+            ]}
+            placeholder={t('common.model')}
+          />
         </div>
       </div>
 
-      {/* Max Tokens */}
-      <div style={{ marginBottom: 24 }}>
-        <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Max Tokens: {maxTokens}</label>
-        <input type="range" min="256" max="8192" step="256" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))} style={{ width: '100%' }} />
+      {/* 参数调整卡片 */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+          </svg>
+          Parameters
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)' }}>Temperature</label>
+            <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{temperature.toFixed(1)}</span>
+          </div>
+          <input type="range" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))}
+            style={{ width: '100%', accentColor: 'var(--accent)' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+            <span>{t('agentCreate.tempPrecise')}</span><span>{t('agentCreate.tempBalanced')}</span><span>{t('agentCreate.tempCreative')}</span>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)' }}>Max Tokens</label>
+            <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{maxTokens.toLocaleString()}</span>
+          </div>
+          <input type="range" min="256" max="8192" step="256" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))}
+            style={{ width: '100%', accentColor: 'var(--accent)' }} />
+        </div>
       </div>
 
-      {/* 保存 */}
+      {/* 保存按钮 */}
       <button onClick={handleSave} disabled={saving} style={{
-        width: '100%', padding: '10px', backgroundColor: 'var(--accent)', color: 'white',
-        border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14, marginBottom: 32,
-        opacity: saving ? 0.6 : 1,
+        width: '100%', padding: '12px', backgroundColor: 'var(--accent)', color: 'white',
+        border: 'none', borderRadius: 10, cursor: 'pointer', fontSize: 14, fontWeight: 600,
+        marginBottom: 16, opacity: saving ? 0.6 : 1, transition: 'opacity 0.15s',
       }}>
         {saving ? t('common.saving') : t('common.save')}
       </button>
 
+      {/* 导出/导入卡片 */}
+      <div style={{ ...cardStyle, display: 'flex', gap: 10 }}>
+        <button onClick={async () => {
+          try {
+            const bundle = await invoke<string>('export_agent_bundle', { agentId: agent?.id || '' })
+            const blob = new Blob([bundle], { type: 'application/json' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url; a.download = `agent-${(agent?.name || 'export').replace(/\s+/g, '-')}.json`; a.click()
+            URL.revokeObjectURL(url)
+            toast.success('Agent exported')
+          } catch (e) { toast.error(String(e)) }
+        }} style={{
+          flex: 1, padding: '10px 16px', backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
+          border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer', fontSize: 13,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Export
+        </button>
+        <button onClick={() => {
+          const input = document.createElement('input')
+          input.type = 'file'; input.accept = '.json'
+          input.onchange = async () => {
+            if (!input.files?.[0]) return
+            const text = await input.files[0].text()
+            try {
+              const result = await invoke<string>('import_agent_bundle', { bundleJson: text })
+              toast.success('Agent imported: ' + result)
+              window.location.reload()
+            } catch (e) { toast.error(String(e)) }
+          }
+          input.click()
+        }} style={{
+          flex: 1, padding: '10px 16px', backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
+          border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer', fontSize: 13,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Import
+        </button>
+      </div>
+
       {/* 危险区域 */}
-      <div style={{ borderTop: '1px solid #fecaca', paddingTop: 20 }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--error)' }}>{t('agentDetailSub.dangerZone')}</h4>
-        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>{t('agentDetailSub.dangerDesc')}</p>
+      <div style={{ ...cardStyle, borderColor: 'rgba(239,68,68,0.2)', backgroundColor: 'rgba(239,68,68,0.03)' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: 'var(--error)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--error)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          {t('agentDetailSub.dangerZone')}
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, marginTop: 0 }}>{t('agentDetailSub.dangerDesc')}</p>
         {!deleteConfirm ? (
           <button onClick={() => setDeleteConfirm(true)} style={{
-            padding: '8px 16px', backgroundColor: 'var(--bg-elevated)', color: 'var(--error)',
-            border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            padding: '8px 16px', backgroundColor: 'transparent', color: 'var(--error)',
+            border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, cursor: 'pointer', fontSize: 13,
           }}>
             {t('agentDetailSub.deleteAgent')}
           </button>
         ) : (
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={handleDelete} style={{
-              padding: '8px 16px', backgroundColor: 'var(--error)', color: 'white',
-              border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              padding: '8px 20px', backgroundColor: 'var(--error)', color: 'white',
+              border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
             }}>
               {t('agents.btnConfirmDelete')}
             </button>
             <button onClick={() => setDeleteConfirm(false)} style={{
               padding: '8px 16px', backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
-              border: '1px solid var(--border-subtle)', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              border: '1px solid var(--border-subtle)', borderRadius: 8, cursor: 'pointer', fontSize: 13,
             }}>
               {t('common.cancel')}
             </button>
@@ -1792,7 +644,7 @@ function RelationsTab({ agentId }: { agentId: string }) {
       ])
       setRelations(rels)
       setAgents(agentList.filter((a: any) => a.id !== agentId))
-    } catch {}
+    } catch (e) { console.error('loadRelations failed:', e) }
     setLoading(false)
   }
 
@@ -1834,15 +686,13 @@ function RelationsTab({ agentId }: { agentId: string }) {
         display: 'flex', gap: 8, marginBottom: 20, padding: 12,
         borderRadius: 10, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
       }}>
-        <select value={targetId} onChange={e => setTargetId(e.target.value)}
-          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
-          <option value="">{t('agentDetail.relSelectAgent')}</option>
-          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        <select value={relType} onChange={e => setRelType(e.target.value)}
-          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
-          {RELATION_TYPES.map(rt => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
-        </select>
+        <Select value={targetId} onChange={setTargetId}
+          placeholder={t('agentDetail.relSelectAgent')}
+          options={agents.map(a => ({ value: a.id, label: a.name }))}
+          style={{ flex: 1 }} />
+        <Select value={relType} onChange={setRelType}
+          options={RELATION_TYPES.map(rt => ({ value: rt.value, label: rt.label }))}
+          style={{ minWidth: 100 }} />
         <button onClick={handleAdd} disabled={!targetId}
           style={{ padding: '6px 16px', borderRadius: 6, fontSize: 13, border: 'none', backgroundColor: 'var(--accent)', color: '#fff', cursor: 'pointer' }}>
           {t('agentDetail.relAdd')}
@@ -1861,7 +711,7 @@ function RelationsTab({ agentId }: { agentId: string }) {
               display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
               borderRadius: 8, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-elevated)',
             }}>
-              <span style={{ fontSize: 18 }}>{'\u{1F517}'}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>--</span>
               <span style={{ fontSize: 13, fontWeight: 500 }}>
                 {r.fromId === agentId ? getAgentName(r.toId) : getAgentName(r.fromId)}
               </span>
@@ -1901,73 +751,119 @@ function AuditTab({ agentId }: { agentId: string }) {
 
   if (loading) return <div style={{ padding: 20, color: 'var(--text-muted)' }}>{t('common.loading')}</div>
 
+  // 按日期分组
+  const grouped: Record<string, AuditEntry[]> = {}
+  entries.forEach(e => {
+    const day = new Date(e.createdAt).toLocaleDateString('zh-CN')
+    if (!grouped[day]) grouped[day] = []
+    grouped[day].push(e)
+  })
+
+  const successCount = entries.filter(e => e.success).length
+  const failCount = entries.length - successCount
+
   return (
-    <div style={{ padding: 20, maxWidth: 900 }}>
-      <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>{t('agentDetailSub.auditTitle')}</h3>
+    <div style={{ padding: 20, maxWidth: 800 }}>
+      {/* 标题 + 统计 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('agentDetailSub.auditTitle')}</h3>
+        <span style={{ flex: 1 }} />
+        {entries.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+            <span style={{ color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--success)' }} />
+              {successCount}
+            </span>
+            <span style={{ color: 'var(--error)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--error)' }} />
+              {failCount}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>{entries.length} total</span>
+          </div>
+        )}
+      </div>
+
       {entries.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>{t('agentDetailSub.auditEmpty')}</div>
+        <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-muted)' }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3, marginBottom: 12 }}>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <div>{t('agentDetailSub.auditEmpty')}</div>
+        </div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ borderBottom: '2px solid var(--border-subtle)' }}>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>{t('agentDetailSub.auditTime')}</th>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>{t('agentDetailSub.auditTool')}</th>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>{t('agentDetailSub.auditPolicy')}</th>
-              <th style={{ textAlign: 'left', padding: '8px 12px' }}>{t('agentDetailSub.auditResult')}</th>
-              <th style={{ textAlign: 'right', padding: '8px 12px' }}>{t('agentDetailSub.auditDuration')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => (
-              <tr key={entry.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
-                  {new Date(entry.createdAt).toLocaleString('zh-CN')}
-                </td>
-                <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{entry.toolName}</td>
-                <td style={{ padding: '8px 12px' }}>
+        Object.entries(grouped).map(([day, dayEntries]) => (
+          <div key={day} style={{ marginBottom: 20 }}>
+            {/* 日期分割线 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{day}</span>
+              <div style={{ flex: 1, height: 1, backgroundColor: 'var(--border-subtle)' }} />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{dayEntries.length}</span>
+            </div>
+
+            {/* 时间轴条目 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {dayEntries.map((entry) => (
+                <div key={entry.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 14px', borderRadius: 10,
+                  backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                  transition: 'background-color 0.15s',
+                }}>
+                  {/* 状态灯 */}
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                    backgroundColor: entry.success ? 'var(--success)' : 'var(--error)',
+                    boxShadow: entry.success ? '0 0 6px var(--success)' : '0 0 6px var(--error)',
+                  }} />
+
+                  {/* 时间 */}
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', width: 50, flexShrink: 0 }}>
+                    {new Date(entry.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+
+                  {/* 工具名 */}
                   <span style={{
-                    padding: '2px 6px', borderRadius: 4, fontSize: 11,
+                    fontSize: 13, fontFamily: "'SF Mono', Monaco, monospace", fontWeight: 500,
+                    color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {entry.toolName}
+                  </span>
+
+                  {/* 策略 badge */}
+                  <span style={{
+                    padding: '2px 8px', borderRadius: 9999, fontSize: 10, fontWeight: 500, flexShrink: 0,
                     backgroundColor: entry.policyDecision === 'allowed' ? 'var(--success-bg)' : 'var(--error-bg)',
                     color: entry.policyDecision === 'allowed' ? 'var(--success)' : 'var(--error)',
+                    border: `1px solid ${entry.policyDecision === 'allowed' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
                   }}>
                     {entry.policyDecision}
                   </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>{entry.policySource}</span>
-                </td>
-                <td style={{ padding: '8px 12px' }}>
+
+                  {/* 来源 */}
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{entry.policySource}</span>
+
+                  {/* 耗时 */}
                   <span style={{
-                    padding: '2px 6px', borderRadius: 4, fontSize: 11,
-                    backgroundColor: entry.success ? 'var(--success-bg)' : 'var(--error-bg)',
-                    color: entry.success ? 'var(--success)' : 'var(--error)',
+                    fontSize: 11, fontFamily: "'SF Mono', Monaco, monospace",
+                    color: (entry.durationMs || 0) > 100 ? 'var(--warning)' : 'var(--text-muted)',
+                    flexShrink: 0, width: 50, textAlign: 'right',
                   }}>
-                    {entry.success ? t('agentDetailSub.auditSuccess') : t('agentDetailSub.auditFailed')}
+                    {entry.durationMs}ms
                   </span>
-                </td>
-                <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'monospace' }}>
-                  {entry.durationMs}ms
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
       )}
     </div>
   )
 }
 
 // ─── Subagents Tab ───────────────────────────────────────────
-
-interface SubagentRecord {
-  id: string
-  parentId: string
-  name: string
-  task: string
-  status: string
-  result: string | null
-  createdAt: number
-  finishedAt: number | null
-  timeoutSecs: number
-}
 
 function SubagentsTab({ agentId }: { agentId: string }) {
   const { t } = useI18n()
@@ -2081,7 +977,7 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
       ])
       if (msgs.length > 0) setMessages(prev => [...prev, ...msgs])
       setAgents(agentList.filter((a: any) => a.id !== agentId))
-    } catch {}
+    } catch (e) { console.error('loadMailboxPanel failed:', e) }
   }, [agentId])
 
   useEffect(() => { load() }, [load])
@@ -2092,7 +988,7 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
       try {
         const msgs = await invoke<any[]>('get_agent_mailbox', { agentId })
         if (msgs.length > 0) setMessages(prev => [...prev, ...msgs])
-      } catch {}
+      } catch (e) { console.error('pollMailbox failed:', e) }
     }, 5000)
     return () => clearInterval(timer)
   }, [agentId])
@@ -2114,7 +1010,7 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
   return (
     <div style={{ marginTop: 32 }}>
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-        {'\u{1F4EC}'} {t('agentDetailSub.messagesTitle')}
+        {t('agentDetailSub.messagesTitle')}
       </h3>
 
       {/* 发送消息 */}
@@ -2122,11 +1018,10 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
         display: 'flex', gap: 8, marginBottom: 16, padding: 12,
         borderRadius: 10, border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
       }}>
-        <select value={targetId} onChange={e => setTargetId(e.target.value)}
-          style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 13 }}>
-          <option value="">{t('agentDetailSub.messagesSelectTarget')}</option>
-          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
+        <Select value={targetId} onChange={setTargetId}
+          placeholder={t('agentDetailSub.messagesSelectTarget')}
+          options={agents.map(a => ({ value: a.id, label: a.name }))}
+          style={{ width: 140 }} />
         <input
           value={content} onChange={e => setContent(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSend()}
@@ -2211,7 +1106,7 @@ function PluginsTab() {
               display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
               borderBottom: '1px solid var(--border-subtle)',
             }}>
-              <span style={{ fontSize: 18 }}>{p.icon || '\u{1F9E9}'}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>{p.icon || '+'}</span>
               <div style={{ flex: 1 }}>
                 <span style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</span>
                 {p.builtin && <span style={{ fontSize: 10, marginLeft: 6, padding: '1px 5px', borderRadius: 3, backgroundColor: '#6366F1', color: '#fff' }}>{t('agentDetailSub.builtinLabel')}</span>}
@@ -2235,10 +1130,17 @@ interface AutonomyConfigData {
   overrides: Record<string, string>
 }
 
-const LEVEL_COLORS: Record<string, { color: string; bg: string }> = {
-  L1Confirm: { color: 'var(--error)', bg: 'var(--error-bg)' },
-  L2Notify: { color: '#d97706', bg: '#fef3c7' },
-  L3Autonomous: { color: 'var(--success)', bg: 'var(--success-bg)' },
+const LEVEL_COLORS: Record<string, { color: string; bg: string; icon: string }> = {
+  L1Confirm: { color: '#ef4444', bg: 'rgba(239,68,68,0.1)', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
+  L2Notify: { color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', icon: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9v2 M12 15h.01' },
+  L3Autonomous: { color: '#22c55e', bg: 'rgba(34,197,94,0.1)', icon: 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3' },
+}
+
+const GROUP_ICONS: Record<string, string> = {
+  groupSafe: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
+  groupRead: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 12m-3 0a3 3 0 1 0 6 0 3 3 0 1 0-6 0',
+  groupWrite: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
+  groupExec: 'M4 17l6-6-6-6 M12 19h8',
 }
 
 const TOOL_GROUP_TOOLS = [
@@ -2283,41 +1185,85 @@ function AutonomyTab({ agentId }: { agentId: string }) {
 
   return (
     <div style={{ padding: 20, maxWidth: 700 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 style={{ margin: 0, fontSize: 16 }}>{t('agentDetailSub.autonomyTitle')}</h3>
-        {saving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('common.saving')}</span>}
+      {/* 头部 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{t('agentDetailSub.autonomyTitle')}</h3>
+        <span style={{ flex: 1 }} />
+        {saving && <span style={{ fontSize: 11, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--accent)', animation: 'glow-pulse 1s infinite' }} />
+          {t('common.saving')}
+        </span>}
       </div>
-      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 20px', lineHeight: 1.5 }}>
         {t('agentDetailSub.autonomyDesc')}
       </p>
 
+      {/* 图例 */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 20, padding: '10px 14px', borderRadius: 10, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+        {Object.entries(LEVEL_COLORS).map(([key, val]) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: val.color }} />
+            <span style={{ color: val.color, fontWeight: 500 }}>{t(LEVEL_KEYS[key])}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* 分组卡片 */}
       {TOOL_GROUP_TOOLS.map((group) => (
-        <div key={group.key} style={{ marginBottom: 20 }}>
-          <h4 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--text-primary)' }}>{t(`agentDetailSub.${group.key}`)}</h4>
-          {group.tools.map((tool) => {
+        <div key={group.key} style={{
+          marginBottom: 14, borderRadius: 12, border: '1px solid var(--border-subtle)',
+          backgroundColor: 'var(--bg-elevated)', overflow: 'hidden',
+        }}>
+          {/* 分组头 */}
+          <div style={{
+            padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 8,
+            borderBottom: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
+          }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d={GROUP_ICONS[group.key] || 'M12 2L2 7l10 5 10-5-10-5z'}/>
+            </svg>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{t(`agentDetailSub.${group.key}`)}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>({group.tools.length})</span>
+          </div>
+
+          {/* 工具行 */}
+          {group.tools.map((tool, idx) => {
             const current = config.overrides[tool] || config.default_level || 'L1Confirm'
+            const currentColor = LEVEL_COLORS[current]?.color || 'var(--text-muted)'
             return (
               <div key={tool} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)',
+                display: 'flex', alignItems: 'center', padding: '10px 16px',
+                borderBottom: idx < group.tools.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                transition: 'background-color 0.1s',
               }}>
-                <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{tool}</span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {Object.entries(LEVEL_COLORS).map(([key, val]) => (
-                    <button
-                      key={key}
-                      onClick={() => handleLevelChange(tool, key)}
-                      style={{
-                        padding: '3px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
-                        border: current === key ? `1px solid ${val.color}` : '1px solid var(--border-subtle)',
-                        backgroundColor: current === key ? val.bg : 'var(--bg-elevated)',
-                        color: current === key ? val.color : 'var(--text-muted)',
-                        fontWeight: current === key ? 600 : 400,
-                      }}
-                    >
-                      {t(LEVEL_KEYS[key])}
-                    </button>
-                  ))}
+                {/* 当前等级指示灯 */}
+                <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: currentColor, flexShrink: 0, marginRight: 10 }} />
+                {/* 工具名 */}
+                <span style={{ fontSize: 13, fontFamily: "'SF Mono', Monaco, monospace", flex: 1, color: 'var(--text-primary)' }}>{tool}</span>
+                {/* 等级选择 */}
+                <div style={{ display: 'flex', gap: 3, borderRadius: 8, padding: 2, backgroundColor: 'var(--bg-primary)' }}>
+                  {Object.entries(LEVEL_COLORS).map(([key, val]) => {
+                    const active = current === key
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => handleLevelChange(tool, key)}
+                        style={{
+                          padding: '4px 10px', fontSize: 11, borderRadius: 6, cursor: 'pointer',
+                          border: 'none',
+                          backgroundColor: active ? val.bg : 'transparent',
+                          color: active ? val.color : 'var(--text-muted)',
+                          fontWeight: active ? 600 : 400,
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        {t(LEVEL_KEYS[key])}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             )

@@ -10,7 +10,7 @@ trigger_keywords:
   - meeting
   - 空闲会议室
 permissions:
-  read_paths: ["~/.yonclaw"]
+  read_paths: ["~/.xianzhu"]
   write_paths: []
   exec_commands: [bash, curl]
   network: true

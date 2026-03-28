@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
+import Select from './Select'
 
 interface ParamsTabProps {
   agentId: string
@@ -157,23 +158,19 @@ export default function ParamsTab({ agentId }: ParamsTabProps) {
       {/* 模型选择 */}
       <div style={{ marginBottom: '14px' }}>
         <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>{t('paramsTab.selectModel')}</div>
-        <select
+        <Select
           value={model}
-          onChange={e => setModel(e.target.value)}
-          style={{
-            width: '100%', padding: '6px 8px', border: '1px solid var(--border-subtle)',
-            borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box',
-          }}
-        >
-          {model && !models.some(m => m.id === model) && (
-            <option value={model}>{model} {t('paramsTab.current')}</option>
-          )}
-          {models.map(m => (
-            <option key={`${m.provider}-${m.id}`} value={m.id}>
-              {m.label} ({m.providerName})
-            </option>
-          ))}
-        </select>
+          onChange={setModel}
+          searchable
+          options={[
+            ...(model && !models.some(m => m.id === model) ? [{ value: model, label: `${model} ${t('paramsTab.current')}` }] : []),
+            ...models.map(m => ({
+              value: m.id,
+              label: `${m.label} (${m.providerName})`,
+            })),
+          ]}
+          style={{ width: '100%' }}
+        />
       </div>
 
       {/* 高级参数折叠区 */}

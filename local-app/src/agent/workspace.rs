@@ -25,7 +25,7 @@ fn file_cache() -> &'static Mutex<HashMap<PathBuf, CacheEntry>> {
 
 /// Agent 工作区
 ///
-/// 管理 `~/.yonclaw/agents/{agent_id}/` 下的灵魂文件体系
+/// 管理 `~/.xianzhu/agents/{agent_id}/` 下的灵魂文件体系
 pub struct AgentWorkspace {
     /// 工作区根目录
     root: PathBuf,
@@ -96,7 +96,7 @@ impl AgentWorkspace {
     pub fn new(agent_id: &str) -> Self {
         let root = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".yonclaw")
+            .join(".xianzhu")
             .join("agents")
             .join(agent_id);
         Self {
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_workspace_initialize() {
-        let temp_dir = std::env::temp_dir().join("yonclaw_test_workspace");
+        let temp_dir = std::env::temp_dir().join("xianzhu_test_workspace");
         let _ = fs::remove_dir_all(&temp_dir);
 
         let ws = AgentWorkspace::from_path(temp_dir.clone(), "test-agent-1");
@@ -403,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_write_files() {
-        let temp_dir = std::env::temp_dir().join("yonclaw_test_rw");
+        let temp_dir = std::env::temp_dir().join("xianzhu_test_rw");
         let _ = fs::remove_dir_all(&temp_dir);
 
         let ws = AgentWorkspace::from_path(temp_dir.clone(), "test-agent-2");
@@ -426,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bootstrap_lifecycle() {
-        let temp_dir = std::env::temp_dir().join("yonclaw_test_bootstrap");
+        let temp_dir = std::env::temp_dir().join("xianzhu_test_bootstrap");
         let _ = fs::remove_dir_all(&temp_dir);
 
         let ws = AgentWorkspace::from_path(temp_dir.clone(), "test-agent-3");

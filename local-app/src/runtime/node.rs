@@ -1,6 +1,6 @@
 //! Node.js 运行时管理
 //!
-//! 自动下载、解压、缓存 Node.js 运行时到 ~/.yonclaw/runtime/node/，
+//! 自动下载、解压、缓存 Node.js 运行时到 ~/.xianzhu/runtime/node/，
 //! 支持 macOS (x64/arm64)、Linux (x64/arm64)、Windows (x64)。
 
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ const NODE_VERSION: &str = "v22.16.0";
 
 /// Node.js 运行时管理器
 pub struct NodeRuntime {
-    /// 运行时根目录 ~/.yonclaw/runtime/node/
+    /// 运行时根目录 ~/.xianzhu/runtime/node/
     base_dir: PathBuf,
 }
 
@@ -31,11 +31,11 @@ pub enum RuntimeStatus {
 impl NodeRuntime {
     /// 创建运行时管理器
     ///
-    /// 默认使用 ~/.yonclaw/runtime/node/ 作为安装目录
+    /// 默认使用 ~/.xianzhu/runtime/node/ 作为安装目录
     pub fn new() -> Self {
         let base_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".yonclaw")
+            .join(".xianzhu")
             .join("runtime")
             .join("node");
         Self { base_dir }
@@ -266,7 +266,7 @@ mod tests {
     fn test_download_url_format() {
         let rt = NodeRuntime::new();
         let url = rt.download_url();
-        assert!(url.starts_with("https://nodejs.org/dist/v20.11.1/node-v20.11.1-"));
+        assert!(url.starts_with(&format!("https://nodejs.org/dist/{}/node-{}-", NODE_VERSION, NODE_VERSION)));
         assert!(url.ends_with(".tar.xz") || url.ends_with(".zip"));
     }
 
@@ -293,7 +293,7 @@ mod tests {
     fn test_archive_filename() {
         let rt = NodeRuntime::new();
         let name = rt.archive_filename();
-        assert!(name.contains("v20.11.1"));
+        assert!(name.contains(NODE_VERSION));
         if cfg!(target_os = "macos") {
             assert!(name.contains("darwin"));
         } else if cfg!(target_os = "linux") {

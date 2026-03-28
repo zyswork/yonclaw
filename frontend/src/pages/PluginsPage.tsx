@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
+import Select from '../components/Select'
 
 interface PluginInfo {
   id: string; name: string; version: string; description: string
@@ -50,7 +51,7 @@ export default function PluginsPage() {
       const list = (await invoke('list_agents')) as Array<{ id: string; name: string }>
       setAgents(list.map((a) => ({ id: a.id, name: a.name })))
       if (list.length > 0) setSelectedAgent(list[0].id)
-    } catch {}
+    } catch (e) { console.error('loadAgents failed:', e) }
     setLoading(false)
   }
 
@@ -65,7 +66,7 @@ export default function PluginsPage() {
     try {
       const caps = await invoke<any[]>('list_plugin_capabilities')
       setCapabilities(caps || [])
-    } catch {}
+    } catch (e) { console.error('loadCapabilities failed:', e) }
   }
 
   const loadDefaults = async () => {
@@ -74,7 +75,7 @@ export default function PluginsPage() {
       const tts = await invoke<string>('get_setting', { key: 'tts_provider' }).catch(() => 'local')
       setDefaultSearch(search || 'auto')
       setDefaultTts(tts || 'local')
-    } catch {}
+    } catch (e) { console.error('loadDefaults failed:', e) }
   }
 
   const setDefault = async (key: string, value: string) => {
@@ -101,7 +102,7 @@ export default function PluginsPage() {
     try {
       const states = (await invoke('get_agent_plugin_states', { agentId: selectedAgent })) as AgentPluginState[]
       setAgentStates(states)
-    } catch {}
+    } catch (e) { console.error('loadAgentStates failed:', e) }
   }
 
   const togglePlugin = async (pluginId: string, currentEnabled: boolean) => {
@@ -165,10 +166,9 @@ export default function PluginsPage() {
         <span style={{ flex: 1 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('plugins.labelAgent')}</span>
-          <select value={selectedAgent} onChange={e => setSelectedAgent(e.target.value)}
-            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 12 }}>
-            {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
+          <Select value={selectedAgent} onChange={setSelectedAgent}
+            options={agents.map(a => ({ value: a.id, label: a.name }))}
+            style={{ minWidth: 140 }} />
         </div>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 16px' }}>
@@ -251,7 +251,7 @@ export default function PluginsPage() {
                     width: 36, height: 36, borderRadius: 8, backgroundColor: 'var(--bg-glass)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
                   }}>
-                    {plugin.icon || '\u{1F9E9}'}
+                    {plugin.icon || '+'}
                   </div>
 
                   {/* 信息 */}
@@ -334,7 +334,7 @@ export default function PluginsPage() {
       {capabilities.length > 0 && (
         <div style={{ marginTop: 24 }}>
           <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
-            {'\u{1F50C}'} {t('plugins.apiCapabilities')}
+            {t('plugins.apiCapabilities')}
           </h3>
 
           {/* 按类型分组：搜索引擎 / 图片生成 / 语音合成 / LLM Provider */}
@@ -407,7 +407,7 @@ export default function PluginsPage() {
                                   border: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-glass)',
                                   cursor: 'pointer', color: 'var(--text-accent)',
                                 }}>
-                                {'\u{1F511}'} {t('plugins.configKey')}
+                                {t('plugins.configKey')}
                               </button>
                             ) : null
                           })()}
@@ -456,7 +456,7 @@ export default function PluginsPage() {
             border: '1px solid var(--border-subtle)',
           }}>
             <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>
-              {'\u{1F511}'} {t('plugins.configKeyTitle', { name: configModal.label })}
+              {t('plugins.configKeyTitle', { name: configModal.label })}
             </h3>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>
               {t('plugins.configKeyHint', { envVar: configModal.envVar })}

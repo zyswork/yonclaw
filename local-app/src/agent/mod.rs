@@ -73,6 +73,10 @@ pub mod router;
 
 // ── 扩展 ──
 pub mod approval;
+pub mod browser;
+pub mod cdp;
+pub mod content_security;
+pub mod doctor;
 pub mod plugin;
 pub mod relations;
 pub mod subagent;

@@ -9,7 +9,7 @@
   "app": {
     "windows": [
       {
-        "title": "YonClaw",
+        "title": "XianZhu",
         "width": 1200,
         "height": 800,
         "resizable": true,
@@ -17,11 +17,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: asset:; connect-src 'self' https: wss:; font-src 'self' data:"
     }
   },
   "package": {
-    "productName": "yonclaw",
+    "productName": "xianzhu",
     "version": "0.1.0"
   },
   "tauri": {
@@ -35,7 +35,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.yonclaw.app",
+      "identifier": "com.xianzhu.app",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",
@@ -45,7 +45,7 @@
       ]
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: asset:; connect-src 'self' https: wss:; font-src 'self' data:"
     }
   }
 }

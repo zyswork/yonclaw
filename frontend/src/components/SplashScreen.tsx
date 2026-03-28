@@ -19,7 +19,7 @@ export default function SplashScreen({
         <div className={styles.spinner} data-testid="splash-spinner" />
 
         {/* 应用名称 */}
-        <h1 className={styles.title}>YonClaw</h1>
+        <h1 className={styles.title}>衔烛</h1>
 
         {/* 状态消息 */}
         <p className={styles.message}>{displayMessage}</p>

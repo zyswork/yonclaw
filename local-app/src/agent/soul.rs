@@ -46,6 +46,7 @@ impl SoulEngine {
         engine.add_section(Box::new(UserSection));
         engine.add_section(Box::new(ReflectionsSection));
         engine.add_section(Box::new(FocusSection));
+        engine.add_section(Box::new(StandingOrdersSection));
         engine.add_section(Box::new(DateTimeSection));
         engine
     }
@@ -164,6 +165,7 @@ impl Default for SectionBudget {
             ("user".into(), 1_500),
             ("datetime".into(), 200),
             ("focus".into(), 1_500),
+            ("standing_orders".into(), 2_000),
             ("bootstrap".into(), 1_000),
         ]);
         Self {
@@ -210,12 +212,14 @@ impl SoulEngine {
                 engine.add_section(Box::new(MemorySection));
                 engine.add_section(Box::new(UserSection));
                 engine.add_section(Box::new(ReflectionsSection));
+                engine.add_section(Box::new(StandingOrdersSection));
                 engine.add_section(Box::new(DateTimeSection));
             }
             SessionType::Light => {
                 engine.add_section(Box::new(IdentitySection));
                 engine.add_section(Box::new(SoulSection));
                 engine.add_section(Box::new(ToolsSection));
+                engine.add_section(Box::new(StandingOrdersSection));
                 engine.add_section(Box::new(DateTimeSection));
             }
             SessionType::SubAgent => {
@@ -229,6 +233,7 @@ impl SoulEngine {
                 engine.add_section(Box::new(SoulSection));
                 engine.add_section(Box::new(SafetySection));
                 engine.add_section(Box::new(ToolsSection));
+                engine.add_section(Box::new(StandingOrdersSection));
                 engine.add_section(Box::new(DateTimeSection));
             }
         }
@@ -543,6 +548,23 @@ impl PromptSection for UserSection {
     }
 }
 
+/// Standing Orders Section — 从 STANDING_ORDERS.md 读取常驻指令
+///
+/// 每次对话都会注入的规则/指令，独立于 SOUL.md。
+/// 适合放置持久化的行为规则、格式要求等。
+pub struct StandingOrdersSection;
+
+impl PromptSection for StandingOrdersSection {
+    fn name(&self) -> &str {
+        "standing_orders"
+    }
+
+    fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
+        let content = workspace.read("STANDING_ORDERS.md").filter(|c| !c.trim().is_empty())?;
+        Some(format!("## Standing Orders\n\n{}", content.trim()))
+    }
+}
+
 /// 时间日期 Section — 注入当前时间和时区
 pub struct DateTimeSection;
 
@@ -586,7 +608,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn setup_test_workspace() -> (AgentWorkspace, PathBuf) {
-        let temp = std::env::temp_dir().join("yonclaw_soul_test");
+        let temp = std::env::temp_dir().join("xianzhu_soul_test");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
         fs::create_dir_all(temp.join("memory")).unwrap();
@@ -650,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_empty_sections_skipped() {
-        let temp = std::env::temp_dir().join("yonclaw_soul_empty");
+        let temp = std::env::temp_dir().join("xianzhu_soul_empty");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 
@@ -681,7 +703,7 @@ mod tests {
             }
         }
 
-        let temp = std::env::temp_dir().join("yonclaw_soul_custom");
+        let temp = std::env::temp_dir().join("xianzhu_soul_custom");
         let _ = fs::remove_dir_all(&temp);
         fs::create_dir_all(&temp).unwrap();
 

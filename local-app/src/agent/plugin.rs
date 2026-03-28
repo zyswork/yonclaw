@@ -1,13 +1,13 @@
 //! 插件系统
 //!
 //! 支持插件注册、生命周期管理、能力扩展
-//! 插件结构：目录 + yonclaw.plugin.json 清单 + 入口文件
+//! 插件结构：目录 + xianzhu.plugin.json 清单 + 入口文件
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// 插件清单（yonclaw.plugin.json）
+/// 插件清单（xianzhu.plugin.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     /// 插件名称
@@ -118,7 +118,7 @@ impl PluginRegistry {
             let path = entry.path();
             if !path.is_dir() { continue; }
 
-            let manifest_path = path.join("yonclaw.plugin.json");
+            let manifest_path = path.join("xianzhu.plugin.json");
             if !manifest_path.exists() { continue; }
 
             match self.load_manifest(&manifest_path) {
@@ -152,9 +152,9 @@ impl PluginRegistry {
 
     /// 安装插件（从本地路径）
     pub async fn install_from_path(&mut self, source: &Path) -> Result<String, String> {
-        let manifest_path = source.join("yonclaw.plugin.json");
+        let manifest_path = source.join("xianzhu.plugin.json");
         if !manifest_path.exists() {
-            return Err("目录中未找到 yonclaw.plugin.json".to_string());
+            return Err("目录中未找到 xianzhu.plugin.json".to_string());
         }
 
         let manifest = self.load_manifest(&manifest_path)?;

@@ -1,4 +1,4 @@
-# YonClaw 混合架构设计方案
+# XianZhu 混合架构设计方案
 
 > 日期：2026-03-19
 > 状态：设计阶段
@@ -369,12 +369,12 @@ data: {"type":"stream_done","fullResponse":"项目状态正常...","tokenUsage":
 
 ```
 桌面在线时:
-"你是 YonClaw 助手。你可以使用以下工具：
+"你是 XianZhu 助手。你可以使用以下工具：
 bash_exec, file_read, file_write, web_search, memory_store, memory_query,
 mcp:github, ..."
 
 桌面离线时:
-"你是 YonClaw 助手（云端模式）。用户的桌面设备当前不在线，
+"你是 XianZhu 助手（云端模式）。用户的桌面设备当前不在线，
 你只能使用以下工具：web_search, memory_store, memory_query。
 如果用户请求需要本地操作（文件、代码执行等），请告知用户需要打开桌面端。"
 ```

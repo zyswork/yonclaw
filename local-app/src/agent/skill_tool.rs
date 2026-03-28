@@ -80,7 +80,7 @@ impl SkillTool {
 
         // 1. 捆绑的 Node 运行时
         if let Some(home) = dirs::home_dir() {
-            let node_dir = home.join(".yonclaw/runtime/node");
+            let node_dir = home.join(".xianzhu/runtime/node");
             if node_dir.exists() {
                 // 找最新版本的 Node
                 if let Ok(entries) = std::fs::read_dir(&node_dir) {

@@ -3,11 +3,15 @@
 //! Telegram 轮询在桌面端本地执行（不走云端中转），延迟最低。
 //! 桌面端离线时，云端自动接管。
 
+pub mod common;
 pub mod telegram;
 pub mod feishu;
 pub mod weixin;
+pub mod wecom;
 pub mod discord;
 pub mod slack;
+pub mod dingtalk;
+pub mod manager;
 
 /// 从 settings 表的 providers JSON 中查找可用的 API 配置
 ///

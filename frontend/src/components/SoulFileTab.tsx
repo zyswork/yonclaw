@@ -21,11 +21,19 @@ interface SoulFileInfo {
   size: number
 }
 
-/** 所有灵魂文件 */
-const ALL_SOUL_FILES = [
-  'IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'USER.md',
-  'TOOLS.md', 'MEMORY.md', 'BOOTSTRAP.md', 'HEARTBEAT.md',
+/** 灵魂文件定义（含图标和描述） */
+const SOUL_FILE_DEFS = [
+  { name: 'IDENTITY.md', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z', desc: 'Agent 身份标识：名称、角色、emoji' },
+  { name: 'SOUL.md', icon: 'M12 2L15 8 22 9 17 14 18 21 12 18 6 21 7 14 2 9 9 8z', desc: 'Agent 核心人格：语气、风格、行为准则' },
+  { name: 'AGENTS.md', icon: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75', desc: 'Agent 协作规则：与其他 Agent 交互方式' },
+  { name: 'USER.md', icon: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8', desc: 'User 画像：用户偏好、习惯（自动学习）' },
+  { name: 'TOOLS.md', icon: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z', desc: '工具配置：自定义工具参数和策略' },
+  { name: 'MEMORY.md', icon: 'M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.08 16.9a3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24A2.5 2.5 0 0 1 7.04 4.04 2.5 2.5 0 0 1 9.5 2M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2', desc: '记忆指令：长期记忆的存储和检索规则' },
+  { name: 'BOOTSTRAP.md', icon: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z', desc: '启动脚本：Agent 首次启动时执行的初始化' },
+  { name: 'HEARTBEAT.md', icon: 'M22 12h-4l-3 9L9 3l-3 9H2', desc: '心跳任务：Agent 定期自动执行的任务' },
+  { name: 'STANDING_ORDERS.md', icon: 'M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11', desc: '常驻指令：每次对话都会注入的规则' },
 ]
+const ALL_SOUL_FILES = SOUL_FILE_DEFS.map(d => d.name)
 
 /** 表单模式的字段结构 */
 interface FormFields {
@@ -413,25 +421,63 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
       </div>
 
       {/* 文件列表 */}
-      <div style={{ marginBottom: '10px' }}>
-        {ALL_SOUL_FILES.map(f => {
-          const exists = fileList.includes(f)
-          const isSelected = selectedFile === f
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8, marginBottom: 12 }}>
+        {SOUL_FILE_DEFS.map(def => {
+          const exists = fileList.includes(def.name)
+          const isSelected = selectedFile === def.name
+          const size = fileSizes[def.name] || 0
+          const isEmpty = exists && size === 0
           return (
             <div
-              key={f}
-              onClick={() => handleSelectFile(f)}
+              key={def.name}
+              onClick={() => handleSelectFile(def.name)}
               style={{
-                padding: '6px 8px', marginBottom: '2px', borderRadius: '3px',
-                cursor: 'pointer', fontSize: '12px',
-                backgroundColor: isSelected ? 'var(--accent-bg)' : 'transparent',
-                color: exists ? 'var(--text-primary)' : 'var(--text-muted)',
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 14px', borderRadius: 10,
+                cursor: 'pointer',
+                backgroundColor: isSelected ? 'var(--accent-bg)' : 'var(--bg-elevated)',
+                border: isSelected ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
+                transition: 'all 0.15s',
+                display: 'flex', alignItems: 'flex-start', gap: 10,
               }}
             >
-              <span>{f}</span>
-              <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
-                {exists ? `${fileSizes[f] || 0}B` : t('soulFile.notCreated')}
+              {/* 文件图标 */}
+              <div style={{
+                width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                background: exists && !isEmpty ? 'var(--accent-bg)' : 'var(--bg-glass)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                  stroke={exists && !isEmpty ? 'var(--accent)' : 'var(--text-muted)'}
+                  strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={def.icon} />
+                </svg>
+              </div>
+              {/* 文件信息 */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 13, fontWeight: 600,
+                  color: exists ? 'var(--text-primary)' : 'var(--text-muted)',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  {def.name}
+                  {isEmpty && (
+                    <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, backgroundColor: 'var(--warning-bg)', color: 'var(--warning)' }}>
+                      empty
+                    </span>
+                  )}
+                  {!exists && (
+                    <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, backgroundColor: 'var(--bg-glass)', color: 'var(--text-muted)' }}>
+                      new
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {def.desc}
+                </div>
+              </div>
+              {/* 大小 */}
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0, marginTop: 2 }}>
+                {exists ? (size >= 1024 ? `${(size / 1024).toFixed(1)}KB` : `${size}B`) : ''}
               </span>
             </div>
           )
@@ -448,9 +494,11 @@ export default function SoulFileTab({ agentId }: SoulFileTabProps) {
             value={fileContent}
             onChange={e => setFileContent(e.target.value)}
             style={{
-              flex: 1, minHeight: '150px', padding: '8px', border: '1px solid var(--border-subtle)',
-              borderRadius: '4px', fontSize: '12px', fontFamily: 'monospace',
+              flex: 1, minHeight: '180px', padding: '12px', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, fontSize: '13px', fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
               resize: 'vertical', boxSizing: 'border-box', width: '100%',
+              backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)',
+              lineHeight: 1.6,
             }}
           />
           <button

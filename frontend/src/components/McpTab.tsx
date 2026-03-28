@@ -13,6 +13,7 @@ import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
+import Select from './Select'
 
 interface McpServer {
   id: string
@@ -37,10 +38,10 @@ interface McpTabProps {
   agentId: string
 }
 
-const STATUS_ICONS: Record<string, string> = {
-  connected: '🟢',
-  configured: '🟡',
-  failed: '🔴',
+const STATUS_COLORS: Record<string, string> = {
+  connected: '#22c55e',
+  configured: '#eab308',
+  failed: '#ef4444',
 }
 
 export default function McpTab({ agentId }: McpTabProps) {
@@ -145,9 +146,9 @@ export default function McpTab({ agentId }: McpTabProps) {
       }
       let count = 0
       for (const [name, cfg] of Object.entries(servers)) {
-        const c = cfg as any
+        const c = cfg as Record<string, unknown>
         if (!c.command) continue
-        const args = Array.isArray(c.args) ? c.args.join(' ') : ''
+        const args = Array.isArray(c.args) ? (c.args as string[]).join(' ') : ''
         const env = c.env ? JSON.stringify(c.env) : undefined
         await invoke('add_mcp_server', {
           agentId,
@@ -180,7 +181,7 @@ export default function McpTab({ agentId }: McpTabProps) {
           {importing ? t('mcpTab.importing') : t('mcpTab.importClaude')}
         </button>
         <button onClick={() => { setShowJsonImport(!showJsonImport); setShowAdd(false) }} style={btnStyle}>
-          {showJsonImport ? t('mcpTab.cancelBtn') : '\u{1F4CB} JSON'}
+          {showJsonImport ? t('mcpTab.cancelBtn') : 'JSON'}
         </button>
       </div>
 
@@ -230,11 +231,12 @@ export default function McpTab({ agentId }: McpTabProps) {
           </div>
           <div style={{ marginBottom: '6px' }}>
             <label>{t('mcpTab.fieldType')}</label>
-            <select value={form.transport} onChange={e => setForm(f => ({ ...f, transport: e.target.value as 'stdio' | 'http' }))}
-              style={inputStyle}>
-              <option value="stdio">{t('mcpTab.typeStdio')}</option>
-              <option value="http">{t('mcpTab.typeHttp')}</option>
-            </select>
+            <Select value={form.transport} onChange={v => setForm(f => ({ ...f, transport: v as 'stdio' | 'http' }))}
+              options={[
+                { value: 'stdio', label: t('mcpTab.typeStdio') },
+                { value: 'http', label: t('mcpTab.typeHttp') },
+              ]}
+              style={{ width: '100%' }} />
           </div>
           {form.transport === 'stdio' ? (
             <>
@@ -298,7 +300,10 @@ export default function McpTab({ agentId }: McpTabProps) {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>{STATUS_ICONS[s.status] || '⚪'}</span>
+              <span style={{
+                display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                backgroundColor: STATUS_COLORS[s.status] || '#9ca3af',
+              }} />
               <span style={{ fontWeight: 600 }}>{s.name}</span>
               <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{s.transport}</span>
             </div>

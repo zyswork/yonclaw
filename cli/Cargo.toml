@@ -1,0 +1,24 @@
+[package]
+name = "xianzhu-cli"
+version = "0.1.0"
+edition = "2021"
+description = "XianZhu CLI - AI Agent Desktop Assistant"
+
+[[bin]]
+name = "xianzhu"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+colored = "2"
+dialoguer = "0.11"
+indicatif = "0.17"
+dirs = "5"
+futures-util = "0.3"
+ratatui = "0.28"
+crossterm = "0.28"
+urlencoding = "2"

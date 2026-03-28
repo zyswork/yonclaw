@@ -124,6 +124,29 @@ class Database {
     }))
   }
 
+  getUserByEmailAndEnterprise(email: string, enterpriseId: string): User | undefined {
+    const stmt = sqliteDb.prepare('SELECT * FROM users WHERE email = ? AND enterpriseId = ?')
+    const row = stmt.get(email, enterpriseId) as any
+    if (!row) return undefined
+    return {
+      ...row,
+      createdAt: new Date(row.createdAt),
+      updatedAt: new Date(row.updatedAt),
+    }
+  }
+
+  /** 仅按邮箱查找用户（用于验证码登录） */
+  getUserByEmail(email: string): User | undefined {
+    const stmt = sqliteDb.prepare('SELECT * FROM users WHERE email = ?')
+    const row = stmt.get(email) as any
+    if (!row) return undefined
+    return {
+      ...row,
+      createdAt: new Date(row.createdAt),
+      updatedAt: new Date(row.updatedAt),
+    }
+  }
+
   getUserById(id: string): User | undefined {
     const stmt = sqliteDb.prepare('SELECT * FROM users WHERE id = ?')
     const row = stmt.get(id) as any
@@ -137,14 +160,15 @@ class Database {
 
   createUser(user: User): User {
     const stmt = sqliteDb.prepare(`
-      INSERT INTO users (id, enterpriseId, email, name, role, status, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, enterpriseId, email, name, passwordHash, role, status, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       user.id,
       user.enterpriseId,
       user.email,
       user.name,
+      user.passwordHash || null,
       user.role,
       user.status,
       user.createdAt.toISOString(),
