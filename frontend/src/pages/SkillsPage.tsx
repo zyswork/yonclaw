@@ -265,9 +265,18 @@ export default function SkillsPage() {
     installed: boolean; isBuiltin: boolean; tools_count: number
   }
 
+  // marketplace 去重（按 dir_name 优先）
+  const seenDirs = new Set<string>()
+  const dedupedMarketplace = marketplace.filter(s => {
+    const key = s.dir_name || s.name
+    if (seenDirs.has(key)) return false
+    seenDirs.add(key)
+    return true
+  })
+
   const allSkills: DisplaySkill[] = [
     // 技能市场的技能（dir_name 是文件系统目录名，用于安装/卸载）
-    ...marketplace.map(s => {
+    ...dedupedMarketplace.map(s => {
       const dirName = s.dir_name || s.name
       const meta = SKILL_META[dirName] || SKILL_META[s.name] || { category: 'other' }
       return {
@@ -280,9 +289,9 @@ export default function SkillsPage() {
         tools_count: s.tools_count,
       }
     }),
-    // 已安装但不在 marketplace 的技能
+    // 已安装但不在 marketplace 的技能（用 dir_name 和 name 双重匹配去重）
     ...installed
-      .filter(s => !marketplace.some(m => (m.dir_name || m.name) === s.name) && !BUILTIN_TOOLS.some(b => b.name === s.name))
+      .filter(s => !marketplace.some(m => (m.dir_name || m.name) === s.name || m.name === s.name || m.dir_name === s.name) && !BUILTIN_TOOLS.some(b => b.name === s.name))
       .map(s => {
         const meta = SKILL_META[s.name] || { category: 'other' }
         return {
@@ -485,19 +494,22 @@ export default function SkillsPage() {
                 {!skill.isBuiltin && (
                   <div style={{ display: 'flex', gap: 6 }}>
                     {skill.installed ? (<>
-                      <button
-                        onClick={() => handlePublishToHub(skill.dirName)}
-                        disabled={publishing === skill.dirName}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 4,
-                          padding: '6px 12px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
-                          border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
-                          color: 'var(--text-accent)', fontWeight: 500, transition: 'all 0.15s ease',
-                        }}
-                      >
-                        <SvgIcon name="upload" size={12} color="var(--text-accent)" />
-                        {publishing === skill.dirName ? '...' : t('skills.btnPublish')}
-                      </button>
+                      {/* 发布按钮仅对本地自建技能显示（不在市场中的） */}
+                      {!dedupedMarketplace.some(m => (m.dir_name || m.name) === skill.dirName || m.name === skill.name) && (
+                        <button
+                          onClick={() => handlePublishToHub(skill.dirName)}
+                          disabled={publishing === skill.dirName}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 4,
+                            padding: '6px 12px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+                            border: '1px solid var(--border-subtle)', backgroundColor: 'transparent',
+                            color: 'var(--text-accent)', fontWeight: 500, transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <SvgIcon name="upload" size={12} color="var(--text-accent)" />
+                          {publishing === skill.dirName ? '...' : t('skills.btnPublish')}
+                        </button>
+                      )}
                       <button
                         onClick={() => handleUninstall(skill.dirName)}
                         disabled={operating === skill.dirName}

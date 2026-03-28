@@ -493,7 +493,17 @@ impl Tool for WebSearchTool {
                 // 所有付费引擎都不可用，fallback DuckDuckGo
                 match search_duckduckgo(&client, query).await {
                     Ok(r) => Ok(r),
-                    Err(e) => Ok(format!("搜索暂不可用（{}）。可用 web_fetch 访问特定网页。", e)),
+                    Err(e) => {
+                        log::warn!("DuckDuckGo 也失败: {}", e);
+                        Ok(format!(
+                            "搜索工具暂不可用（免费引擎被限制）。\n\
+                            请在设置中配置搜索 API Key：\n\
+                            - Serper (Google): https://serper.dev （每月 2500 次免费）\n\
+                            - Tavily: https://tavily.com （每月 1000 次免费）\n\
+                            - Brave: https://brave.com/search/api/\n\n\
+                            可用 web_fetch 工具直接访问特定网页获取信息。"
+                        ))
+                    }
                 }
             }
         }
@@ -758,48 +768,82 @@ async fn search_firecrawl(client: &reqwest::Client, api_key: &str, query: &str, 
 }
 
 async fn search_duckduckgo_lite(client: &reqwest::Client, query: &str) -> Result<String, String> {
-    let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
-    let resp = client.get(&url)
-        .header("User-Agent", "XianZhu/0.2 (AI Assistant)")
+    // 使用 DuckDuckGo HTML 搜索（POST 方式，模拟浏览器，避免 bot 检测）
+    let resp = client.post("https://html.duckduckgo.com/html/")
+        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .header("Referer", "https://html.duckduckgo.com/")
+        .header("Accept", "text/html,application/xhtml+xml")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!("q={}&b=&kl=", urlencoding::encode(query)))
         .send().await.map_err(|e| format!("请求失败: {}", e))?;
 
     let html = resp.text().await.map_err(|e| format!("读取失败: {}", e))?;
 
-    // 简单提取搜索结果（从 <a class="result-link"> 或 <td> 中）
+    // 检查是否被 bot 检测拦截
+    if html.contains("anomaly-modal") || html.contains("botnet") {
+        return Err("DuckDuckGo bot 检测拦截，请配置搜索 API Key（推荐 Serper/Tavily）".into());
+    }
+
     let mut results = Vec::new();
-    let mut in_result = false;
-    let mut current_title = String::new();
-    let mut current_snippet;
     let mut count = 0;
 
-    for line in html.lines() {
-        let trimmed = line.trim();
-        // 提取链接标题
-        if trimmed.contains("result-link") || (trimmed.starts_with("<a") && trimmed.contains("rel=\"nofollow\"")) {
-            // 提取 href 和文本
-            if let Some(start) = trimmed.find('>') {
-                if let Some(end) = trimmed[start..].find("</a>") {
-                    current_title = trimmed[start + 1..start + end].to_string();
-                    in_result = true;
+    // 提取 result__a 链接和 result__snippet 摘要
+    // DuckDuckGo HTML 格式：<a class="result__a" href="...">title</a> ... <a class="result__snippet">snippet</a>
+    let mut i = 0;
+    let chars: Vec<char> = html.chars().collect();
+    let html_len = chars.len();
+
+    while i < html_len && count < 5 {
+        // 查找 result__a
+        if let Some(pos) = html[i..].find("result__a") {
+            let abs_pos = i + pos;
+            // 找 href
+            if let Some(href_start) = html[abs_pos..].find("href=\"") {
+                let href_begin = abs_pos + href_start + 6;
+                if let Some(href_end) = html[href_begin..].find('"') {
+                    let url = &html[href_begin..href_begin + href_end];
+                    // 找标题（> 和 </a> 之间）
+                    if let Some(gt) = html[href_begin..].find('>') {
+                        let title_begin = href_begin + gt + 1;
+                        if let Some(end_a) = html[title_begin..].find("</a>") {
+                            let title = html[title_begin..title_begin + end_a]
+                                .replace("<b>", "").replace("</b>", "").trim().to_string();
+                            // 找摘要 result__snippet
+                            let search_from = title_begin + end_a;
+                            let snippet = if let Some(snip_pos) = html[search_from..].find("result__snippet") {
+                                let snip_abs = search_from + snip_pos;
+                                if let Some(snip_gt) = html[snip_abs..].find('>') {
+                                    let snip_begin = snip_abs + snip_gt + 1;
+                                    if let Some(snip_end) = html[snip_begin..].find("</a>").or_else(|| html[snip_begin..].find("</td>")) {
+                                        html[snip_begin..snip_begin + snip_end]
+                                            .replace("<b>", "").replace("</b>", "").trim().to_string()
+                                    } else { String::new() }
+                                } else { String::new() }
+                            } else { String::new() };
+
+                            if !title.is_empty() {
+                                count += 1;
+                                let clean_url = if url.starts_with("//duckduckgo.com/l/?uddg=") {
+                                    urlencoding::decode(url.trim_start_matches("//duckduckgo.com/l/?uddg=").split('&').next().unwrap_or(""))
+                                        .unwrap_or_default().to_string()
+                                } else { url.to_string() };
+                                results.push(format!("{}. **{}**\n   {}\n   {}", count, title, snippet, clean_url));
+                            }
+                            i = title_begin + end_a;
+                            continue;
+                        }
+                    }
                 }
             }
-        }
-        // 提取摘要
-        if in_result && trimmed.starts_with("<td>") && !trimmed.contains("<a") {
-            current_snippet = trimmed.replace("<td>", "").replace("</td>", "").trim().to_string();
-            if !current_title.is_empty() && !current_snippet.is_empty() {
-                count += 1;
-                results.push(format!("{}. **{}**\n   {}", count, current_title, current_snippet));
-                current_title.clear();
-                current_snippet.clear();
-                in_result = false;
-                if count >= 5 { break; }
-            }
+            i = abs_pos + 10;
+        } else {
+            break;
         }
     }
 
     if results.is_empty() {
-        Err("无搜索结果".into())
+        Err("DuckDuckGo 无搜索结果，请配置搜索 API Key（推荐 Serper: https://serper.dev 或 Tavily: https://tavily.com）".into())
     } else {
         Ok(format!("搜索 \"{}\" 的结果:\n\n{}", query, results.join("\n\n")))
     }

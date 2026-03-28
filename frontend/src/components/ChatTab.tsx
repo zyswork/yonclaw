@@ -16,7 +16,21 @@ import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useVoiceOutput } from '../hooks/useVoiceOutput'
 import Select from './Select'
 
-marked.setOptions({ breaks: true, gfm: true })
+// 自定义 renderer：代码块增加语言标签和复制按钮
+const codeBlockRenderer: import('marked').MarkedExtension = {
+  renderer: {
+    code({ text, lang }: { text: string; lang?: string }) {
+      const escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+      const langLabel = lang ? `<span class="code-lang">${lang}</span>` : ''
+      const copyBtn = `<button class="code-copy-btn">Copy</button>`
+      return `<div class="code-block-wrapper"><div class="code-block-header">${langLabel}${copyBtn}</div><pre><code class="language-${lang || 'text'}">${escaped}</code></pre></div>`
+    },
+  },
+}
+marked.use({ breaks: true, gfm: true, ...codeBlockRenderer })
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -87,7 +101,7 @@ interface SubagentRecord {
 function renderMd(text: string) {
   const html = marked.parse(text, { async: false }) as string
   const clean = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['a','b','blockquote','br','code','del','div','em','h1','h2','h3','h4','hr','i','li','ol','p','pre','span','strong','table','tbody','td','th','thead','tr','ul','img'],
+    ALLOWED_TAGS: ['a','b','blockquote','br','button','code','del','div','em','h1','h2','h3','h4','hr','i','li','ol','p','pre','span','strong','table','tbody','td','th','thead','tr','ul','img'],
     ALLOWED_ATTR: ['class','href','rel','target','title','src','alt','start'],
   })
   // 检测多媒体内容（音频/图片路径）
@@ -395,6 +409,251 @@ function ToolGearIcon({ size = 14, color = 'currentColor' }: { size?: number; co
   )
 }
 
+// ─── 消息分组：连续工具调用合并 ──────────────────────────
+interface MessageGroup {
+  type: 'single' | 'tool-group'
+  messages: Message[]
+  startIdx: number
+}
+
+function groupMessages(msgs: Message[]): MessageGroup[] {
+  const groups: MessageGroup[] = []
+  let i = 0
+  while (i < msgs.length) {
+    if (msgs[i].role === 'tool') {
+      const toolMsgs: Message[] = []
+      const start = i
+      while (i < msgs.length && msgs[i].role === 'tool') {
+        toolMsgs.push(msgs[i])
+        i++
+      }
+      if (toolMsgs.length >= 2) {
+        groups.push({ type: 'tool-group', messages: toolMsgs, startIdx: start })
+      } else {
+        groups.push({ type: 'single', messages: toolMsgs, startIdx: start })
+      }
+    } else {
+      groups.push({ type: 'single', messages: [msgs[i]], startIdx: i })
+      i++
+    }
+  }
+  return groups
+}
+
+// ─── 推理过程折叠组件 ──────────────────────────────────────
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const { t } = useI18n()
+  return (
+    <div style={{
+      marginBottom: 8, marginLeft: 0, maxWidth: 560,
+      borderRadius: 10, overflow: 'hidden',
+      border: '1px solid rgba(139,92,246,0.2)',
+      backgroundColor: 'rgba(139,92,246,0.04)',
+    }}>
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          padding: '6px 12px',
+          display: 'flex', alignItems: 'center', gap: 8,
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        <span style={{ fontSize: 14 }}>&#x1F4AD;</span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>
+          {t('agentDetail.thinking') || 'Thinking'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <svg
+          width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transition: 'transform 0.2s ease', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+      {expanded && (
+        <div style={{
+          padding: '8px 12px', borderTop: '1px solid rgba(139,92,246,0.15)',
+        }}>
+          <pre style={{
+            margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            fontFamily: "'SF Mono', Monaco, monospace", fontSize: 12, lineHeight: 1.5,
+            color: 'var(--text-secondary)',
+            backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: 6,
+            padding: '8px 10px', maxHeight: 300, overflow: 'auto',
+          }}>
+            {thinking}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 打字指示器 - 三点跳动 */
+function TypingIndicator() {
+  return (
+    <div className="typing-indicator">
+      <span className="dot" />
+      <span className="dot" />
+      <span className="dot" />
+    </div>
+  )
+}
+
+// ─── 工具组合并卡片组件 ──────────────────────────────────────
+function ToolGroupCard({ messages, groupKey, expandedTools, toggleTool }: {
+  messages: Message[]
+  groupKey: string
+  expandedTools: Set<string>
+  toggleTool: (key: string) => void
+}) {
+  const { t } = useI18n()
+  const isGroupExpanded = expandedTools.has(groupKey)
+  const metas = messages.map(m => extractToolMeta(m.content || ''))
+  const successCount = metas.filter(m => m.success).length
+  const failCount = metas.length - successCount
+  const allSuccess = failCount === 0
+  const accentColor = allSuccess ? 'var(--accent, #34d399)' : 'var(--error, #ef4444)'
+  const statusBg = allSuccess ? 'rgba(52,211,153,0.06)' : 'rgba(239,68,68,0.06)'
+
+  return (
+    <div style={{
+      marginBottom: 6, marginLeft: 38, maxWidth: 560,
+      borderRadius: 10, overflow: 'hidden',
+      border: '1px solid var(--border-subtle)',
+      borderLeft: `3px solid ${accentColor}`,
+      backgroundColor: 'var(--bg-elevated)',
+      transition: 'all 0.2s ease',
+    }}>
+      {/* 组头部 */}
+      <div
+        onClick={() => toggleTool(groupKey)}
+        style={{
+          padding: '8px 12px',
+          display: 'flex', alignItems: 'center', gap: 8,
+          cursor: 'pointer', userSelect: 'none',
+          backgroundColor: statusBg,
+        }}
+      >
+        <ToolGearIcon size={14} color={accentColor} />
+        <strong style={{ fontSize: 12, color: 'var(--text-primary)', fontFamily: "'SF Mono', Monaco, monospace" }}>
+          {messages.length} {t('common.tools') || 'tools'}
+        </strong>
+        <div style={{ flex: 1 }} />
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontSize: 11, color: accentColor, fontWeight: 500,
+        }}>
+          {allSuccess ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          )}
+          {allSuccess
+            ? (t('common.success') || 'Success')
+            : `${successCount} ${t('common.success') || 'ok'} / ${failCount} ${t('common.failed') || 'fail'}`
+          }
+        </span>
+        <svg
+          width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transition: 'transform 0.2s ease', transform: isGroupExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+      {/* 收起状态：工具名列表 */}
+      {!isGroupExpanded && (
+        <div style={{ padding: '4px 12px 6px' }}>
+          {messages.map((m, idx) => {
+            const meta = metas[idx]
+            const c = meta.success ? 'var(--accent, #34d399)' : 'var(--error, #ef4444)'
+            return (
+              <div key={idx} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                marginRight: 10, fontSize: 11, color: 'var(--text-muted)',
+                fontFamily: "'SF Mono', Monaco, monospace",
+              }}>
+                {meta.success ? (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                )}
+                <span>{m.toolName || t('common.tools')}</span>
+                {meta.duration && <span style={{ color: 'var(--text-muted)', opacity: 0.6 }}>{meta.duration}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {/* 展开状态：每个工具详情 */}
+      {isGroupExpanded && messages.map((m, idx) => {
+        const meta = metas[idx]
+        const itemKey = `${groupKey}-${idx}`
+        const itemExpanded = expandedTools.has(itemKey)
+        const c = meta.success ? 'var(--accent, #34d399)' : 'var(--error, #ef4444)'
+        return (
+          <div key={idx} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <div
+              onClick={() => toggleTool(itemKey)}
+              style={{
+                padding: '6px 12px',
+                display: 'flex', alignItems: 'center', gap: 8,
+                cursor: 'pointer', userSelect: 'none',
+              }}
+            >
+              {meta.success ? (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              ) : (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              )}
+              <span style={{ fontSize: 12, fontFamily: "'SF Mono', Monaco, monospace", fontWeight: 500, color: 'var(--text-primary)' }}>
+                {m.toolName || t('common.tools')}
+              </span>
+              <div style={{ flex: 1 }} />
+              {meta.duration && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{meta.duration}</span>}
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ transition: 'transform 0.2s ease', transform: itemExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+              >
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+            {itemExpanded && m.content && (
+              <div style={{ padding: '4px 12px 8px' }}>
+                <pre style={{
+                  margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                  fontFamily: "'SF Mono', Monaco, monospace", fontSize: 11, lineHeight: 1.5,
+                  color: 'var(--text-secondary)',
+                  backgroundColor: 'rgba(0,0,0,0.15)', borderRadius: 6,
+                  padding: '8px 10px', maxHeight: 280, overflow: 'auto',
+                }}>
+                  {formatToolContent(m.content)}
+                </pre>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 const isSystemSession = (title: string) =>
   title.startsWith('cron-') || title.startsWith('[cron]') ||
   title.startsWith('heartbeat-') || title.startsWith('[heartbeat]') ||
@@ -416,6 +675,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // 对话模式：flash=快速回复(不使用工具), standard=标准, thinking=深度思考
+  const [chatMode, setChatMode] = useState<'flash' | 'standard' | 'thinking'>('standard')
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 安全超时：streaming 超过 120 秒自动恢复
   useEffect(() => {
@@ -435,13 +696,37 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set())
   const [selectMode, setSelectMode] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
-  const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set())
-  const toggleTool = (idx: number) => setExpandedTools(prev => {
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+  const toggleTool = (key: string) => setExpandedTools(prev => {
     const next = new Set(prev)
-    next.has(idx) ? next.delete(idx) : next.add(idx)
+    next.has(key) ? next.delete(key) : next.add(key)
     return next
   })
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // 代码块复制按钮 — 事件委托
+  const handleCodeCopyClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.classList.contains('code-copy-btn')) {
+      e.preventDefault()
+      const wrapper = target.closest('.code-block-wrapper')
+      const code = wrapper?.querySelector('code')?.textContent || ''
+      navigator.clipboard.writeText(code).then(() => {
+        target.textContent = 'Copied'
+        setTimeout(() => { target.textContent = 'Copy' }, 1500)
+      }).catch(() => {
+        // 回退：选中文本
+        const range = document.createRange()
+        const codeEl = wrapper?.querySelector('code')
+        if (codeEl) {
+          range.selectNodeContents(codeEl)
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(range)
+        }
+      })
+    }
+  }, [])
   // 编辑消息状态
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [editingContent, setEditingContent] = useState('')
@@ -756,6 +1041,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           return prev // 不修改 messages
         })
       }
+      // 从 DB 重新加载结构化消息（消除 streaming 临时状态与 DB 数据的差异，避免闪烁）
+      loadMessagesRef.current()
     })
     const unlisten3 = listen<string>('llm-error', (e) => {
       setStreaming(false)
@@ -924,33 +1211,16 @@ export default function ChatTab({ agentId }: { agentId: string }) {
 
       case 'compact':
         if (activeSession) {
-          // 立即显示"压缩中"，后台执行，完成后追加结果消息
-          setMessages(prev => [...prev, { role: 'assistant', content: '正在压缩历史...' }])
+          toast.info(t('agentDetail.compacting'))
           invoke<string>('compact_session', { agentId, sessionId: activeSession })
             .then(r => {
-              setMessages(prev => {
-                const copy = [...prev]
-                // 替换最后的"压缩中"消息为结果
-                if (copy.length > 0 && copy[copy.length - 1].content === '正在压缩历史...') {
-                  copy[copy.length - 1] = { role: 'assistant', content: r }
-                } else {
-                  copy.push({ role: 'assistant', content: r })
-                }
-                return copy
-              })
-              // 刷新消息列表（消息数已变）
               loadMessages()
+              toast.success(t('agentDetail.compactDone') || 'Compacted')
             })
             .catch(e => {
-              setMessages(prev => {
-                const copy = [...prev]
-                if (copy.length > 0 && copy[copy.length - 1].content === '正在压缩历史...') {
-                  copy[copy.length - 1] = { role: 'assistant', content: `压缩失败: ${e}` }
-                }
-                return copy
-              })
+              toast.error(`${t('common.error')}: ${e}`)
             })
-          return '' // 不阻塞，立即返回
+          return ''
         }
         return t('agentDetail.errorNoSession')
 
@@ -1209,21 +1479,27 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     streamBuf.current = ''
 
     try {
-      await invoke('send_message', {
-        agentId,
-        sessionId: activeSession,
-        message: fullMessage,
-      })
+      if (chatMode === 'flash') {
+        // Flash 模式：使用轻量级 send_chat_only，不带工具/技能/记忆
+        await invoke<string>('send_chat_only', {
+          agentId,
+          message: fullMessage,
+        })
+      } else {
+        // Standard / Thinking 模式：正常 send_message
+        await invoke('send_message', {
+          agentId,
+          sessionId: activeSession,
+          message: chatMode === 'thinking'
+            ? `[${t('agentDetail.modeThinkingHint')}]\n\n${fullMessage}`
+            : fullMessage,
+        })
+      }
       // invoke 完成意味着 orchestrator 已结束，兜底清除 streaming 状态
       // （llm-done 事件可能因竞态尚未到达）
       setStreaming(false)
-      // 如果 AI 返回空内容，移除空的 assistant 气泡
-      setMessages((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
-          return prev.slice(0, -1)
-        }
-        return prev
-      })
+      // 从 DB 重新加载结构化消息（替换 streaming 临时状态，避免闪烁）
+      loadMessagesRef.current()
     } catch (e) {
       setStreaming(false)
       setMessages((prev) => [...prev, { role: 'system', content: String(e) }])
@@ -1433,11 +1709,28 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           </div>
         ) : (
           <>
-            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '16px 20px' }}>
-              {messages.map((msg, i) => {
-                // 工具调用标记（历史加载的结构化消息）
+            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '16px 20px' }} onClick={handleCodeCopyClick}>
+              {groupMessages(messages).map((group) => {
+                // 连续工具调用合并为一组
+                if (group.type === 'tool-group') {
+                  return (
+                    <ToolGroupCard
+                      key={`tg-${group.startIdx}`}
+                      messages={group.messages}
+                      groupKey={`tg-${group.startIdx}`}
+                      expandedTools={expandedTools}
+                      toggleTool={toggleTool}
+                    />
+                  )
+                }
+
+                const msg = group.messages[0]
+                const i = group.startIdx
+
+                // 单个工具调用（保持现有卡片样式）
                 if (msg.role === 'tool') {
-                  const isExpanded = expandedTools.has(i)
+                  const toolKey = `tool-${i}`
+                  const isExpanded = expandedTools.has(toolKey)
                   const meta = extractToolMeta(msg.content || '')
                   const accentColor = meta.success ? 'var(--accent, #34d399)' : 'var(--error, #ef4444)'
                   const statusBg = meta.success ? 'rgba(52,211,153,0.1)' : 'rgba(239,68,68,0.1)'
@@ -1452,7 +1745,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                     }}>
                       {/* 工具卡片头部 */}
                       <div
-                        onClick={() => toggleTool(i)}
+                        onClick={() => toggleTool(toolKey)}
                         style={{
                           padding: '8px 12px',
                           display: 'flex', alignItems: 'center', gap: 8,
@@ -1497,7 +1790,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                       {/* 收起状态：一行预览 */}
                       {!isExpanded && msg.content && (
                         <div
-                          onClick={() => toggleTool(i)}
+                          onClick={() => toggleTool(toolKey)}
                           style={{
                             padding: '4px 12px 6px', cursor: 'pointer',
                             fontSize: 11, color: 'var(--text-muted)',
@@ -1548,49 +1841,83 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                     if (text) parts.push({ type: 'text', content: text })
                   }
 
-                  // 如果有工具标记，分段渲染
-                  if (parts.length > 1 || (parts.length === 1 && parts[0].type === 'tool')) {
+                  // 如果有工具标记，分段渲染（工具合并为一组，与完成后的 ToolGroupCard 样式一致）
+                  const toolParts = parts.filter(p => p.type === 'tool')
+                  const textParts = parts.filter(p => p.type === 'text')
+                  if (toolParts.length > 0) {
                     return (
-                      <div key={i} style={{ marginBottom: 12 }}>
-                        {parts.map((part, pi) =>
-                          part.type === 'tool' ? (
-                            <div key={pi} style={{
-                              display: 'flex', alignItems: 'center', gap: 8,
-                              margin: '8px 0', padding: 0,
-                            }}>
-                              {/* 左侧横线 */}
-                              <div style={{ flex: '0 0 24px', height: 1, backgroundColor: 'var(--border-subtle)' }} />
-                              {/* 工具标记 */}
-                              <div style={{
-                                display: 'inline-flex', alignItems: 'center', gap: 6,
-                                padding: '3px 10px', borderRadius: 999,
-                                backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                                fontSize: 11, color: 'var(--text-muted)',
-                              }}>
-                                <ToolGearIcon size={12} color="var(--accent, #34d399)" />
-                                <span style={{ fontFamily: "'SF Mono', Monaco, monospace", fontWeight: 500 }}>{part.content}</span>
-                                {/* 旋转动画（执行中状态） */}
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent, #34d399)" strokeWidth="2" strokeLinecap="round" style={{
-                                  animation: 'spin 1s linear infinite',
-                                }}>
-                                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                                </svg>
-                              </div>
-                              {/* 右侧横线 */}
-                              <div style={{ flex: 1, height: 1, backgroundColor: 'var(--border-subtle)' }} />
-                            </div>
-                          ) : (
-                            <div key={pi} className="agent-msg-bubble" style={{
-                              maxWidth: '70%', minWidth: 0, padding: '10px 14px', borderRadius: 12,
-                              backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
+                      <div key={i} className="msg-row message-enter" style={{
+                        marginBottom: 12, display: 'flex', flexDirection: 'row',
+                        alignItems: 'flex-start', gap: 8, overflow: 'hidden',
+                      }}>
+                        {/* 头像 */}
+                        <div style={{
+                          width: 30, height: 30, borderRadius: 8, flexShrink: 0, marginTop: 2,
+                          background: 'rgba(52,211,153,0.08)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          border: '1px solid rgba(52,211,153,0.15)',
+                        }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="9" cy="16" r="1" fill="var(--accent)" stroke="none"/><circle cx="15" cy="16" r="1" fill="var(--accent)" stroke="none"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+                          </svg>
+                        </div>
+                        {/* 内容列 */}
+                        <div style={{ display: 'flex', flexDirection: 'column', maxWidth: 560, minWidth: 0 }}>
+                          {msg.thinking && <ThinkingBlock thinking={msg.thinking} />}
+                          {/* 文字部分 */}
+                          {textParts.map((part, pi) => (
+                            <div key={`t-${pi}`} style={{
+                              padding: '10px 14px', borderRadius: '12px 12px 12px 4px',
+                              backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)',
+                              border: '1px solid var(--border-subtle)',
                               fontSize: 14, lineHeight: 1.6, wordBreak: 'break-word', overflowWrap: 'anywhere',
                               marginBottom: 4,
                             }}>
                               {renderMd(part.content)}
                             </div>
-                          )
-                        )}
-                        {streaming && i === messages.length - 1 && !parts.some(p => p.type === 'text') && <ThinkingIndicator />}
+                          ))}
+                          {/* 工具合并为一个组卡片 */}
+                          <div style={{
+                            marginTop: 4, marginBottom: 6, maxWidth: 560,
+                            borderRadius: 10, overflow: 'hidden',
+                            border: '1px solid var(--border-subtle)',
+                            borderLeft: '3px solid var(--accent, #34d399)',
+                            backgroundColor: 'var(--bg-elevated)',
+                          }}>
+                            <div style={{
+                              padding: '8px 12px',
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              backgroundColor: 'rgba(52,211,153,0.06)',
+                            }}>
+                              <ToolGearIcon size={14} color="var(--accent, #34d399)" />
+                              <strong style={{ fontSize: 12, color: 'var(--text-primary)', fontFamily: "'SF Mono', Monaco, monospace" }}>
+                                {toolParts.length} {t('common.tools') || 'tools'}
+                              </strong>
+                              <div style={{ flex: 1 }} />
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--accent, #34d399)', fontWeight: 500 }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent, #34d399)" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite' }}>
+                                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                                </svg>
+                                {t('common.running') || 'Running...'}
+                              </span>
+                            </div>
+                            <div style={{ padding: '4px 12px 6px' }}>
+                              {toolParts.map((tp, idx) => (
+                                <div key={idx} style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                                  marginRight: 10, fontSize: 11, color: 'var(--text-muted)',
+                                  fontFamily: "'SF Mono', Monaco, monospace",
+                                }}>
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent, #34d399)" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite' }}>
+                                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                                  </svg>
+                                  <span>{tp.content}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {streaming && i === messages.length - 1 && <TypingIndicator />}
+                        </div>
                       </div>
                     )
                   }
@@ -1682,7 +2009,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                     alignItems: 'flex-start', gap: 8,
                     overflow: 'hidden',
                   }}
-                    className="msg-row"
+                    className="msg-row message-enter"
                   >
                     {/* 头像 */}
                     <div style={{
@@ -1703,6 +2030,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                     </div>
                     {/* 消息内容列 */}
                     <div className="agent-msg-bubble" style={{ display: 'flex', flexDirection: 'column', maxWidth: 560, minWidth: 0 }}>
+                    {/* 推理过程折叠显示（assistant 消息） */}
+                    {msg.role === 'assistant' && msg.thinking && <ThinkingBlock thinking={msg.thinking} />}
                     <div style={{
                       padding: '10px 14px', borderRadius: isUser ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
                       backgroundColor: isUser ? 'var(--accent)' : isSystem ? 'var(--success-bg)' : 'var(--bg-elevated)',
@@ -1754,7 +2083,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                         msg.content
                           ? renderMd(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content))
                           : streaming && i === messages.length - 1
-                            ? <ThinkingIndicator />
+                            ? <TypingIndicator />
                             : null
                       ) : (
                         <UserMessageContent content={typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '')} />
@@ -1817,38 +2146,14 @@ export default function ChatTab({ agentId }: { agentId: string }) {
               showCompact={messages.length > 20}
               onCompact={async () => {
                 if (!agentId || !activeSession) {
-                  console.error('[onCompact] MISSING agentId or activeSession!')
                   throw new Error('No active session')
                 }
-                // 非阻塞：显示"压缩中"消息，后台执行
-                setMessages(prev => [...prev,
-                  { role: 'user', content: '/compact' },
-                  { role: 'assistant', content: '正在压缩历史...' }
-                ])
-                try {
-                  const r = await invoke<string>('compact_session', { agentId, sessionId: activeSession })
-                  setMessages((prev: Message[]) => {
-                    const copy = [...prev]
-                    // 找最后一条"压缩中"消息替换
-                    for (let i = copy.length - 1; i >= 0; i--) {
-                      if (copy[i].content === '正在压缩历史...') { copy[i] = { role: 'assistant', content: r }; break; }
-                    }
-                    return copy
-                  })
-                  // 压缩成功后重新加载消息 + 刷新上下文
-                  await loadMessages()
-                  return r
-                } catch (e) {
-                  console.error('[onCompact] ERROR:', e)
-                  setMessages((prev: Message[]) => {
-                    const copy = [...prev]
-                    for (let i = copy.length - 1; i >= 0; i--) {
-                      if (copy[i].content === '正在压缩历史...') { copy[i] = { role: 'assistant', content: `压缩失败: ${e}` }; break; }
-                    }
-                    return copy
-                  })
-                  throw e
-                }
+                // 直接调用后端压缩，ToolBar 自身显示 loading 状态
+                const r = await invoke<string>('compact_session', { agentId, sessionId: activeSession })
+                // 压缩成功后重新加载消息
+                await loadMessages()
+                toast.success(t('agentDetail.compactDone') || 'Compacted')
+                return r
               }}
               agentId={agentId}
               sessionId={activeSession}
@@ -1922,6 +2227,34 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                 ))}
               </div>
             )}
+            {/* 模式选择器 */}
+            <div style={{
+              display: 'flex', gap: 2, padding: '4px 16px',
+              borderTop: '1px solid var(--border-subtle)',
+            }}>
+              {([
+                { key: 'flash' as const, labelKey: 'agentDetail.modeFlash',
+                  icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> },
+                { key: 'standard' as const, labelKey: 'agentDetail.modeStandard',
+                  icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> },
+                { key: 'thinking' as const, labelKey: 'agentDetail.modeThinking',
+                  icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg> },
+              ]).map(m => (
+                <button key={m.key} onClick={() => setChatMode(m.key)}
+                  style={{
+                    padding: '3px 10px', fontSize: 11, borderRadius: 6,
+                    border: chatMode === m.key ? '1px solid var(--accent)' : '1px solid transparent',
+                    background: chatMode === m.key ? 'var(--accent-bg)' : 'transparent',
+                    color: chatMode === m.key ? 'var(--accent)' : 'var(--text-muted)',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {m.icon}
+                  {t(m.labelKey)}
+                </button>
+              ))}
+            </div>
             {/* 输入区 */}
             <div
               style={{ padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}

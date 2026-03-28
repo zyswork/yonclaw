@@ -1057,12 +1057,21 @@ function SearchSettings() {
   const { t } = useI18n()
   const [provider, setProvider] = useState('auto')
   const [loaded, setLoaded] = useState(false)
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
+  const [savingKey, setSavingKey] = useState('')
 
   useEffect(() => {
     invoke<string>('get_setting', { key: 'web_search_provider' }).then(v => {
       if (v) setProvider(v)
       setLoaded(true)
     }).catch(() => setLoaded(true))
+    // 加载已配置的 API Key（只显示是否已配置，不显示明文）
+    const keyNames = ['BRAVE_API_KEY', 'SERPER_API_KEY', 'EXA_API_KEY', 'TAVILY_API_KEY', 'FIRECRAWL_API_KEY']
+    keyNames.forEach(k => {
+      invoke<string>('get_setting', { key: `plugin_key_${k}` }).then(v => {
+        if (v) setApiKeys(prev => ({ ...prev, [k]: v }))
+      }).catch(() => {})
+    })
   }, [])
 
   const save = async (v: string) => {
@@ -1073,15 +1082,25 @@ function SearchSettings() {
     } catch (e) { toast.error(String(e)) }
   }
 
+  const saveApiKey = async (keyName: string, value: string) => {
+    setSavingKey(keyName)
+    try {
+      await invoke('set_setting', { key: `plugin_key_${keyName}`, value })
+      setApiKeys(prev => ({ ...prev, [keyName]: value }))
+      toast.success(`${keyName} ${t('common.saved')}`)
+    } catch (e) { toast.error(String(e)) }
+    finally { setSavingKey('') }
+  }
+
   if (!loaded) return null
 
-  const options = [
+  const options: Array<{ value: string; label: string; desc: string; keyName?: string; link?: string }> = [
     { value: 'auto', label: t('settings.searchAuto'), desc: 'Brave → Serper → Exa → Tavily → Firecrawl → DuckDuckGo' },
-    { value: 'brave', label: 'Brave Search', desc: t('settings.searchNeedsKey') + ': BRAVE_API_KEY — brave.com/search/api' },
-    { value: 'serper', label: 'Serper (Google)', desc: t('settings.searchNeedsKey') + ': SERPER_API_KEY' },
-    { value: 'exa', label: 'Exa (Neural)', desc: t('settings.searchNeedsKey') + ': EXA_API_KEY — exa.ai' },
-    { value: 'tavily', label: 'Tavily AI', desc: t('settings.searchNeedsKey') + ': TAVILY_API_KEY' },
-    { value: 'firecrawl', label: 'Firecrawl', desc: t('settings.searchNeedsKey') + ': FIRECRAWL_API_KEY — firecrawl.dev' },
+    { value: 'brave', label: 'Brave Search', keyName: 'BRAVE_API_KEY', link: 'https://brave.com/search/api/', desc: t('settings.searchNeedsKey') },
+    { value: 'serper', label: 'Serper (Google)', keyName: 'SERPER_API_KEY', link: 'https://serper.dev/', desc: t('settings.searchNeedsKey') + ' — 2500 ' + t('settings.searchFree') + '/mo' },
+    { value: 'exa', label: 'Exa (Neural)', keyName: 'EXA_API_KEY', link: 'https://exa.ai/', desc: t('settings.searchNeedsKey') },
+    { value: 'tavily', label: 'Tavily AI', keyName: 'TAVILY_API_KEY', link: 'https://tavily.com/', desc: t('settings.searchNeedsKey') + ' — 1000 ' + t('settings.searchFree') + '/mo' },
+    { value: 'firecrawl', label: 'Firecrawl', keyName: 'FIRECRAWL_API_KEY', link: 'https://firecrawl.dev/', desc: t('settings.searchNeedsKey') },
     { value: 'duckduckgo', label: 'DuckDuckGo', desc: t('settings.searchFree') },
   ]
 
@@ -1092,19 +1111,61 @@ function SearchSettings() {
       </h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {options.map(opt => (
-          <label key={opt.value} style={{
-            display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-            borderRadius: 8, cursor: 'pointer',
+          <div key={opt.value} style={{
+            padding: '8px 12px', borderRadius: 8,
             border: provider === opt.value ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
             backgroundColor: provider === opt.value ? 'var(--accent-bg)' : 'transparent',
           }}>
-            <input type="radio" name="search" checked={provider === opt.value}
-              onChange={() => save(opt.value)} style={{ margin: 0 }} />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: provider === opt.value ? 600 : 400 }}>{opt.label}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{opt.desc}</div>
-            </div>
-          </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+              <input type="radio" name="search" checked={provider === opt.value}
+                onChange={() => save(opt.value)} style={{ margin: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: provider === opt.value ? 600 : 400 }}>
+                  {opt.label}
+                  {opt.keyName && apiKeys[opt.keyName] && (
+                    <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--success)', fontWeight: 500 }}>
+                      &#x2713; {t('settings.keyConfigured') || 'Key configured'}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{opt.desc}</div>
+              </div>
+            </label>
+            {/* API Key 输入框：选中且需要 key 时显示 */}
+            {provider === opt.value && opt.keyName && (
+              <div style={{ marginTop: 8, marginLeft: 24, display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="password"
+                  placeholder={`${opt.keyName}`}
+                  defaultValue={apiKeys[opt.keyName!] || ''}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim()
+                    if (v && v !== apiKeys[opt.keyName!]) saveApiKey(opt.keyName!, v)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const v = (e.target as HTMLInputElement).value.trim()
+                      if (v) saveApiKey(opt.keyName!, v)
+                    }
+                  }}
+                  style={{
+                    flex: 1, padding: '6px 10px', fontSize: 12, borderRadius: 6,
+                    border: '1px solid var(--border-default)', backgroundColor: 'var(--bg-glass)',
+                    color: 'var(--text-primary)', outline: 'none', fontFamily: "'SF Mono', Monaco, monospace",
+                  }}
+                />
+                {opt.link && (
+                  <a href={opt.link} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 11, color: 'var(--accent)', whiteSpace: 'nowrap', textDecoration: 'none' }}
+                    onClick={(e) => { e.preventDefault(); invoke('open_url', { url: opt.link }).catch(() => window.open(opt.link, '_blank')) }}
+                  >
+                    {t('settings.getKey') || 'Get Key'} &#x2197;
+                  </a>
+                )}
+                {savingKey === opt.keyName && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('common.saving')}</span>}
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </div>

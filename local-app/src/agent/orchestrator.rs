@@ -774,6 +774,92 @@ impl Orchestrator {
             messages.push(serde_json::json!({"role": "user", "content": user_message}));
         }
 
+        // 5a. 自动压缩：上下文使用率超过 80% 时自动触发 compact_session
+        //
+        // 在 ContextGuard 截断之前检查，优先用 LLM 摘要压缩（保留语义），
+        // 避免 ContextGuard 的暴力截断丢失重要上下文。
+        {
+            let sys_tokens = super::token_counter::TokenCounter::count(&system_prompt);
+            let pre_guard_config = super::context_guard::ContextGuardConfig::for_model(&agent.model)
+                .with_system_prompt_tokens(sys_tokens);
+            let budget = pre_guard_config.total_budget();
+            let current_tokens = super::token_counter::TokenCounter::count_messages(&messages);
+            let usage_percent = if budget > 0 { (current_tokens as f64 / budget as f64) * 100.0 } else { 0.0 };
+
+            if usage_percent > 80.0 && compact_boundary == 0 {
+                // 仅在尚未压缩过的 session 触发自动压缩
+                log::info!(
+                    "自动压缩: 上下文使用率 {:.1}% ({}/{} tokens)，触发 compact_session",
+                    usage_percent, current_tokens, budget
+                );
+                match self.compact_session(agent_id, session_id, api_key, provider, base_url).await {
+                    Ok(result) => {
+                        log::info!("自动压缩完成: {}", result.chars().take(200).collect::<String>());
+                        // 压缩后重新加载消息：从新的 compact_boundary 之后加载
+                        let new_boundary: i64 = {
+                            let key = format!("compact_boundary_{}", session_id);
+                            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                                .bind(&key)
+                                .fetch_optional(&self.pool).await.ok().flatten()
+                                .and_then(|v| v.parse::<i64>().ok())
+                                .unwrap_or(0)
+                        };
+                        if new_boundary > 0 {
+                            // 注入摘要到 system prompt
+                            if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
+                                if let Some(ref summary) = session.summary {
+                                    if !summary.is_empty() {
+                                        // 替换 system prompt 中可能已有的摘要（或追加新摘要）
+                                        if !system_prompt.contains("# Previous conversation summary") {
+                                            system_prompt = format!(
+                                                "{}\n\n---\n\n# Previous conversation summary\n\n{}\n\n---\n\nThe above is a summary of earlier conversation. Continue naturally from the recent messages below.",
+                                                system_prompt, summary
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // 重建消息列表
+                            let recent_msgs: Vec<(String, String)> = sqlx::query_as(
+                                "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 50"
+                            ).bind(session_id).bind(new_boundary)
+                                .fetch_all(&self.pool).await.unwrap_or_default();
+
+                            messages.clear();
+                            // 重新添加 system message（如果是 openai provider）
+                            if provider == "openai" {
+                                messages.push(serde_json::json!({"role": "system", "content": &system_prompt}));
+                            }
+                            for (role, content) in &recent_msgs {
+                                messages.push(serde_json::json!({"role": role, "content": content}));
+                            }
+                            // 重新添加当前用户消息（recent_msgs 可能不包含刚保存的消息）
+                            let has_current_user_msg = messages.last()
+                                .and_then(|m| m["content"].as_str())
+                                .map(|c| c == user_message)
+                                .unwrap_or(false);
+                            if !has_current_user_msg {
+                                messages.push(serde_json::json!({"role": "user", "content": user_message}));
+                            }
+                            let new_tokens = super::token_counter::TokenCounter::count_messages(&messages);
+                            log::info!(
+                                "自动压缩后重建消息: {} 条, {} tokens (原 {} tokens)",
+                                messages.len(), new_tokens, current_tokens
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("自动压缩失败（将继续使用 ContextGuard 截断）: {}", e);
+                    }
+                }
+            } else if usage_percent > 80.0 && compact_boundary > 0 {
+                log::info!(
+                    "自动压缩: 上下文使用率 {:.1}%，但已有压缩边界（boundary={}），跳过重复压缩",
+                    usage_percent, compact_boundary
+                );
+            }
+        }
+
         // 6. 上下文预算守卫（ContextGuard）— 唯一的预算强制点
         //
         // 统一管理所有上下文裁剪。5 步策略链：

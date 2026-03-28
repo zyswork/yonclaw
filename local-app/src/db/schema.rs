@@ -79,6 +79,11 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // 兼容旧数据库：给 memories 表添加 importance 列（1-10 置信度/重要度评分）
+    let _ = sqlx::query("ALTER TABLE memories ADD COLUMN importance INTEGER NOT NULL DEFAULT 5")
+        .execute(pool)
+        .await;
+
     // 创建向量数据表
     sqlx::query(
         r#"

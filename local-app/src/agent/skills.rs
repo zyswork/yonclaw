@@ -51,10 +51,16 @@ pub struct SkillManifest {
     pub name: String,
     #[serde(default)]
     pub version: String,
+    /// 技能作者
+    #[serde(default)]
+    pub author: String,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub trigger_keywords: Vec<String>,
+    /// 技能可以使用的工具白名单（为空表示不限制）
+    #[serde(default, alias = "allowed-tools")]
+    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub permissions: SkillPermissions,
     #[serde(default)]
@@ -588,8 +594,10 @@ impl SkillManager {
         Some(SkillManifest {
             name: slug,
             version: String::new(),
+            author: String::new(),
             description,
             trigger_keywords: Vec::new(),
+            allowed_tools: Vec::new(),
             tools: Vec::new(),
             permissions: SkillPermissions::default(),
             requires: SkillRequirements::default(),

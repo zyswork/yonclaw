@@ -297,6 +297,83 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
 .markdown-body img { max-width: 100%; border-radius: var(--radius-sm); }
 .markdown-body strong { font-weight: 600; color: var(--text-heading); }
 
+/* ─── 代码块增强：语言标签 + 复制按钮 ─── */
+
+.code-block-wrapper {
+  position: relative;
+  margin: 8px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--pre-bg);
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 28px;
+}
+
+.code-lang {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', Monaco, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.code-copy-btn {
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+  background: none !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 4px !important;
+  padding: 2px 8px !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  line-height: 1.4;
+}
+
+.code-copy-btn:hover {
+  color: var(--text-primary) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent-bg) !important;
+}
+
+.code-block-wrapper pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border: none;
+  border-radius: 0;
+}
+
+.code-block-wrapper pre code {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--pre-text);
+  background: none;
+  padding: 0;
+}
+
+/* 浅色主题代码块 */
+[data-theme="light"] .code-block-wrapper {
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .code-block-header {
+  background: rgba(0, 0, 0, 0.02);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
 /* ─── 侧边栏样式 ─── */
 
 .sidebar {
@@ -678,6 +755,49 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
   padding: 8px 4px;
   text-align: center;
 }
+
+/* ─── 消息入场动画 ─── */
+
+@keyframes message-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* 打字指示器跳动 */
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+.message-enter {
+  animation: message-fade-in 0.3s ease-out;
+}
+
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--assistant-bubble);
+}
+
+.typing-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+
+.typing-indicator .dot:nth-child(1) { animation-delay: 0ms; }
+.typing-indicator .dot:nth-child(2) { animation-delay: 160ms; }
+.typing-indicator .dot:nth-child(3) { animation-delay: 320ms; }
 
 /* ─── 动画 ─── */
 

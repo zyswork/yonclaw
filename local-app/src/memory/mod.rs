@@ -354,39 +354,48 @@ impl Memory for SqliteMemory {
                     }
                 };
 
-                // FTS5 关键词搜索（使用扩展查询）
-                let fts_rows = sqlx::query_as::<_, (String, String, String, i64)>(
-                    "SELECT m.id, m.memory_type, m.content, m.created_at FROM memories_fts f JOIN memories m ON f.memory_id = m.id WHERE f.agent_id = ? AND memories_fts MATCH ? ORDER BY rank LIMIT ?"
+                // FTS5 关键词搜索（使用扩展查询，含 importance 置信度）
+                let fts_rows = sqlx::query_as::<_, (String, String, String, i64, i32)>(
+                    "SELECT m.id, m.memory_type, m.content, m.created_at, COALESCE(m.importance, 5) FROM memories_fts f JOIN memories m ON f.memory_id = m.id WHERE f.agent_id = ? AND memories_fts MATCH ? ORDER BY rank LIMIT ?"
                 )
                 .bind(agent_id).bind(&expanded_query).bind((limit * 3) as i64)
                 .fetch_all(&self.pool).await.unwrap_or_default();
 
                 // RRF 融合（参考 IronClaw 的 Reciprocal Rank Fusion）
                 // score(d) = Σ 1/(k + rank)，k=60
+                // 最终分数加入 importance 置信度因子：final_score = rrf_score * (1 + importance * 0.1)
                 const RRF_K: f64 = 60.0;
 
-                // content → (rrf_score, id, memory_type, created_at)
-                let mut score_map: std::collections::HashMap<String, (f64, String, String, i64)> =
+                // content → (rrf_score, id, memory_type, created_at, importance)
+                let mut score_map: std::collections::HashMap<String, (f64, String, String, i64, i32)> =
                     std::collections::HashMap::new();
 
                 // 向量排名贡献
                 for (rank, (_vid, content, _cosine)) in vector_results.iter().enumerate() {
                     let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
-                    let e = score_map.entry(content.clone()).or_insert((0.0, String::new(), String::new(), 0));
+                    let e = score_map.entry(content.clone()).or_insert((0.0, String::new(), String::new(), 0, 5));
                     e.0 += rrf;
                 }
 
-                // FTS 排名贡献
-                for (rank, (id, memory_type, content, created_at)) in fts_rows.into_iter().enumerate() {
+                // FTS 排名贡献（含 importance）
+                for (rank, (id, memory_type, content, created_at, importance)) in fts_rows.into_iter().enumerate() {
                     let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
-                    let e = score_map.entry(content.clone()).or_insert((0.0, String::new(), String::new(), 0));
+                    let e = score_map.entry(content.clone()).or_insert((0.0, String::new(), String::new(), 0, 5));
                     e.0 += rrf;
                     if e.1.is_empty() { e.1 = id; }
                     if e.2.is_empty() { e.2 = memory_type; }
                     if e.3 == 0 { e.3 = created_at; }
+                    // 取最高 importance（同一内容可能来自多个条目）
+                    if importance > e.4 { e.4 = importance; }
                 }
 
-                let mut results: Vec<_> = score_map.into_iter().collect();
+                // 应用 importance 置信度因子到最终分数
+                let mut results: Vec<_> = score_map.into_iter()
+                    .map(|(content, (rrf_score, id, cat, ts, importance))| {
+                        let boosted = rrf_score * (1.0 + importance as f64 * 0.1);
+                        (content, (boosted, id, cat, ts, importance))
+                    })
+                    .collect();
                 results.sort_by(|a, b| b.1.0.partial_cmp(&a.1.0).unwrap_or(std::cmp::Ordering::Equal));
                 results.truncate(limit);
 
@@ -394,9 +403,9 @@ impl Memory for SqliteMemory {
                 let max_score = results.first().map(|(_, (s, ..))| *s).unwrap_or(1.0);
                 let norm_factor = if max_score > 0.0 { 1.0 / max_score } else { 1.0 };
 
-                log::info!("RRF 混合检索: agent={}, 向量={}, FTS 结果={}", agent_id, vector_results.len(), results.len());
+                log::info!("RRF 混合检索（含置信度）: agent={}, 向量={}, FTS 结果={}", agent_id, vector_results.len(), results.len());
 
-                return Ok(results.into_iter().map(|(content, (score, id, cat, ts))| MemoryEntry {
+                return Ok(results.into_iter().map(|(content, (score, id, cat, ts, _imp))| MemoryEntry {
                     id, key: String::new(), content,
                     category: MemoryCategory::from_str(&cat),
                     priority: MemoryPriority::Normal,
