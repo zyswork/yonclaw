@@ -225,4 +225,83 @@ impl ChannelManager {
     pub fn running_count(&self) -> usize {
         self.instances.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
+
+    /// 启动定时健康检查
+    ///
+    /// 每 30 秒检查所有已启用频道的连接状态：
+    /// - 如果实例的 JoinHandle 已结束（task 退出），标记为断开并触发重连
+    /// - 通过 Tauri event 通知前端渠道状态变化
+    pub fn start_health_check(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+
+                // 收集已结束的实例 ID
+                let finished_ids: Vec<(String, String, String)> = {
+                    let instances = manager.instances.lock().unwrap_or_else(|p| p.into_inner());
+                    instances.iter()
+                        .filter(|(_, inst)| inst.handle.is_finished())
+                        .map(|(id, inst)| (id.clone(), inst.channel_type.clone(), inst.agent_id.clone()))
+                        .collect()
+                };
+
+                if !finished_ids.is_empty() {
+                    log::warn!("健康检查: 发现 {} 个已断开的频道实例，尝试重连", finished_ids.len());
+                }
+
+                for (id, channel_type, _agent_id) in &finished_ids {
+                    // 从实例列表中移除已结束的
+                    {
+                        let mut instances = manager.instances.lock().unwrap_or_else(|p| p.into_inner());
+                        instances.remove(id.as_str());
+                    }
+
+                    // 通知前端状态变化
+                    use tauri::Manager;
+                    let _ = manager.app_handle.emit_all("channel-status", serde_json::json!({
+                        "id": id,
+                        "channelType": channel_type,
+                        "status": "disconnected",
+                        "message": "健康检查检测到连接断开，正在重连...",
+                    }));
+
+                    // 从数据库读取凭据并重启
+                    let row: Option<(String, String, String)> = sqlx::query_as(
+                        "SELECT agent_id, channel_type, credentials_json FROM agent_channels WHERE id = ? AND enabled = 1"
+                    ).fetch_optional(&manager.pool).await.ok().flatten();
+
+                    if let Some((agent_id, ch_type, creds_json)) = row {
+                        log::info!("健康检查: 重启频道 {} ({})", id, ch_type);
+                        if let Err(e) = manager.start_instance(id, &agent_id, &ch_type, &creds_json).await {
+                            log::error!("健康检查: 重启频道 {} 失败: {}", id, e);
+                            let _ = sqlx::query("UPDATE agent_channels SET status = 'error', status_message = ? WHERE id = ?")
+                                .bind(&format!("健康检查重启失败: {}", e))
+                                .bind(id)
+                                .execute(&manager.pool).await;
+
+                            // 通知前端重启失败
+                            let _ = manager.app_handle.emit_all("channel-status", serde_json::json!({
+                                "id": id,
+                                "channelType": channel_type,
+                                "status": "error",
+                                "message": format!("重启失败: {}", e),
+                            }));
+                        } else {
+                            // 通知前端重连成功
+                            let _ = manager.app_handle.emit_all("channel-status", serde_json::json!({
+                                "id": id,
+                                "channelType": channel_type,
+                                "status": "running",
+                                "message": "健康检查重连成功",
+                            }));
+                        }
+                    } else {
+                        log::info!("健康检查: 频道 {} 已禁用或不存在，跳过重连", id);
+                    }
+                }
+            }
+        });
+    }
 }

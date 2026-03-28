@@ -753,13 +753,16 @@ export default function SettingsPage() {
                         <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
                           {t('settings.fieldApiKey')} {p.apiKeyMasked && <span style={{ color: 'var(--text-muted)' }}>({t('settings.labelCurrent')}: {p.apiKeyMasked}, {t('settings.placeholderKeep')})</span>}
                         </label>
-                        <input
-                          type="password"
-                          value={editForm.apiKey || ''}
-                          onChange={(e) => setEditForm({ ...editForm, apiKey: e.target.value })}
+                        <textarea
+                          value={(editForm.apiKey || '').split('|||').join('\n')}
+                          onChange={(e) => setEditForm({ ...editForm, apiKey: e.target.value.split('\n').filter((k: string) => k.trim()).join('|||') })}
                           placeholder={p.apiKeyMasked ? t('settings.placeholderKeep') : t('settings.placeholderEnterKey')}
-                          style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box' }}
+                          rows={3}
+                          style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box', fontFamily: 'monospace', resize: 'vertical' }}
                         />
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {t('settings.multiKeyHint')}
+                        </div>
                       </div>
 
                       {/* 模型列表编辑 */}

@@ -1,7 +1,34 @@
 //! 共享辅助函数 — 被多个 handler 模块使用
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
 use crate::agent;
 use crate::db;
+
+/// 全局 Key 轮换计数器（provider_id → 轮换索引）
+static KEY_ROTATOR: Lazy<Mutex<HashMap<String, AtomicUsize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 从多 Key 字符串中轮换选择一个
+///
+/// 多个 Key 用 `|||` 分隔，例如 `sk-key1|||sk-key2|||sk-key3`。
+/// 单 Key 时直接返回原值。
+pub fn rotate_api_key(provider_id: &str, multi_key: &str) -> String {
+    let keys: Vec<&str> = multi_key.split("|||").filter(|k| !k.trim().is_empty()).collect();
+    if keys.len() <= 1 {
+        return multi_key.to_string(); // 单 key 直接返回
+    }
+
+    let mut map = KEY_ROTATOR.lock().unwrap();
+    let counter = map
+        .entry(provider_id.to_string())
+        .or_insert_with(|| AtomicUsize::new(0));
+    let idx = counter.fetch_add(1, Ordering::Relaxed) % keys.len();
+    keys[idx].trim().to_string()
+}
 
 /// 模型 → 上下文窗口大小映射（2026 年主流模型）
 pub fn resolve_model_context_window(model: &str) -> usize {
@@ -111,10 +138,11 @@ pub fn find_provider_for_model(
         for p in providers {
             if p["enabled"].as_bool() != Some(true) { continue; }
             if p["id"].as_str() == Some(pid) {
-                let api_key = p["apiKey"].as_str().unwrap_or("").to_string();
-                if !api_key.is_empty() {
+                let raw_key = p["apiKey"].as_str().unwrap_or("").to_string();
+                if !raw_key.is_empty() {
                     let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                     let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
+                    let api_key = rotate_api_key(pid, &raw_key);
                     return Some((api_type, api_key, base_url));
                 }
             }
@@ -124,13 +152,15 @@ pub fn find_provider_for_model(
     // 第一轮：按模型名精确匹配
     for p in providers {
         if p["enabled"].as_bool() != Some(true) { continue; }
+        let provider_id = p["id"].as_str().unwrap_or("unknown");
         if let Some(models) = p["models"].as_array() {
             for m in models {
                 if m["id"].as_str() == Some(model_id) {
-                    let api_key = p["apiKey"].as_str().unwrap_or("").to_string();
-                    if !api_key.is_empty() {
+                    let raw_key = p["apiKey"].as_str().unwrap_or("").to_string();
+                    if !raw_key.is_empty() {
                         let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                         let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
+                        let api_key = rotate_api_key(provider_id, &raw_key);
                         return Some((api_type, api_key, base_url));
                     }
                 }

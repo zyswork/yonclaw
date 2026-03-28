@@ -37,6 +37,7 @@ pub async fn start_weixin(
         .unwrap_or_else(|_| reqwest::Client::new());
 
     let mut get_updates_buf = String::new();
+    let mut attempt: u32 = 0; // 连续失败计数，用于指数退避
 
     // 从 settings 读取 base_url（扫码时可能分配了不同的端点）
     let base_url: String = sqlx::query_scalar(
@@ -66,6 +67,9 @@ pub async fn start_weixin(
 
         match result {
             Ok(resp) => {
+                // 成功响应，重置失败计数
+                attempt = 0;
+
                 // 更新 buf
                 if let Some(buf) = resp.get("get_updates_buf").and_then(|b| b.as_str()) {
                     if !buf.is_empty() {
@@ -100,10 +104,17 @@ pub async fn start_weixin(
                     return Err("session 过期".to_string());
                 }
                 if e == "timeout" {
+                    // 长轮询超时是正常的，不算失败
                     continue;
                 }
-                log::warn!("微信: getUpdates 失败: {}，5秒后重试", e);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                attempt += 1;
+                let delay = super::common::reconnect_delay(attempt);
+                if attempt >= 10 {
+                    log::error!("微信: getUpdates 失败: {}，连续失败 {} 次，降级为 {}s 探测模式", e, attempt, delay);
+                } else {
+                    log::warn!("微信: getUpdates 失败: {}，第 {} 次重试，{}s 后重试", e, attempt, delay);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
     }

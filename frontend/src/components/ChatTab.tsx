@@ -9,6 +9,9 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import mermaid from 'mermaid'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
 import { useConfirm, showConfirm } from '../hooks/useConfirm'
@@ -16,10 +19,22 @@ import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useVoiceOutput } from '../hooks/useVoiceOutput'
 import Select from './Select'
 
-// 自定义 renderer：代码块增加语言标签和复制按钮
+// 初始化 Mermaid
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  securityLevel: 'loose',
+})
+
+// 自定义 renderer：代码块增加语言标签和复制按钮，mermaid 代码块用占位符
 const codeBlockRenderer: import('marked').MarkedExtension = {
   renderer: {
     code({ text, lang }: { text: string; lang?: string }) {
+      // Mermaid 代码块：输出占位标记，后续由 React 组件替换
+      if (lang === 'mermaid') {
+        const encoded = btoa(unescape(encodeURIComponent(text)))
+        return `<div class="mermaid-placeholder" data-mermaid-code="${encoded}"></div>`
+      }
       const escaped = text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -30,7 +45,53 @@ const codeBlockRenderer: import('marked').MarkedExtension = {
     },
   },
 }
+
+// KaTeX marked 扩展：块级公式 $$...$$ 和行内公式 $...$
+const katexExtension: import('marked').MarkedExtension = {
+  extensions: [{
+    name: 'math-block',
+    level: 'block' as const,
+    start(src: string) { return src.indexOf('$$') },
+    tokenizer(src: string) {
+      const match = src.match(/^\$\$([\s\S]+?)\$\$/)
+      if (match) {
+        return { type: 'math-block', raw: match[0], text: match[1].trim() }
+      }
+      return undefined
+    },
+    renderer(token) {
+      const text = (token as unknown as { text: string }).text
+      try {
+        return `<div class="katex-display-wrapper">${katex.renderToString(text, { displayMode: true, throwOnError: false })}</div>`
+      } catch {
+        return `<pre class="katex-error">${text}</pre>`
+      }
+    }
+  }, {
+    name: 'math-inline',
+    level: 'inline' as const,
+    start(src: string) { return src.indexOf('$') },
+    tokenizer(src: string) {
+      // 不匹配 $$ （那是块级），不匹配换行，不匹配纯数字如 $100
+      const match = src.match(/^\$([^\$\n]+?)\$/)
+      if (match && !/^\d+$/.test(match[1].trim())) {
+        return { type: 'math-inline', raw: match[0], text: match[1].trim() }
+      }
+      return undefined
+    },
+    renderer(token) {
+      const text = (token as unknown as { text: string }).text
+      try {
+        return katex.renderToString(text, { displayMode: false, throwOnError: false })
+      } catch {
+        return `<code class="katex-error">${text}</code>`
+      }
+    }
+  }]
+}
+
 marked.use({ breaks: true, gfm: true, ...codeBlockRenderer })
+marked.use(katexExtension)
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -96,20 +157,131 @@ interface SubagentRecord {
   timeoutSecs: number
 }
 
+// ─── Mermaid 渲染组件 ───────────────────────────────────────
+
+function MermaidBlock({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const id = `mermaid-${Math.random().toString(36).slice(2, 10)}`
+    mermaid.render(id, code).then(({ svg: renderedSvg }) => {
+      setSvg(renderedSvg)
+    }).catch((e) => {
+      setError(String(e))
+    })
+  }, [code])
+
+  if (error) {
+    return (
+      <pre style={{
+        color: 'var(--error)', background: 'var(--error-bg)',
+        padding: '12px 16px', borderRadius: 8, fontSize: 12, margin: '8px 0',
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      }}>
+        Mermaid Error: {error}
+      </pre>
+    )
+  }
+  if (!svg) {
+    return (
+      <div style={{
+        padding: '16px', margin: '8px 0', borderRadius: 8,
+        background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+        color: 'var(--text-muted)', textAlign: 'center', fontSize: 13,
+      }}>
+        Loading diagram...
+      </div>
+    )
+  }
+  return (
+    <div
+      ref={containerRef}
+      className="mermaid-rendered"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  )
+}
+
 // ─── Helper Functions & Components ──────────────────────────
 
-/** Markdown 渲染 */
+/** Markdown 渲染：支持 Mermaid 流程图和 KaTeX 数学公式 */
 function renderMd(text: string) {
   const html = marked.parse(text, { async: false }) as string
   const clean = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['a','b','blockquote','br','button','code','del','div','em','h1','h2','h3','h4','hr','i','li','ol','p','pre','span','strong','table','tbody','td','th','thead','tr','ul','img'],
-    ALLOWED_ATTR: ['class','href','rel','target','title','src','alt','start'],
+    ALLOWED_TAGS: [
+      'a','b','blockquote','br','button','code','del','div','em',
+      'h1','h2','h3','h4','hr','i','li','ol','p','pre','span',
+      'strong','table','tbody','td','th','thead','tr','ul','img',
+      // KaTeX 生成的标签
+      'math','semantics','mrow','mi','mo','mn','msup','msub','mfrac',
+      'mover','munder','munderover','msqrt','mroot','mtable','mtr','mtd',
+      'mtext','mspace','annotation','menclose','mpadded','mphantom',
+      // SVG 标签（Mermaid 占位符的 class/data 属性需要）
+      'svg','path','circle','line','rect','text','g','defs','marker',
+      'polygon','polyline','foreignObject','ellipse','tspan',
+    ],
+    ALLOWED_ATTR: [
+      'class','href','rel','target','title','src','alt','start','style',
+      // Mermaid 占位符
+      'data-mermaid-code',
+      // SVG 属性
+      'd','fill','stroke','viewBox','xmlns','transform',
+      'cx','cy','r','x','y','width','height',
+      'text-anchor','dominant-baseline','font-size','font-family',
+      'marker-end','points','x1','y1','x2','y2',
+      'stroke-width','stroke-dasharray','stroke-linecap','stroke-linejoin',
+      'opacity','rx','ry','dx','dy','id',
+      // KaTeX 属性
+      'mathvariant','encoding','accent','accentunder','columnalign',
+      'columnspacing','rowspacing','columnlines','rowlines','frame',
+    ],
   })
+
   // 检测多媒体内容（音频/图片路径）
   const mediaElements = extractMediaFromText(text)
+
+  // 检查是否包含 mermaid 占位符
+  if (!clean.includes('mermaid-placeholder')) {
+    return (
+      <div>
+        <div className="markdown-body" dangerouslySetInnerHTML={{ __html: clean }} />
+        {mediaElements}
+      </div>
+    )
+  }
+
+  // 包含 mermaid 占位符：拆分 HTML，在占位符位置插入 MermaidBlock 组件
+  const parts: React.ReactNode[] = []
+  const regex = /<div class="mermaid-placeholder" data-mermaid-code="([^"]+)"><\/div>/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(clean)) !== null) {
+    // 占位符前的 HTML
+    if (match.index > lastIndex) {
+      const htmlBefore = clean.slice(lastIndex, match.index)
+      parts.push(<span key={`html-${lastIndex}`} dangerouslySetInnerHTML={{ __html: htmlBefore }} />)
+    }
+    // 解码 mermaid 代码并渲染
+    try {
+      const code = decodeURIComponent(escape(atob(match[1])))
+      parts.push(<MermaidBlock key={`mermaid-${match.index}`} code={code} />)
+    } catch {
+      parts.push(<pre key={`mermaid-err-${match.index}`} style={{ color: 'var(--error)' }}>Failed to decode mermaid block</pre>)
+    }
+    lastIndex = match.index + match[0].length
+  }
+
+  // 剩余 HTML
+  if (lastIndex < clean.length) {
+    parts.push(<span key={`html-${lastIndex}`} dangerouslySetInnerHTML={{ __html: clean.slice(lastIndex) }} />)
+  }
+
   return (
     <div>
-      <div className="markdown-body" dangerouslySetInnerHTML={{ __html: clean }} />
+      <div className="markdown-body">{parts}</div>
       {mediaElements}
     </div>
   )
@@ -1170,18 +1342,79 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     } catch (e) { toast.error(String(e)) }
   }
 
-  const exportSession = async (sessionId: string, format: 'markdown' | 'json' = 'markdown') => {
+  const exportSession = async (sessionId: string, _format: 'markdown' | 'json' = 'markdown') => {
     try {
-      const content = await invoke<string>('export_session_history', { sessionId, format })
-      const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/markdown' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `session-${sessionId.slice(0, 8)}.${format === 'json' ? 'json' : 'md'}`
-      a.click()
-      URL.revokeObjectURL(url)
-      toast.success(t('common.exported') || 'Exported')
-    } catch (e) { toast.error(String(e)) }
+      // 加载结构化消息（含 tool_calls、tool_result）
+      const structured = await invoke<any[]>('load_structured_messages', { sessionId, limit: 500 })
+      if (!structured || structured.length === 0) {
+        toast.error(t('agentDetail.noMessagesExport'))
+        return
+      }
+
+      // 构建 Markdown 内容
+      const session = sessions.find(s => s.id === sessionId)
+      const title = session?.title || 'Conversation'
+      const date = new Date().toISOString().split('T')[0]
+
+      let md = `# ${title}\n\n`
+      md += `> Exported from XianZhu on ${date}\n\n---\n\n`
+
+      for (const m of structured) {
+        if (m.role === 'system') continue
+        if (m.role === 'user') {
+          md += `## 👤 User\n\n${m.content || ''}\n\n`
+        } else if (m.role === 'assistant') {
+          md += `## 🤖 Assistant\n\n${m.content || ''}\n\n`
+          if (m.tool_calls) {
+            for (const tc of m.tool_calls) {
+              md += `> 🔧 Tool: ${tc.function?.name || tc.name}\n\n`
+            }
+          }
+        } else if (m.role === 'tool') {
+          const toolContent = (m.content || '').slice(0, 200)
+          md += `> 🔧 Tool Result (${m.name || 'tool'}):\n> ${toolContent}${(m.content || '').length > 200 ? '...' : ''}\n\n`
+        }
+        md += '---\n\n'
+      }
+
+      const safeTitle = title.replace(/[^\w\u4e00-\u9fff]/g, '_')
+      const fileName = `${safeTitle}_${date}.md`
+
+      // 优先使用 Tauri save dialog，失败时 fallback 到浏览器 Blob 下载
+      let saved = false
+      try {
+        const { save } = await import('@tauri-apps/api/dialog')
+        const { writeTextFile } = await import('@tauri-apps/api/fs')
+        const filePath = await save({
+          defaultPath: fileName,
+          filters: [{ name: 'Markdown', extensions: ['md'] }]
+        })
+        if (filePath) {
+          await writeTextFile(filePath, md)
+          saved = true
+        } else {
+          // 用户取消了保存对话框
+          return
+        }
+      } catch {
+        // Tauri dialog/fs 不可用，fallback 到浏览器下载
+        const blob = new Blob([md], { type: 'text/markdown' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        a.click()
+        URL.revokeObjectURL(url)
+        saved = true
+      }
+
+      if (saved) {
+        toast.success(t('common.exportSuccess') || t('agentDetailSub.exportedAs', { title }) || 'Exported')
+      }
+    } catch (e) {
+      console.error('Export error:', e)
+      toast.error(t('common.exportFailed') || String(e))
+    }
   }
 
   const toggleSessionSelect = (sid: string) => {

@@ -28,17 +28,36 @@ pub async fn start_slack(
 ) -> Result<(), String> {
     log::info!("Slack: 启动 Socket Mode (agent={})", config.agent_id);
 
+    let mut attempt: u32 = 0;
+
     loop {
         if cancel.is_cancelled() {
             log::info!("Slack: 收到取消信号，退出");
             return Ok(());
         }
-        if let Err(e) = run_socket_mode(&config, &pool, &orchestrator, &app_handle, &cancel).await {
-            log::warn!("Slack: Socket Mode 断开: {}，10秒后重连", e);
-        }
-        tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+        match run_socket_mode(&config, &pool, &orchestrator, &app_handle, &cancel).await {
+            Ok(_) => {
+                // 连接曾成功建立后断开，重置计数
+                attempt = 0;
+                log::info!("Slack: 连接断开（曾成功），1s 后重连");
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                }
+            }
+            Err(e) => {
+                attempt += 1;
+                let delay = super::common::reconnect_delay(attempt);
+                if attempt >= 10 {
+                    log::error!("Slack: Socket Mode 断开: {}，连续失败 {} 次，降级为 {}s 探测模式", e, attempt, delay);
+                } else {
+                    log::warn!("Slack: Socket Mode 断开: {}，第 {} 次重连，{}s 后重试", e, attempt, delay);
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {},
+                }
+            }
         }
     }
 }

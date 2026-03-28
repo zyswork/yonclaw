@@ -30,17 +30,36 @@ pub async fn start_discord(
     let agent_id = config.agent_id.clone();
     log::info!("Discord: 启动 Gateway 连接 (token: {}..., agent={})", &token[..token.len().min(20)], agent_id);
 
+    let mut attempt: u32 = 0;
+
     loop {
         if cancel.is_cancelled() {
             log::info!("Discord: 收到取消信号，退出");
             return Ok(());
         }
-        if let Err(e) = run_gateway(&token, &agent_id, &pool, &orchestrator, &app_handle, &cancel).await {
-            log::warn!("Discord: Gateway 断开: {}，10秒后重连", e);
-        }
-        tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+        match run_gateway(&token, &agent_id, &pool, &orchestrator, &app_handle, &cancel).await {
+            Ok(_) => {
+                // 曾成功连接后断开，重置计数，短暂等待后重连
+                attempt = 0;
+                log::info!("Discord: 连接断开（曾成功），1s 后重连");
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                }
+            }
+            Err(e) => {
+                attempt += 1;
+                let delay = super::common::reconnect_delay(attempt);
+                if attempt >= 10 {
+                    log::error!("Discord: Gateway 断开: {}，连续失败 {} 次，降级为 {}s 探测模式", e, attempt, delay);
+                } else {
+                    log::warn!("Discord: Gateway 断开: {}，第 {} 次重连，{}s 后重试", e, attempt, delay);
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {},
+                }
+            }
         }
     }
 }
@@ -138,6 +157,7 @@ async fn run_gateway(
 
     // 获取 bot 自己的 user ID（从 READY 事件）
     let mut bot_user_id = String::new();
+    let mut connected = false; // 标记是否成功完成握手
 
     // 6. 事件循环
     loop {
@@ -185,6 +205,7 @@ async fn run_gateway(
                 match event_name {
                     "READY" => {
                         bot_user_id = data["d"]["user"]["id"].as_str().unwrap_or("").to_string();
+                        connected = true;
                         log::info!("Discord: READY, bot_user_id={}", bot_user_id);
                     }
                     "MESSAGE_CREATE" => {
@@ -248,7 +269,12 @@ async fn run_gateway(
     }
 
     shutdown.store(true, Ordering::Relaxed);
-    Err("Gateway 循环结束".into())
+    if connected {
+        // 曾成功连接过，断开属于临时问题，返回 Ok 以重置重连计数
+        Ok(())
+    } else {
+        Err("Gateway 握手未完成即断开".into())
+    }
 }
 
 /// 处理单条消息

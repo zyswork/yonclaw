@@ -513,9 +513,12 @@ async fn main() {
                 ));
                 let _ = app_state_for_setup.channel_manager.set(mgr.clone());
                 let mgr_clone = mgr.clone();
+                let mgr_health = mgr.clone();
                 tokio::spawn(async move {
                     mgr_clone.start_all().await;
                     log::info!("ChannelManager: {} 个频道实例已启动", mgr_clone.running_count());
+                    // 启动定时健康检查（每 30 秒）
+                    mgr_health.start_health_check();
                 });
             }
 

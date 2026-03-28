@@ -76,18 +76,36 @@ pub async fn start_feishu(
     let agent_id = config.agent_id.clone();
     log::info!("飞书: 启动连接 (app_id: {}..., agent={})", &app_id[..app_id.len().min(10)], agent_id);
 
+    let mut attempt: u32 = 0;
+
     loop {
         if cancel.is_cancelled() {
             log::info!("飞书: 收到取消信号，退出");
             return Ok(());
         }
         match run_feishu_loop(&app_id, &app_secret, &agent_id, &pool, &orchestrator, &app_handle, &cancel).await {
-            Ok(_) => log::info!("飞书: 连接正常关闭，5秒后重连"),
-            Err(e) => log::warn!("飞书: 连接异常: {}，10秒后重连", e),
-        }
-        tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {},
+            Ok(_) => {
+                // 连接曾成功建立后断开，重置计数
+                attempt = 0;
+                log::info!("飞书: 连接正常关闭，1s 后重连");
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                }
+            }
+            Err(e) => {
+                attempt += 1;
+                let delay = super::common::reconnect_delay(attempt);
+                if attempt >= 10 {
+                    log::error!("飞书: 连接异常: {}，连续失败 {} 次，降级为 {}s 探测模式", e, attempt, delay);
+                } else {
+                    log::warn!("飞书: 连接异常: {}，第 {} 次重连，{}s 后重试", e, attempt, delay);
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {},
+                }
+            }
         }
     }
 }

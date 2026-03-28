@@ -56,6 +56,8 @@ export const en: TranslationMap = {
     approxCost: '~$',
     ok: 'OK',
     errorStatus: 'Error',
+    exportSuccess: 'Export successful',
+    exportFailed: 'Export failed',
   },
   sidebar: {
     chat: 'Chat',
@@ -459,6 +461,7 @@ export const en: TranslationMap = {
     labelCurrent: 'Current',
     placeholderKeep: 'Leave empty to keep unchanged',
     placeholderEnterKey: 'Enter API Key',
+    multiKeyHint: 'Multiple keys supported, one per line (auto-rotation)',
     fieldModels: 'Model List',
     warningAddModels: 'Please add at least one model (e.g. gpt-4o-mini, deepseek-chat).',
     fieldModelId: 'Model ID (e.g. gpt-4o)',

@@ -56,6 +56,8 @@ export const zhCN: TranslationMap = {
     approxCost: '约 $',
     ok: '正常',
     errorStatus: '异常',
+    exportSuccess: '导出成功',
+    exportFailed: '导出失败',
   },
   sidebar: {
     chat: '聊天',
@@ -459,6 +461,7 @@ export const zhCN: TranslationMap = {
     labelCurrent: '当前',
     placeholderKeep: '留空保持不变',
     placeholderEnterKey: '输入 API Key',
+    multiKeyHint: '支持多个 Key 轮换，每行一个',
     fieldModels: '模型列表',
     warningAddModels: '请至少添加一个模型。输入供应商支持的模型 ID（如 gpt-4o-mini）。',
     fieldModelId: '模型 ID (如 gpt-4o)',

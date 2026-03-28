@@ -297,6 +297,43 @@ select option { background: var(--bg-elevated); color: var(--text-primary); }
 .markdown-body img { max-width: 100%; border-radius: var(--radius-sm); }
 .markdown-body strong { font-weight: 600; color: var(--text-heading); }
 
+/* ─── Mermaid 流程图 ─── */
+
+.mermaid-rendered {
+  margin: 12px 0;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.mermaid-rendered svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ─── KaTeX 数学公式 ─── */
+
+.katex-display-wrapper {
+  margin: 12px 0;
+  padding: 8px 0;
+  overflow-x: auto;
+}
+
+.markdown-body .katex {
+  font-size: 1.1em;
+}
+
+.katex-error {
+  color: var(--error);
+  background: var(--error-bg);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 /* ─── 代码块增强：语言标签 + 复制按钮 ─── */
 
 .code-block-wrapper {

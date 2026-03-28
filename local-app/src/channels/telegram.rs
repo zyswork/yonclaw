@@ -32,6 +32,7 @@ pub async fn start_polling(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     let mut offset: i64 = 0;
+    let mut attempt: u32 = 0; // 连续失败计数，用于指数退避
 
     log::info!("Telegram: 轮询 loop 已进入");
 
@@ -60,10 +61,14 @@ pub async fn start_polling(
                 match resp.json::<serde_json::Value>().await {
                     Ok(data) => {
                         if data["ok"].as_bool() != Some(true) {
-                            log::warn!("Telegram: API 返回错误: {}", data);
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            attempt += 1;
+                            let delay = super::common::reconnect_delay(attempt);
+                            log::warn!("Telegram: API 返回错误: {}，第 {} 次失败，{}s 后重试", data, attempt, delay);
+                            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                             continue;
                         }
+                        // 成功响应，重置失败计数
+                        attempt = 0;
                         if let Some(updates) = data["result"].as_array() {
                             if !updates.is_empty() {
                                 log::info!("Telegram: 收到 {} 条更新", updates.len());
@@ -86,14 +91,22 @@ pub async fn start_polling(
                         }
                     }
                     Err(e) => {
-                        log::warn!("Telegram: JSON 解析失败 (status={}): {}", status, e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        attempt += 1;
+                        let delay = super::common::reconnect_delay(attempt);
+                        log::warn!("Telegram: JSON 解析失败 (status={}): {}，第 {} 次失败，{}s 后重试", status, e, attempt, delay);
+                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                     }
                 }
             }
             Err(e) => {
-                log::warn!("Telegram: 轮询请求失败: {}，10秒后重试", e);
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                attempt += 1;
+                let delay = super::common::reconnect_delay(attempt);
+                if attempt >= 10 {
+                    log::error!("Telegram: 轮询请求失败: {}，连续失败 {} 次，降级为 {}s 探测模式", e, attempt, delay);
+                } else {
+                    log::warn!("Telegram: 轮询请求失败: {}，第 {} 次重试，{}s 后重试", e, attempt, delay);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
     }

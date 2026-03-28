@@ -7,7 +7,7 @@ use tauri::State;
 use crate::agent;
 use crate::memory;
 use crate::AppState;
-use super::helpers::{load_providers, find_provider_for_model, resolve_model_context_window};
+use super::helpers::{load_providers, find_provider_for_model, resolve_model_context_window, rotate_api_key};
 
 /// 发送消息并通过事件流推送 token（支持 Failover）
 #[tauri::command]
@@ -822,13 +822,15 @@ async fn find_whisper_provider(db: &crate::db::Database) -> (Option<String>, Opt
         }
         let api_type = p["apiType"].as_str().unwrap_or("openai");
         if api_type == "openai" {
-            if let Some(key) = p["apiKey"].as_str() {
-                if !key.is_empty() {
+            if let Some(raw_key) = p["apiKey"].as_str() {
+                if !raw_key.is_empty() {
+                    let provider_id = p["id"].as_str().unwrap_or("whisper");
+                    let key = rotate_api_key(provider_id, raw_key);
                     let base_url = p["baseUrl"]
                         .as_str()
                         .map(|s| s.to_string())
                         .filter(|s| !s.is_empty());
-                    return (Some(key.to_string()), base_url);
+                    return (Some(key), base_url);
                 }
             }
         }

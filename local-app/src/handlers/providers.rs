@@ -47,18 +47,24 @@ pub async fn get_providers(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let providers = load_providers(&state.db).await?;
-    // 脱敏 API Key：只显示前 8 位 + ...
+    // 脱敏 API Key：只显示前 8 位 + ...，多 Key 时显示数量
     Ok(providers
         .into_iter()
         .map(|mut p| {
             if let Some(key) = p["apiKey"].as_str() {
-                if key.len() > 8 {
-                    p["apiKeyMasked"] = serde_json::Value::String(format!("{}...", &key[..8]));
-                } else if !key.is_empty() {
-                    p["apiKeyMasked"] = serde_json::Value::String("****".to_string());
+                let keys: Vec<&str> = key.split("|||").filter(|k| !k.trim().is_empty()).collect();
+                let key_count = keys.len();
+                let first_key = keys.first().unwrap_or(&"");
+                if first_key.len() > 8 {
+                    let suffix = if key_count > 1 { format!(" ({} keys)", key_count) } else { String::new() };
+                    p["apiKeyMasked"] = serde_json::Value::String(format!("{}...{}", &first_key[..8], suffix));
+                } else if !first_key.is_empty() {
+                    let suffix = if key_count > 1 { format!(" ({} keys)", key_count) } else { String::new() };
+                    p["apiKeyMasked"] = serde_json::Value::String(format!("****{}", suffix));
                 } else {
                     p["apiKeyMasked"] = serde_json::Value::String("".to_string());
                 }
+                p["apiKeyCount"] = serde_json::Value::Number(serde_json::Number::from(key_count));
             }
             // 不返回明文 key
             p.as_object_mut().map(|o| o.remove("apiKey"));
@@ -131,6 +137,9 @@ pub async fn test_provider_connection(
     base_url: Option<String>,
     _model: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // 多 Key 时取第一个用于测试
+    let test_key = api_key.split("|||").next().unwrap_or(&api_key).trim().to_string();
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build().map_err(|e| e.to_string())?;
@@ -145,10 +154,10 @@ pub async fn test_provider_connection(
 
     let mut req = client.get(&url);
     if api_type == "anthropic" {
-        req = req.header("x-api-key", &api_key)
+        req = req.header("x-api-key", &test_key)
                  .header("anthropic-version", "2023-06-01");
     } else {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
+        req = req.header("Authorization", format!("Bearer {}", test_key));
     }
 
     let start = std::time::Instant::now();

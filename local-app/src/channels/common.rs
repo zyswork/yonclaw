@@ -1,8 +1,23 @@
-//! 频道通用工具 — Token 缓存、HTTP 回复等
+//! 频道通用工具 — Token 缓存、重连策略、HTTP 回复等
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
+
+/// 指数退避重连延迟（秒）
+///
+/// 根据连续失败次数计算等待时间：
+/// - attempt 0: 1s, 1: 2s, 2: 4s, 3: 8s, 4: 16s, 5+: 30s
+/// - 超过 MAX_BACKOFF_ATTEMPTS 次连续失败后，降级为探测模式（60s）
+pub fn reconnect_delay(attempt: u32) -> u64 {
+    if attempt >= 10 {
+        // 超过 10 次连续失败，降级为 60 秒探测
+        60
+    } else {
+        // 1s, 2s, 4s, 8s, 16s, 30s (最大)
+        (2u64.pow(attempt.min(4))).min(30)
+    }
+}
 
 /// 通用 access_token 缓存
 ///
