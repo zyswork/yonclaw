@@ -15,7 +15,8 @@ describe('SplashScreen', () => {
 
   it('应该显示默认状态消息', () => {
     render(<SplashScreen />)
-    expect(screen.getByText(/启动中/)).toBeInTheDocument()
+    // i18n: common.loading = '加载中...'
+    expect(screen.getByText(/加载中/)).toBeInTheDocument()
   })
 
   it('应该支持自定义状态消息', () => {
