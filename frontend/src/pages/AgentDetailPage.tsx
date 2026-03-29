@@ -29,6 +29,7 @@ interface Agent {
   systemPrompt: string
   temperature: number | null
   maxTokens: number | null
+  config: string | null
   createdAt: number
   updatedAt: number
 }
@@ -410,18 +411,37 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [msg, setMsg] = useState('')
 
+  // 智能路由配置
+  const parsedConfig = agent.config ? JSON.parse(agent.config) : {}
+  const routerCfg = parsedConfig.router || {}
+  const [lightModel, setLightModel] = useState(routerCfg.lightModel || '')
+  const [heavyModel, setHeavyModel] = useState(routerCfg.heavyModel || '')
+
   const handleSave = async () => {
     setSaving(true)
     setMsg('')
     try {
+      // 合并路由配置到 agent config JSON
+      const existingConfig = agent.config ? JSON.parse(agent.config) : {}
+      if (lightModel || heavyModel) {
+        existingConfig.router = {
+          lightModel: lightModel || undefined,
+          heavyModel: heavyModel || undefined,
+        }
+      } else {
+        delete existingConfig.router
+      }
+      const configStr = JSON.stringify(existingConfig)
+
       await invoke('update_agent', {
         agentId,
         name: name !== agent.name ? name : null,
         model: model !== agent.model ? model : null,
         temperature: temperature !== agent.temperature ? temperature : null,
         maxTokens: maxTokens !== agent.maxTokens ? maxTokens : null,
+        config: configStr !== (agent.config || '{}') ? configStr : null,
       })
-      onUpdate({ ...agent, name, model, temperature, maxTokens })
+      onUpdate({ ...agent, name, model, temperature, maxTokens, config: configStr })
       setMsg(t('settings.successSaved'))
     } catch (e) { setMsg(String(e)) }
     finally { setSaving(false) }
@@ -500,6 +520,35 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
           </div>
           <input type="range" min="256" max="8192" step="256" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))}
             style={{ width: '100%', accentColor: 'var(--accent)' }} />
+        </div>
+      </div>
+
+      {/* 智能路由卡片 */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.59" y1="7.58" x2="15.42" y2="10.42"/><line x1="8.59" y1="16.42" x2="15.42" y2="13.58"/>
+          </svg>
+          {t('agentDetailSub.routerTitle')}
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 0, marginBottom: 14 }}>
+          {t('agentDetailSub.routerDesc')}
+        </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4, color: 'var(--text-muted)' }}>
+            {t('agentDetailSub.routerLight')}
+          </label>
+          <input value={lightModel} onChange={(e) => setLightModel(e.target.value)} placeholder="e.g. gpt-4o-mini" style={inputStyle} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('agentDetailSub.routerLightHint')}</span>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4, color: 'var(--text-muted)' }}>
+            {t('agentDetailSub.routerHeavy')}
+          </label>
+          <input value={heavyModel} onChange={(e) => setHeavyModel(e.target.value)} placeholder="e.g. claude-sonnet-4" style={inputStyle} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('agentDetailSub.routerHeavyHint')}</span>
         </div>
       </div>
 

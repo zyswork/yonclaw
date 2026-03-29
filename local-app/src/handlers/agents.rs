@@ -74,9 +74,10 @@ pub async fn update_agent(
     model: Option<String>,
     temperature: Option<f64>,
     max_tokens: Option<i32>,
+    config: Option<String>,
 ) -> Result<(), String> {
     // 至少需要提供一个字段
-    if name.is_none() && model.is_none() && temperature.is_none() && max_tokens.is_none() {
+    if name.is_none() && model.is_none() && temperature.is_none() && max_tokens.is_none() && config.is_none() {
         return Err("至少需要提供一个要更新的字段".to_string());
     }
 
@@ -86,6 +87,7 @@ pub async fn update_agent(
     if model.is_some() { set_clauses.push("model = ?"); }
     if temperature.is_some() { set_clauses.push("temperature = ?"); }
     if max_tokens.is_some() { set_clauses.push("max_tokens = ?"); }
+    if config.is_some() { set_clauses.push("config = ?"); }
 
     let now = chrono::Utc::now().timestamp_millis();
     set_clauses.push("updated_at = ?");
@@ -98,6 +100,7 @@ pub async fn update_agent(
     if let Some(ref v) = model { query = query.bind(v); }
     if let Some(v) = temperature { query = query.bind(v); }
     if let Some(v) = max_tokens { query = query.bind(v); }
+    if let Some(ref v) = config { query = query.bind(v); }
     query = query.bind(now);
     query = query.bind(&agent_id);
 
@@ -330,6 +333,7 @@ pub async fn get_agent_detail(
         "systemPrompt": agent.system_prompt,
         "temperature": agent.temperature,
         "maxTokens": agent.max_tokens,
+        "config": agent.config,
         "configVersion": agent.config_version,
         "createdAt": agent.created_at,
         "updatedAt": agent.updated_at,

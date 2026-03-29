@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use super::router::{RouterConfig, score_complexity, select_model};
 use super::tools::{Tool, ToolDefinition, ToolSafetyLevel};
 
 /// 默认最大并发子代理数
@@ -310,7 +311,7 @@ impl Tool for DelegateTaskTool {
                             "required": ["goal"]
                         }
                     },
-                    "model": { "type": "string", "description": "子代理使用的模型（可选），不填则继承目标 Agent 的模型" },
+                    "model": { "type": "string", "description": "子代理使用的模型（可选）。设为 \"auto\" 启用智能路由（根据任务复杂度自动选模型）。不填则继承目标 Agent 的模型" },
                     "max_concurrent": { "type": "integer", "description": "最大并发数（可选，默认3，最大6）" },
                     "max_depth": { "type": "integer", "description": "最大嵌套深度（可选，默认3）" },
                     "async_mode": { "type": "boolean", "description": "异步模式（可选）。true 时立即返回，后台执行完成后通过事件通知" }
@@ -388,6 +389,25 @@ impl Tool for DelegateTaskTool {
             "gpt-4o-mini".to_string()
         };
 
+        // 加载路由配置（用于 model="auto" 或未指定模型时智能选择）
+        let router_config = if model_str.is_empty() || model_str == "auto" {
+            let agent_config: Option<String> = sqlx::query_scalar("SELECT config FROM agents WHERE id = ?")
+                .bind(&parent_agent_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None);
+            let parent_model: String = sqlx::query_scalar("SELECT model FROM agents WHERE id = ?")
+                .bind(&parent_agent_id)
+                .fetch_optional(&self.pool)
+                .await
+                .unwrap_or(None)
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
+            let cfg = RouterConfig::from_agent_config(&parent_model, agent_config.as_deref());
+            if cfg.is_enabled() { Some((cfg, parent_model)) } else { None }
+        } else {
+            None
+        };
+
         let batch_id = uuid::Uuid::new_v4().to_string();
         log::info!(
             "delegate_task: {} 个子任务，深度 {}/{}，并发 {}，模型 {}，异步={}，父agent={}",
@@ -424,7 +444,15 @@ impl Tool for DelegateTaskTool {
             let sem = semaphore.clone();
             let pool = self.pool.clone();
             let parent = parent_agent_id.clone();
-            let model = model_str.clone();
+            let model = if let Some((ref router_cfg, ref _fallback_model)) = router_config {
+                // 智能路由：根据任务 goal 复杂度选模型
+                let complexity = score_complexity(&goal, 0, 0);
+                let selected = select_model(router_cfg, &complexity);
+                log::info!("delegate_task #{}: 路由评分={:.2}, 模型={}", i + 1, complexity.score, selected);
+                selected
+            } else {
+                model_str.clone()
+            };
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();

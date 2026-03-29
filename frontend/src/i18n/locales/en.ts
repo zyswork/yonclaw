@@ -821,6 +821,13 @@ export const en: TranslationMap = {
     userMsgNotFound: 'Cannot find the corresponding user message',
     goToSettings: 'Go to Settings',
     retry: 'Retry',
+    // Router - Smart Routing
+    routerTitle: 'Smart Routing',
+    routerDesc: 'When configured, subagents auto-select model by task complexity (delegate_task model="auto")',
+    routerLight: 'Light Model',
+    routerHeavy: 'Heavy Model',
+    routerLightHint: 'For simple tasks (chat, translation, etc.)',
+    routerHeavyHint: 'For complex tasks (architecture, long-form writing, etc.)',
   },
   chatPage: {
     templateGeneral: 'General Assistant',

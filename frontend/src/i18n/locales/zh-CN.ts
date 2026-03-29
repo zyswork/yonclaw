@@ -829,6 +829,13 @@ export const zhCN: TranslationMap = {
     userMsgNotFound: '找不到对应的用户消息',
     goToSettings: '前往设置',
     retry: '重试',
+    // Router 智能路由
+    routerTitle: '智能路由',
+    routerDesc: '配置后，子代理可根据任务复杂度自动选择模型（delegate_task model="auto"）',
+    routerLight: '轻量模型',
+    routerHeavy: '重量模型',
+    routerLightHint: '用于简单任务（闲聊、翻译等）',
+    routerHeavyHint: '用于复杂任务（架构设计、长文创作等）',
   },
   chatPage: {
     templateGeneral: '通用助手',
