@@ -587,7 +587,7 @@ async fn main() {
             approve_tool_call, deny_tool_call, send_agent_message, get_agent_mailbox,
             export_agent_bundle, import_agent_bundle, list_agent_templates,
             // sessions
-            send_message, send_chat_only, get_conversations, get_session_messages,
+            send_message, send_chat_only, stop_generation, get_conversations, get_session_messages,
             load_structured_messages, clear_history, create_session, list_sessions,
             rename_session, delete_session, compact_session, cleanup_system_sessions,
             search_messages, export_session_history, get_context_usage, submit_message_feedback,

@@ -178,6 +178,17 @@ pub async fn send_message(
     result
 }
 
+/// 停止指定会话的活跃生成
+///
+/// 前端 `/stop` 命令调用此函数，触发后端 CancellationToken 取消 agent loop
+#[tauri::command]
+pub async fn stop_generation(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<bool, String> {
+    Ok(state.orchestrator.cancel_session(&session_id))
+}
+
 /// 群聊轻量对话 — 不带 tools/skills/memory，纯 LLM 文本对话，速度快
 #[tauri::command]
 pub async fn send_chat_only(

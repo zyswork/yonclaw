@@ -186,7 +186,7 @@ export default function AgentDetailPage() {
         {activeTab === 'relations' && <RelationsTab agentId={agentId} />}
         {activeTab === 'subagents' && <SubagentsTab agentId={agentId} />}
         {activeTab === 'audit' && <AuditTab agentId={agentId} />}
-        {activeTab === 'settings' && <SettingsTab agentId={agentId} agent={agent} onUpdate={setAgent} onDelete={() => navigate('/agents')} />}
+        {activeTab === 'settings' && <SettingsTab key={agent.id} agentId={agentId} agent={agent} onUpdate={setAgent} onDelete={() => navigate('/agents')} />}
       </div>
     </div>
   )

@@ -121,6 +121,7 @@ interface Message {
   toolName?: string
   thinking?: string
   isError?: boolean
+  seq?: number
 }
 
 interface Skill {
@@ -1219,18 +1220,18 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         for (const m of structured) {
           if (m.role === 'system') continue
           if (m.role === 'tool') {
-            parsed.push({ role: 'tool', content: m.content || '', toolName: m.name || t('common.tools') })
+            parsed.push({ role: 'tool', content: m.content || '', toolName: m.name || t('common.tools'), seq: m.seq })
           } else if (m.role === 'assistant' && m.tool_calls) {
             // 先展示工具卡片，再展示后续 assistant 消息中的最终回复
             // 跳过本消息的前置文本（preamble），避免工具在下、文字在上的顺序问题
             for (const tc of (Array.isArray(m.tool_calls) ? m.tool_calls : [])) {
-              parsed.push({ role: 'tool', content: '', toolName: tc.function?.name || tc.name || t('common.tools') })
+              parsed.push({ role: 'tool', content: '', toolName: tc.function?.name || tc.name || t('common.tools'), seq: m.seq })
             }
           } else {
             // 过滤 Anthropic 格式的 tool_result 消息（不显示原始 JSON）
             const contentStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
             if (contentStr.includes('"tool_result"') || contentStr.includes('"tool_use"')) continue
-            parsed.push({ role: m.role, content: contentStr })
+            parsed.push({ role: m.role, content: contentStr, seq: m.seq })
           }
         }
         setMessages(parsed)
@@ -1683,6 +1684,10 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           thinkingBuf.current = ''
           streamingSessionRef.current = ''
           sendingRef.current = false
+          // 通知后端取消活跃的 agent loop
+          if (activeSession) {
+            invoke('stop_generation', { sessionId: activeSession }).catch(() => {})
+          }
           return 'Generation stopped'
         }
         return 'No active generation'
@@ -1875,11 +1880,10 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     setEditingIdx(null)
     setEditingContent('')
     try {
-      // 计算该消息的 seq（基于 1 的序号，跳过 system 消息）
-      // 后端 load_structured_messages 返回的消息按 seq 排序，msgIdx 对应前端 messages 数组索引
-      // 需要调用后端获取实际 seq；这里用 msgIdx + 1 作为近似（因为 system 消息已被过滤）
-      // 更稳妥的做法：调用 edit_message 用 seq = msgIdx + 1
-      await invoke('edit_message', { sessionId: activeSession, messageSeq: msgIdx + 1, newContent })
+      // 使用后端返回的实际 seq，避免 system 消息过滤导致的偏移问题
+      const msgSeq = messages[msgIdx]?.seq
+      if (msgSeq == null) { toast.error('无法确定消息序号'); return }
+      await invoke('edit_message', { sessionId: activeSession, messageSeq: msgSeq, newContent })
       // 删除前端该消息之后的所有消息，更新当前消息内容
       setMessages(prev => {
         const updated = prev.slice(0, msgIdx)
@@ -1926,8 +1930,10 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       return
     }
     try {
-      // 删除该 AI 消息及之后的所有消息（seq = msgIdx + 1）
-      await invoke('regenerate_response', { sessionId: activeSession, afterSeq: msgIdx + 1 })
+      // 使用后端返回的实际 seq，删除该 AI 消息及之后的所有消息
+      const msgSeq = messages[msgIdx]?.seq
+      if (msgSeq == null) { toast.error('无法确定消息序号'); return }
+      await invoke('regenerate_response', { sessionId: activeSession, afterSeq: msgSeq })
       // 前端截断到该 AI 消息之前
       setMessages(prev => prev.slice(0, msgIdx))
       // 重新发送用户消息
@@ -2580,7 +2586,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                                 const lastUserMsg = messages.slice(0, oi).reverse().find(m => m.role === 'user')
                                 if (!lastUserMsg) return
                                 // 移除错误消息，添加空 assistant 占位
-                                setMessages(prev => [...prev.filter((_, idx) => idx !== oi), { role: 'assistant', content: '' }])
+                                setMessages(prev => [...prev.filter(m => m !== msg), { role: 'assistant', content: '' }])
                                 setStreaming(true)
                                 streamBuf.current = ''
                                 try {
@@ -2631,13 +2637,13 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                           </svg>
                         </button>
-                        <button onClick={() => invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: oi, feedback: 'up' }).then(() => toast.success('Thanks!')).catch(() => {})}
+                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'up' }).then(() => toast.success('Thanks!')).catch(() => {})}
                           title="Good" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/><path d="M4 22H2V11h2"/>
                           </svg>
                         </button>
-                        <button onClick={() => invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: oi, feedback: 'down' }).then(() => toast.success('Noted')).catch(() => {})}
+                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'down' }).then(() => toast.success('Noted')).catch(() => {})}
                           title="Bad" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/><path d="M20 2h2v11h-2"/>

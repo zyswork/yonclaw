@@ -629,6 +629,7 @@ pub async fn load_chat_messages(
         let tool_calls_json: Option<String> = row.get("tool_calls_json");
         let tool_call_id: Option<String> = row.get("tool_call_id");
         let tool_name: Option<String> = row.get("tool_name");
+        let seq: i64 = row.get("seq");
 
         // 跳过 system 消息（每次都重新构建）
         if role == "system" { continue; }
@@ -681,6 +682,7 @@ pub async fn load_chat_messages(
             }
         }
 
+        msg["seq"] = serde_json::json!(seq);
         messages.push(msg);
     }
 

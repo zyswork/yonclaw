@@ -143,6 +143,21 @@ pub struct Orchestrator {
     evolution_config: super::self_evolution::EvolutionConfig,
     /// 工具审批管理器
     pub approval_manager: super::approval::ApprovalManager,
+    /// 活跃会话的取消令牌：session_id → CancellationToken
+    active_cancellations: std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+}
+
+/// RAII 守卫：函数返回时自动从 active_cancellations 中移除会话的取消令牌
+struct CancelGuard<'a> {
+    cancellations: &'a std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    session_id: String,
+}
+
+impl<'a> Drop for CancelGuard<'a> {
+    fn drop(&mut self) {
+        let mut map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&self.session_id);
+    }
 }
 
 impl Orchestrator {
@@ -214,12 +229,28 @@ impl Orchestrator {
             evolution_state: std::sync::Arc::new(super::self_evolution::EvolutionState::new()),
             evolution_config: super::self_evolution::EvolutionConfig::default(),
             approval_manager: super::approval::ApprovalManager::new(),
+            active_cancellations: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
     /// 获取数据库连接池引用
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// 取消指定会话的活跃生成
+    ///
+    /// 查找 session_id 对应的 CancellationToken 并触发取消
+    pub fn cancel_session(&self, session_id: &str) -> bool {
+        let tokens = self.active_cancellations.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(token) = tokens.get(session_id) {
+            token.cancel();
+            log::info!("已取消会话 {} 的活跃生成", session_id);
+            true
+        } else {
+            log::debug!("会话 {} 没有活跃的生成任务", session_id);
+            false
+        }
     }
 
     /// 获取子 Agent 注册表引用
@@ -422,6 +453,19 @@ impl Orchestrator {
                 .clone()
         };
         let _guard = session_lock.lock().await;
+
+        // 0-cancel. 创建或使用传入的取消令牌，并注册到 active_cancellations
+        let cancel_token = {
+            let token = cancel_token.unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            let mut cancellations = self.active_cancellations.lock().unwrap_or_else(|p| p.into_inner());
+            cancellations.insert(session_id.to_string(), token.clone());
+            Some(token)
+        };
+        // 使用 CancelGuard 确保函数返回时自动清理取消令牌
+        let _cancel_guard = CancelGuard {
+            cancellations: &self.active_cancellations,
+            session_id: session_id.to_string(),
+        };
 
         // 0a. 速率限制
         if let Err(wait_ms) = self.rate_limiter.check(agent_id) {
