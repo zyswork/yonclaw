@@ -46,6 +46,7 @@ pub mod soul;
 pub mod self_evolution;
 pub mod delegate;
 pub mod token_counter;
+pub mod execution_budget;
 
 // ── 工具系统 ──
 pub mod tools;

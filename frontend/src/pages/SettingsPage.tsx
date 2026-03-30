@@ -1187,6 +1187,93 @@ function ProfileSection() {
           {saving ? t('common.saving') : t('common.save')}
         </button>
       </div>
+
+      {/* 修改密码 */}
+      <ChangePasswordSection />
+    </div>
+  )
+}
+
+/** 修改密码区域 */
+function ChangePasswordSection() {
+  const { t } = useI18n()
+  const { user } = useAuthStore()
+  const [oldPw, setOldPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+
+  const handleChange = async () => {
+    if (!newPw || newPw.length < 6) { setMsg({ type: 'err', text: t('profile.pwTooShort') }); return }
+    if (newPw !== confirmPw) { setMsg({ type: 'err', text: t('profile.pwMismatch') }); return }
+    setSaving(true); setMsg(null)
+    try {
+      const { authAPI } = await import('../api/auth')
+      const email = user?.email
+      if (!email) { setMsg({ type: 'err', text: '未获取到邮箱' }); return }
+      // 先验证旧密码（尝试登录）
+      if (oldPw) {
+        try {
+          await authAPI.login('001', email, oldPw)
+        } catch {
+          setMsg({ type: 'err', text: t('profile.oldPwWrong') }); return
+        }
+      }
+      await authAPI.setPassword(email, newPw)
+      setMsg({ type: 'ok', text: t('profile.pwChanged') })
+      setOldPw(''); setNewPw(''); setConfirmPw('')
+    } catch (e: any) {
+      setMsg({ type: 'err', text: e.response?.data?.error || e.message })
+    } finally { setSaving(false) }
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '10px 12px', fontSize: 14,
+    border: '1px solid var(--border-subtle)', borderRadius: 8,
+    backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)',
+    outline: 'none', boxSizing: 'border-box' as const,
+  }
+  const labelStyle = { display: 'block', fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 6 }
+
+  return (
+    <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--border-subtle)' }}>
+      <h3 style={{ margin: '0 0 16px', fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>
+        {t('profile.changePassword')}
+      </h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 400 }}>
+        <div>
+          <label style={labelStyle}>{t('profile.oldPassword')}</label>
+          <input type="password" value={oldPw} onChange={e => setOldPw(e.target.value)}
+            placeholder={t('profile.oldPwPlaceholder')} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>{t('profile.newPassword')}</label>
+          <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
+            placeholder={t('profile.newPwPlaceholder')} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>{t('profile.confirmPassword')}</label>
+          <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleChange() }}
+            placeholder={t('profile.confirmPwPlaceholder')} style={inputStyle} />
+        </div>
+        {msg && (
+          <div style={{ fontSize: 13, color: msg.type === 'ok' ? 'var(--accent)' : 'var(--error, #ef4444)' }}>
+            {msg.text}
+          </div>
+        )}
+        <div>
+          <button onClick={handleChange} disabled={saving} style={{
+            padding: '10px 24px', border: 'none', borderRadius: 8,
+            backgroundColor: 'var(--accent)', color: 'white',
+            cursor: saving ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600,
+            opacity: saving ? 0.6 : 1,
+          }}>
+            {saving ? t('common.saving') : t('profile.changePasswordBtn')}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

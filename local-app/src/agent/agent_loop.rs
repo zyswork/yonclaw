@@ -765,10 +765,7 @@ async fn execute_builtin_tool(
     let start = std::time::Instant::now();
     let result = match tokio::time::timeout(timeout, deps.tool_manager.execute_tool(name, final_args)).await {
         Ok(r) => r,
-        Err(_) => super::tools::ToolCallResult {
-            tool_name: name.to_string(), success: false, result: String::new(),
-            error: Some(format!("工具执行超时（{}秒）", timeout.as_secs())),
-        },
+        Err(_) => super::tools::ToolCallResult::err(name, format!("工具执行超时（{}秒）", timeout.as_secs())),
     };
     let ms = start.elapsed().as_millis() as i64;
     if result.success {

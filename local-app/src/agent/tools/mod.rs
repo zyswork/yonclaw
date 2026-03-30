@@ -144,13 +144,86 @@ pub struct ToolCallRequest {
     pub arguments: serde_json::Value,
 }
 
-/// 工具调用结果
+/// 错误分类（用于智能重试和验证决策）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ErrorClass {
+    /// 权限/安全错误 — 不可重试
+    Permission,
+    /// 参数错误（格式、类型、范围）— 可重试（修改参数后）
+    Parameter,
+    /// 环境错误（文件不存在、网络超时）— 可重试
+    Environment,
+    /// 外部依赖错误（API 失败、服务不可用）— 可重试（等待后）
+    Dependency,
+    /// 代码语义错误（编译失败、逻辑错误）— 需反思后重试
+    Semantic,
+    /// 验证失败（lint/test 不通过）— 需修复后重试
+    Validation,
+}
+
+impl ErrorClass {
+    /// 该类错误是否允许自动重试
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self, ErrorClass::Permission)
+    }
+
+    /// 从错误文本自动分类
+    pub fn classify(error: &str) -> Self {
+        let e = error.to_lowercase();
+        if e.contains("permission") || e.contains("denied") || e.contains("forbidden")
+            || e.contains("安全拦截") || e.contains("安全限制") || e.contains("不允许") {
+            ErrorClass::Permission
+        } else if e.contains("not found") || e.contains("no such file") || e.contains("不存在")
+            || e.contains("timeout") || e.contains("超时") || e.contains("connection") {
+            ErrorClass::Environment
+        } else if e.contains("api") || e.contains("500") || e.contains("502") || e.contains("503")
+            || e.contains("rate limit") || e.contains("quota") {
+            ErrorClass::Dependency
+        } else if e.contains("compile") || e.contains("syntax") || e.contains("error[")
+            || e.contains("lint") || e.contains("test fail") {
+            ErrorClass::Semantic
+        } else if e.contains("validation") || e.contains("invalid") || e.contains("缺少")
+            || e.contains("参数") || e.contains("格式") {
+            ErrorClass::Parameter
+        } else {
+            ErrorClass::Environment // 默认归为环境错误（可重试）
+        }
+    }
+}
+
+/// 工具调用结果（含结构化元数据）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallResult {
     pub tool_name: String,
+    /// 人类可读的结果文本（给 LLM 看的）
     pub result: String,
     pub success: bool,
     pub error: Option<String>,
+    /// 错误分类（失败时自动推断）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<ErrorClass>,
+    /// 本次调用修改的文件路径列表
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub changed_files: Vec<String>,
+    /// 本次调用读取的文件 hash（path → hash）
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    pub content_hashes: HashMap<String, String>,
+}
+
+impl ToolCallResult {
+    /// 构造成功结果
+    pub fn ok(tool_name: &str, result: String) -> Self {
+        Self { tool_name: tool_name.to_string(), result, success: true, error: None, error_class: None, changed_files: vec![], content_hashes: HashMap::new() }
+    }
+    /// 构造失败结果（自动分类错误）
+    pub fn err(tool_name: &str, error: String) -> Self {
+        let class = ErrorClass::classify(&error);
+        Self { tool_name: tool_name.to_string(), result: String::new(), success: false, error: Some(error), error_class: Some(class), changed_files: vec![], content_hashes: HashMap::new() }
+    }
+    /// 附加修改的文件
+    pub fn with_changed_files(mut self, files: Vec<String>) -> Self { self.changed_files = files; self }
+    /// 附加文件 hash
+    pub fn with_hash(mut self, path: String, hash: String) -> Self { self.content_hashes.insert(path, hash); self }
 }
 
 /// 工具处理器特征
@@ -215,12 +288,7 @@ impl ToolManager {
             if let Some(cmd) = arguments.get("command").and_then(|c| c.as_str()) {
                 if let Some(warning) = detect_dangerous_command(cmd) {
                     log::warn!("危险命令被拦截: {} — {}", cmd, warning);
-                    return ToolCallResult {
-                        tool_name: tool_name.to_string(),
-                        result: String::new(),
-                        success: false,
-                        error: Some(format!("安全拦截：{}", warning)),
-                    };
+                    return ToolCallResult::err(tool_name, format!("安全拦截：{}", warning));
                 }
             }
         }
@@ -229,12 +297,7 @@ impl ToolManager {
         if matches!(tool_name, "file_write" | "file_edit" | "diff_edit") {
             if let Some(path) = arguments.get("path").and_then(|p| p.as_str()) {
                 if let Err(e) = validate_write_path(path) {
-                    return ToolCallResult {
-                        tool_name: tool_name.to_string(),
-                        result: String::new(),
-                        success: false,
-                        error: Some(e),
-                    };
+                    return ToolCallResult::err(tool_name, e);
                 }
             }
         }
@@ -244,26 +307,11 @@ impl ToolManager {
                 Ok(result) => {
                     // 防护 3: 输出大小限制（最大 50KB，防止撑爆上下文）
                     let truncated = truncate_output(&result, MAX_OUTPUT_SIZE);
-                    ToolCallResult {
-                        tool_name: tool_name.to_string(),
-                        result: truncated,
-                        success: true,
-                        error: None,
-                    }
+                    ToolCallResult::ok(tool_name, truncated)
                 }
-                Err(error) => ToolCallResult {
-                    tool_name: tool_name.to_string(),
-                    result: String::new(),
-                    success: false,
-                    error: Some(error),
-                },
+                Err(error) => ToolCallResult::err(tool_name, error),
             },
-            None => ToolCallResult {
-                tool_name: tool_name.to_string(),
-                result: String::new(),
-                success: false,
-                error: Some(format!("工具不存在: {}", tool_name)),
-            },
+            None => ToolCallResult::err(tool_name, format!("工具不存在: {}", tool_name)),
         }
     }
 
