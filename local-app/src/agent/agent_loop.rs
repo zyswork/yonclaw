@@ -536,6 +536,19 @@ pub async fn run_agent_loop(
 
                 let scrubbed = scrub_credentials(&result_text);
                 messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &scrubbed));
+
+                // A1 反思重试：工具失败且错误可重试时，注入反思提示帮助 LLM 自我修正
+                if !success {
+                    let error_class = super::tools::ErrorClass::classify(&result_text);
+                    if error_class.is_retryable() {
+                        let reflection = format!(
+                            "[Reflection] 工具 `{}` 执行失败（错误类型: {:?}）。请分析失败原因并调整参数重试，或选择替代方案。不要重复使用完全相同的参数。",
+                            tc.name, error_class
+                        );
+                        messages.push(serde_json::json!({"role": "user", "content": reflection}));
+                        log::info!("反思注入: {} ({:?})", tc.name, error_class);
+                    }
+                }
             }
         }
 

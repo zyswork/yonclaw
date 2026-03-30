@@ -487,9 +487,10 @@ function convertLocalPath(path: string): string {
 }
 
 /** 功能栏：消息计数 + 压缩按钮（带 loading 和结果提示） */
-function ToolBar({ messageCount, showCompact, onCompact, agentId, sessionId }: {
+function ToolBar({ messageCount, showCompact, onCompact, agentId, sessionId, streaming, hud }: {
   messageCount: number; showCompact: boolean; onCompact: () => Promise<string>
   agentId?: string; sessionId?: string
+  streaming?: boolean; hud?: { round: number; tokens: number; cost: number; lastTool: string; lastToolOk: boolean }
 }) {
   const { t } = useI18n()
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
@@ -543,6 +544,14 @@ function ToolBar({ messageCount, showCompact, onCompact, agentId, sessionId }: {
     <div style={{ padding: '4px 16px', borderTop: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-muted)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span>{messageCount}{t('agentDetail.messages')}</span>
+        {streaming && hud && hud.round > 0 && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)' }}>
+            | R{hud.round}
+            {hud.tokens > 0 && <span>{(hud.tokens / 1000).toFixed(1)}K tok</span>}
+            {hud.cost > 0.001 && <span style={{ color: hud.cost > 0.5 ? 'var(--error)' : undefined }}>${hud.cost.toFixed(3)}</span>}
+            {hud.lastTool && <span style={{ color: hud.lastToolOk ? 'var(--accent)' : 'var(--error)' }}>{hud.lastTool} {hud.lastToolOk ? '✓' : '✗'}</span>}
+          </span>
+        )}
         {ctx && (
           <span title={`System: ${ctx.system_prompt} | Soul: ${ctx.soul_files} | Messages: ${ctx.messages} | Tools: ${ctx.tools}`}
             style={{ cursor: 'help' }}>
@@ -881,6 +890,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   const [displayCount, setDisplayCount] = useState(50)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // HUD 实时状态
+  const [hud, setHud] = useState({ round: 0, tokens: 0, cost: 0, lastTool: '', lastToolOk: true })
 
   // 切换 Agent 时重置状态，避免旧 Agent 的对话内容残留
   const prevAgentIdRef = useRef(agentId)
@@ -1044,6 +1055,18 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   useEffect(() => {
     const unlistenP = listen<any>('agent-event', (e) => {
       const type = e.payload?.type
+
+      // HUD 状态追踪
+      if (type === 'llm_start') {
+        setHud(h => ({ ...h, round: (e.payload.round || 0) }))
+      } else if (type === 'llm_done') {
+        const inp = e.payload.input_tokens || 0
+        const out = e.payload.output_tokens || 0
+        setHud(h => ({ ...h, tokens: h.tokens + inp + out, cost: h.cost + (inp * 0.000003 + out * 0.000015) }))
+      } else if (type === 'tool_done') {
+        setHud(h => ({ ...h, lastTool: e.payload.tool_name || '', lastToolOk: e.payload.success !== false }))
+      }
+
       // 刷新子 Agent 面板
       if (showAgentPanel && (type === 'subagent_spawned' || type === 'subagent_complete')) {
         loadAgentPanel()
@@ -1840,6 +1863,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     setMessages((prev) => [...prev, { role: 'user', content: displayMsg }])
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
     streamingSessionRef.current = activeSession
+    setHud({ round: 0, tokens: 0, cost: 0, lastTool: '', lastToolOk: true })
     setStreaming(true)
     streamBuf.current = ''
 
@@ -2684,6 +2708,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
               }}
               agentId={agentId}
               sessionId={activeSession}
+              streaming={streaming}
+              hud={hud}
             />
             {/* 命令提示 */}
             {input.startsWith('/') && !input.includes(' ') && (() => {
