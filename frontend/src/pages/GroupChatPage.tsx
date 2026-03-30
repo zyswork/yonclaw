@@ -84,6 +84,7 @@ export default function GroupChatPage() {
   const streamBuf = useRef('')
   const streamAgentRef = useRef<string>('')
   const streamingRef = useRef(false)
+  const streamSessionRef = useRef<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -182,9 +183,17 @@ export default function GroupChatPage() {
 
   // 全局监听流式 token
   useEffect(() => {
-    const unlisten1 = listen<string>('llm-token', (e) => {
+    const unlisten1 = listen<any>('llm-token', (e) => {
       if (!streamingRef.current) return
-      streamBuf.current += e.payload
+      // 解析 payload：新格式 {sessionId, text}，兼容旧格式 string
+      const payload = e.payload
+      const tokenSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      const tokenText = typeof payload === 'object' ? (payload?.text ?? '') : String(payload ?? '')
+      // 跨会话过滤：如果事件携带 sessionId，必须匹配当前流式会话
+      if (tokenSessionId && streamSessionRef.current && tokenSessionId !== streamSessionRef.current) return
+      // 重试重置信号
+      if (tokenText === '\x00__XIANZHU_RETRY__') { streamBuf.current = ''; return }
+      streamBuf.current += tokenText
       const agentId = streamAgentRef.current
       setMessages(prev => {
         const copy = [...prev]
@@ -198,15 +207,25 @@ export default function GroupChatPage() {
       })
     })
     // 也监听 llm-done/llm-error 作为兜底，防止 streaming 状态卡住
-    const unlisten2 = listen('llm-done', () => {
+    const unlisten2 = listen<any>('llm-done', (e) => {
+      const payload = e.payload
+      const doneSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      // 跨会话过滤
+      if (doneSessionId && streamSessionRef.current && doneSessionId !== streamSessionRef.current) return
       if (streamingRef.current) {
         streamingRef.current = false
+        streamSessionRef.current = ''
         setStreaming(false)
       }
     })
-    const unlisten3 = listen<string>('llm-error', (e) => {
+    const unlisten3 = listen<any>('llm-error', (e) => {
+      const payload = e.payload
+      const errSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      // 跨会话过滤
+      if (errSessionId && streamSessionRef.current && errSessionId !== streamSessionRef.current) return
       if (streamingRef.current) {
         streamingRef.current = false
+        streamSessionRef.current = ''
         setStreaming(false)
       }
     })
@@ -285,9 +304,11 @@ export default function GroupChatPage() {
       content: '', timestamp: Date.now(), isStreaming: true,
     }])
 
-    // 设置流式显示的目标 Agent
+    // 设置流式显示的目标 Agent，生成唯一 sessionId 用于 SSE 过滤
+    const groupSessionId = `group-${Date.now()}-${agentId.slice(0, 8)}`
     streamBuf.current = ''
     streamAgentRef.current = agentId
+    streamSessionRef.current = groupSessionId
     streamingRef.current = true
     setStreaming(true)
 
@@ -298,7 +319,7 @@ export default function GroupChatPage() {
 
       // 群聊用轻量命令：不带 tools，纯对话，速度快
       const invokePromise = invoke<string>('send_chat_only', {
-        agentId, message: context + messageText,
+        agentId, sessionId: groupSessionId, message: context + messageText,
       })
       const timeoutPromise = new Promise<string>((_, reject) =>
         setTimeout(() => reject(new Error('Response timeout (30s)')), 30000)
@@ -308,6 +329,7 @@ export default function GroupChatPage() {
       const finalContent = result || streamBuf.current || ''
       console.log(`[GroupChat] ${agentName} replied: ${finalContent.slice(0, 50)}...`)
       streamingRef.current = false
+      streamSessionRef.current = ''
       setStreaming(false)
       setMessages(prev => prev.map(m =>
         m.id === placeholderId ? { ...m, isStreaming: false, content: finalContent } : m
@@ -318,6 +340,7 @@ export default function GroupChatPage() {
       console.error(`[GroupChat] ${agentName} error:`, e)
       toast.error(t('common.error') + ': ' + String(e))
       streamingRef.current = false
+      streamSessionRef.current = ''
       setStreaming(false)
       setMessages(prev => prev.map(m =>
         m.id === placeholderId ? { ...m, isStreaming: false, content: errMsg } : m

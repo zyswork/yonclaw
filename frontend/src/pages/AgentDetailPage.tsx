@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/tauri'
+import { listen } from '@tauri-apps/api/event'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
 
@@ -539,7 +540,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
           <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4, color: 'var(--text-muted)' }}>
             {t('agentDetailSub.routerLight')}
           </label>
-          <input value={lightModel} onChange={(e) => setLightModel(e.target.value)} placeholder="e.g. gpt-4o-mini" style={inputStyle} />
+          <ProviderModelSelector value={lightModel} onChange={setLightModel} requireKey={false} />
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('agentDetailSub.routerLightHint')}</span>
         </div>
 
@@ -547,7 +548,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
           <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4, color: 'var(--text-muted)' }}>
             {t('agentDetailSub.routerHeavy')}
           </label>
-          <input value={heavyModel} onChange={(e) => setHeavyModel(e.target.value)} placeholder="e.g. claude-sonnet-4" style={inputStyle} />
+          <ProviderModelSelector value={heavyModel} onChange={setHeavyModel} requireKey={false} />
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('agentDetailSub.routerHeavyHint')}</span>
         </div>
       </div>
@@ -1016,15 +1017,28 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
 
   useEffect(() => { load() }, [load])
 
-  // 定期拉取新消息
+  // 监听 Tauri 事件获取实时消息，同时保留低频轮询作为兜底
   useEffect(() => {
+    // 实时事件监听
+    const unlistenP = listen<any>('agent-message', (e) => {
+      const msg = e.payload
+      if (msg && (msg.to === agentId || msg.from === agentId)) {
+        setMessages(prev => [...prev, msg])
+      }
+    })
+
+    // 低频轮询兜底（每 30 秒）
     const timer = setInterval(async () => {
       try {
         const msgs = await invoke<any[]>('get_agent_mailbox', { agentId })
         if (msgs.length > 0) setMessages(prev => [...prev, ...msgs])
       } catch (e) { console.error('pollMailbox failed:', e) }
-    }, 5000)
-    return () => clearInterval(timer)
+    }, 30000)
+
+    return () => {
+      unlistenP.then(f => f())
+      clearInterval(timer)
+    }
   }, [agentId])
 
   const handleSend = async () => {

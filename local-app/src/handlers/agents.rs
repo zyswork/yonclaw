@@ -1,7 +1,7 @@
 //! Agent 管理相关命令
 
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::agent;
 use crate::AppState;
@@ -49,6 +49,51 @@ pub async fn list_agents(
                 "configVersion": a.config_version,
                 "createdAt": a.created_at,
                 "updatedAt": a.updated_at,
+            })
+        })
+        .collect())
+}
+
+/// 列出所有 Agent（含会话数和频道数统计，减少 N+1 查询）
+#[tauri::command]
+pub async fn list_agents_with_stats(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let agents = state.orchestrator.list_agents().await?;
+
+    // 批量查询所有 agent 的 session_count 和 channel_count
+    let rows = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT a.id,
+           (SELECT COUNT(*) FROM chat_sessions WHERE agent_id = a.id) as session_count,
+           (SELECT COUNT(*) FROM agent_channels WHERE agent_id = a.id AND enabled = 1) as channel_count
+         FROM agents a"
+    )
+    .fetch_all(state.orchestrator.pool())
+    .await
+    .unwrap_or_default();
+
+    // 构建 id → (session_count, channel_count) 映射
+    let stats_map: std::collections::HashMap<String, (i64, i64)> = rows
+        .into_iter()
+        .map(|(id, sc, cc)| (id, (sc, cc)))
+        .collect();
+
+    Ok(agents
+        .into_iter()
+        .map(|a| {
+            let (session_count, channel_count) = stats_map.get(&a.id).copied().unwrap_or((0, 0));
+            serde_json::json!({
+                "id": a.id,
+                "name": a.name,
+                "model": a.model,
+                "systemPrompt": a.system_prompt,
+                "temperature": a.temperature,
+                "maxTokens": a.max_tokens,
+                "configVersion": a.config_version,
+                "createdAt": a.created_at,
+                "updatedAt": a.updated_at,
+                "sessionCount": session_count,
+                "channelCount": channel_count,
             })
         })
         .collect())
@@ -554,18 +599,30 @@ pub async fn deny_tool_call(
 #[tauri::command]
 pub async fn send_agent_message(
     state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
     from_id: String,
     to_id: String,
     content: String,
 ) -> Result<(), String> {
+    let timestamp = chrono::Utc::now().timestamp_millis();
     let msg = agent::subagent::AgentMessage {
-        from: from_id,
-        to: to_id,
-        content,
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        from: from_id.clone(),
+        to: to_id.clone(),
+        content: content.clone(),
+        timestamp,
     };
     state.orchestrator.subagent_registry()
-        .send_message_checked(state.orchestrator.pool(), msg).await
+        .send_message_checked(state.orchestrator.pool(), msg).await?;
+
+    // 通知前端有新消息到达
+    let _ = app.emit_all("agent-message", serde_json::json!({
+        "from": from_id,
+        "to": to_id,
+        "content": content,
+        "timestamp": timestamp,
+    }));
+
+    Ok(())
 }
 
 /// 获取 Agent 邮箱消息（非阻塞，立即返回当前所有待读消息）

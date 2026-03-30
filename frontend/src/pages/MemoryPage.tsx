@@ -125,6 +125,19 @@ export default function MemoryPage() {
     setActionLoading(false)
   }
 
+  const handleRunLearner = async () => {
+    if (!await confirm('从最近会话中提取可复用的经验教训（工具模式、用户偏好、代码规范等）？')) return
+    setActionLoading(true)
+    try {
+      const result = (await invoke('run_learner', { agentId: selectedAgent })) as { message?: string; extracted?: number }
+      showMsg('success', result?.message || `提取了 ${result?.extracted || 0} 条经验教训`)
+      await loadData()
+    } catch (e) {
+      showMsg('error', '提取经验失败: ' + String(e))
+    }
+    setActionLoading(false)
+  }
+
   const handleExport = async () => {
     setActionLoading(true)
     try {
@@ -195,6 +208,17 @@ export default function MemoryPage() {
             }}
           >
             {actionLoading ? t('common.processing') : t('memory.btnExtract')}
+          </button>
+          <button
+            onClick={handleRunLearner}
+            disabled={actionLoading}
+            style={{
+              padding: '8px 16px', fontSize: '13px', backgroundColor: '#10b981',
+              color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer',
+              opacity: actionLoading ? 0.6 : 1,
+            }}
+          >
+            {actionLoading ? t('common.processing') : '提取经验教训'}
           </button>
           <button
             onClick={handleExport}

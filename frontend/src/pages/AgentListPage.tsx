@@ -20,6 +20,8 @@ interface Agent {
   configVersion: number | null
   createdAt: number
   updatedAt: number
+  sessionCount?: number
+  channelCount?: number
 }
 
 /** 每个 Agent 的统计数据 */
@@ -92,26 +94,18 @@ export default function AgentListPage() {
   const loadAgents = useCallback(async () => {
     try {
       setLoading(true)
-      const result = await invoke<Agent[]>('list_agents')
+      const result = await invoke<Agent[]>('list_agents_with_stats')
       setAgents(result)
       setError('')
 
-      // 并发加载每个 Agent 的会话数和频道状态
+      // 从单次查询结果中提取统计数据（不再 N+1）
       const statsMap: Record<string, AgentStats> = {}
-      await Promise.all(
-        result.map(async (agent) => {
-          try {
-            const sessions = await invoke<{ id: string }[]>('list_sessions', { agentId: agent.id })
-            const channels = await invoke<{ enabled: boolean }[]>('list_agent_channels', { agentId: agent.id })
-            statsMap[agent.id] = {
-              sessionCount: sessions.length,
-              hasActiveChannel: channels.some((ch) => ch.enabled),
-            }
-          } catch {
-            statsMap[agent.id] = { sessionCount: 0, hasActiveChannel: false }
-          }
-        })
-      )
+      for (const agent of result) {
+        statsMap[agent.id] = {
+          sessionCount: agent.sessionCount ?? 0,
+          hasActiveChannel: (agent.channelCount ?? 0) > 0,
+        }
+      }
       setStats(statsMap)
     } catch (e) {
       setError(String(e))

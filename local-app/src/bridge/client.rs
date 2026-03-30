@@ -156,7 +156,7 @@ impl BridgeClient {
                             for m in messages {
                                 let sync_id = m["sync_id"].as_str().unwrap_or("");
                                 if sync_id.is_empty() { continue; }
-                                let _ = sqlx::query(
+                                if let Err(e) = sqlx::query(
                                     "INSERT OR IGNORE INTO chat_messages (id, session_id, agent_id, role, content, seq, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
                                 )
                                 .bind(sync_id)
@@ -166,18 +166,22 @@ impl BridgeClient {
                                 .bind(m["content"].as_str().unwrap_or(""))
                                 .bind(m["seq"].as_i64().unwrap_or(0))
                                 .bind(m["created_at"].as_i64().unwrap_or(0))
-                                .execute(_pool).await;
+                                .execute(_pool).await {
+                                    log::error!("Bridge sync DB 操作失败 (chat_messages): {}", e);
+                                }
                             }
                         }
 
                         // 更新同步水位
                         if synced_at > 0 {
-                            let _ = sqlx::query(
+                            if let Err(e) = sqlx::query(
                                 "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('cloud_last_sync_at', ?, ?)"
                             )
                             .bind(synced_at.to_string())
                             .bind(synced_at)
-                            .execute(_pool).await;
+                            .execute(_pool).await {
+                                log::error!("Bridge sync DB 操作失败 (cloud_last_sync_at): {}", e);
+                            }
                         }
 
                         log::info!("Bridge: 同步完成，拉取 {} 条数据", pulled);
@@ -217,14 +221,16 @@ impl BridgeClient {
                                         let device_id = data["deviceId"].as_str().unwrap_or("cloud");
 
                                         if !session_id.is_empty() && !sync_id.is_empty() {
-                                            let _ = sqlx::query(
+                                            if let Err(e) = sqlx::query(
                                                 "INSERT OR IGNORE INTO chat_messages (id, session_id, agent_id, role, content, seq, created_at) VALUES (?, ?, (SELECT agent_id FROM chat_sessions WHERE id = ?), ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM chat_messages WHERE session_id = ?), ?)"
                                             )
                                             .bind(sync_id).bind(session_id).bind(session_id)
                                             .bind(role).bind(content)
                                             .bind(session_id)
                                             .bind(data["createdAt"].as_i64().unwrap_or(chrono::Utc::now().timestamp_millis()))
-                                            .execute(_pool).await;
+                                            .execute(_pool).await {
+                                                log::error!("Bridge sync DB 操作失败 (new_message): {}", e);
+                                            }
                                             log::info!("Bridge: 实时同步消息 [{}] {} from {}", role, &content.chars().take(30).collect::<String>(), device_id);
                                         }
                                     }

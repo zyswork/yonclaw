@@ -6,6 +6,7 @@ use super::tools::{ParsedToolCall, ToolDefinition};
 use futures::StreamExt;
 use log;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
@@ -623,6 +624,46 @@ pub struct LlmClient {
     config: LlmConfig,
     client: reqwest::Client,
 }
+
+/// 缓存的代理 URL 检测结果（仅探测一次，避免每次 TCP 端口探测开销）
+static CACHED_PROXY_URL: OnceLock<Option<String>> = OnceLock::new();
+
+/// 检测可用的代理 URL（环境变量 > 本地端口探测），结果缓存
+pub fn detect_proxy_url() -> Option<String> {
+    CACHED_PROXY_URL.get_or_init(|| {
+        // 优先使用环境变量
+        if let Ok(proxy_url) = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+        {
+            return Some(proxy_url);
+        }
+        // macOS 系统代理（非环境变量设置）— 探测常见端口
+        for port in &[7890, 7891, 1080] {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+                return Some(format!("http://127.0.0.1:{}", port));
+            }
+        }
+        None
+    }).clone()
+}
+
+/// 创建带代理的 reqwest client（用于所有 Google/OpenAI API 调用）
+pub fn build_proxied_client(connect_timeout_secs: u64, timeout_secs: u64) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(connect_timeout_secs))
+        .timeout(std::time::Duration::from_secs(timeout_secs));
+
+    if let Some(proxy_url) = detect_proxy_url() {
+        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+            builder = builder.proxy(proxy);
+            log::debug!("HTTP client: 使用代理 {}", proxy_url);
+        }
+    }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
         let mut builder = reqwest::Client::builder()
@@ -630,25 +671,10 @@ impl LlmClient {
             .timeout(std::time::Duration::from_secs(120))
             .pool_max_idle_per_host(0); // 不复用连接，避免被上一个卡住的连接阻塞
 
-        // 检测系统代理（macOS 常见 ClashX/V2Ray）
-        if let Ok(proxy_url) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("https_proxy")).or_else(|_| std::env::var("ALL_PROXY")) {
+        if let Some(proxy_url) = detect_proxy_url() {
             if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
                 builder = builder.proxy(proxy);
-                log::debug!("LLM client: 使用代理 {}", proxy_url);
-            }
-        } else {
-            // macOS 系统代理（非环境变量设置）
-            // reqwest 默认会读系统代理，但 Tauri 可能不继承
-            // 尝试常见端口
-            for port in &[7890, 7891, 1080] {
-                let proxy_url = format!("http://127.0.0.1:{}", port);
-                if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-                    if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-                        builder = builder.proxy(proxy);
-                        log::info!("LLM client: 检测到本地代理 {}", proxy_url);
-                        break;
-                    }
-                }
+                log::info!("LLM client: 使用代理 {}", proxy_url);
             }
         }
 
@@ -735,6 +761,106 @@ impl LlmClient {
             "name": t.name, "description": t.description, "input_schema": t.parameters
         })).collect())
     }
+
+    /// 构建 Gemini 原生 API tools 格式
+    fn build_gemini_tools(tools: &[ToolDefinition]) -> serde_json::Value {
+        let declarations: Vec<serde_json::Value> = tools.iter().map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters
+            })
+        }).collect();
+        serde_json::json!([{"functionDeclarations": declarations}])
+    }
+
+    /// 将 OpenAI 格式消息转为 Gemini 原生 contents 格式
+    fn convert_messages_to_gemini_contents(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        let mut contents = Vec::new();
+        for msg in messages {
+            let role = msg["role"].as_str().unwrap_or("user");
+            match role {
+                "system" => {} // system 单独处理
+                "assistant" => {
+                    let mut parts = Vec::new();
+                    // 检查是否有 tool_calls（OpenAI 格式）
+                    if let Some(tool_calls) = msg["tool_calls"].as_array() {
+                        // 先添加文本（如果有）
+                        if let Some(text) = msg["content"].as_str() {
+                            if !text.is_empty() {
+                                parts.push(serde_json::json!({"text": text}));
+                            }
+                        }
+                        // 转换 tool_calls 为 functionCall
+                        for tc in tool_calls {
+                            let name = tc["function"]["name"].as_str().unwrap_or("");
+                            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                            let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                            parts.push(serde_json::json!({"functionCall": {"name": name, "args": args}}));
+                        }
+                    } else if let Some(text) = msg["content"].as_str() {
+                        parts.push(serde_json::json!({"text": text}));
+                    } else if let Some(arr) = msg["content"].as_array() {
+                        // Anthropic 格式的 content blocks
+                        for block in arr {
+                            match block["type"].as_str() {
+                                Some("text") => {
+                                    if let Some(t) = block["text"].as_str() {
+                                        parts.push(serde_json::json!({"text": t}));
+                                    }
+                                }
+                                Some("tool_use") => {
+                                    let name = block["name"].as_str().unwrap_or("");
+                                    let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                                    parts.push(serde_json::json!({"functionCall": {"name": name, "args": input}}));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if !parts.is_empty() {
+                        contents.push(serde_json::json!({"role": "model", "parts": parts}));
+                    }
+                }
+                "tool" => {
+                    // OpenAI tool result → Gemini functionResponse
+                    let name = msg.get("name").and_then(|n| n.as_str())
+                        .or_else(|| msg.get("tool_call_id").and_then(|id| id.as_str()))
+                        .unwrap_or("unknown");
+                    let content_str = msg["content"].as_str().unwrap_or("");
+                    // 尝试解析为 JSON，否则包装为 text
+                    let response: serde_json::Value = serde_json::from_str(content_str)
+                        .unwrap_or(serde_json::json!({"result": content_str}));
+                    log::debug!("Gemini functionResponse: name={}, response_len={}", name, content_str.len());
+                    contents.push(serde_json::json!({
+                        "role": "user",
+                        "parts": [{"functionResponse": {"name": name, "response": response}}]
+                    }));
+                }
+                _ => {
+                    // user 及其他
+                    let text = msg["content"].as_str().unwrap_or("");
+                    if !text.is_empty() {
+                        contents.push(serde_json::json!({"role": "user", "parts": [{"text": text}]}));
+                    }
+                }
+            }
+        }
+        // Gemini 要求第一条消息是 user 角色
+        if contents.first().map(|c| c["role"].as_str() != Some("user")).unwrap_or(false) {
+            contents.insert(0, serde_json::json!({"role": "user", "parts": [{"text": "Hello"}]}));
+        }
+        contents
+    }
+
+    /// 判断是否应使用 Gemini Cloud Code Assist API（OAuth token）
+    fn should_use_gemini_native(config: &LlmConfig) -> bool {
+        config.api_key.starts_with("ya29.") &&
+        config.base_url.as_deref()
+            .map(|u| u.contains("generativelanguage.googleapis.com") || u.contains("aiplatform.googleapis.com") || u.contains("cloudcode-pa.googleapis.com"))
+            .unwrap_or(false)
+    }
+
     /// 流式调用 LLM，通过 channel 逐 token 返回，支持工具调用
     pub async fn call_stream(
         &self,
@@ -746,7 +872,56 @@ impl LlmClient {
         let config = &self.config;
         // 从限定引用 "provider/model" 中提取纯模型名（API 请求只用模型名）
         let (_, pure_model) = crate::channels::parse_qualified_model(&config.model);
+        // Gemini OAuth 使用原生 API（OpenAI 兼容端点不支持 OAuth token）
+        let use_gemini_native = Self::should_use_gemini_native(config);
         let (url, body) = match config.provider.as_str() {
+            "openai" if use_gemini_native => {
+                // Cloud Code Assist API（支持 OAuth cloud-platform scope）
+                // 端点：cloudcode-pa.googleapis.com/v1internal:streamGenerateContent
+                // 请求格式：{model, project, request: {contents, systemInstruction, tools, ...}}
+                let raw_base = config.base_url.as_deref().unwrap_or("https://cloudcode-pa.googleapis.com/v1internal");
+                // 从 base_url 的 fragment 提取 project ID：...#project=xxx
+                let (base_url, project_id) = if let Some(idx) = raw_base.find("#project=") {
+                    let pid = raw_base[idx + 9..].to_string();
+                    let base = &raw_base[..idx];
+                    (base.to_string(), Some(pid))
+                } else {
+                    (raw_base.to_string(), None)
+                };
+                let url = format!("{}:streamGenerateContent?alt=sse", base_url);
+
+                let contents = Self::convert_messages_to_gemini_contents(messages);
+                let mut inner_request = serde_json::json!({
+                    "contents": contents,
+                    "generationConfig": {
+                        "temperature": config.temperature.unwrap_or(0.7),
+                        "maxOutputTokens": config.max_tokens.filter(|&t| t > 0).unwrap_or(8192),
+                    }
+                });
+                if let Some(sp) = system_prompt {
+                    inner_request["systemInstruction"] = serde_json::json!({"parts": [{"text": sp}]});
+                }
+                if let Some(t) = tools {
+                    if !t.is_empty() {
+                        inner_request["tools"] = Self::build_gemini_tools(t);
+                        inner_request["toolConfig"] = serde_json::json!({"functionCallingConfig": {"mode": "AUTO"}});
+                    }
+                }
+
+                // Cloud Code Assist 格式的外层包装
+                let mut body = serde_json::json!({
+                    "model": pure_model,
+                    "request": inner_request,
+                });
+                // 添加 project ID（如果有）
+                if let Some(pid) = &project_id {
+                    body["project"] = serde_json::Value::String(pid.clone());
+                }
+
+                log::info!("Gemini Cloud Code API: model={}, project={:?}, contents={}, url={}",
+                    pure_model, project_id, contents.len(), url);
+                (url, body)
+            }
             "openai" => {
                 let url = format!("{}/chat/completions", config.base_url.as_deref().unwrap_or("https://api.openai.com/v1"));
                 let resolved_max_tokens = config.max_tokens.filter(|&t| t > 0).unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
@@ -815,21 +990,21 @@ impl LlmClient {
                 let resolved_max_tokens = config.max_tokens.filter(|&t| t > 0).unwrap_or_else(|| default_max_tokens(&config.provider, &config.model));
                 // 转换 OpenAI 格式的 tool 消息为 Anthropic 格式
                 let clean_messages = sanitize_messages_for_anthropic(messages, &config.provider, &config.model);
-                log::info!("sanitize 完成: {} 条消息", clean_messages.len());
+                log::debug!("sanitize 完成: {} 条消息", clean_messages.len());
                 // 调试：打印每条消息的结构
                 for (i, m) in clean_messages.iter().enumerate() {
                     let role = m["role"].as_str().unwrap_or("?");
                     let content_type = if m["content"].is_array() { "array" } else if m["content"].is_string() { "STRING(!)" } else { "other(!)" };
                     let has_tool_calls = m.get("tool_calls").is_some();
                     let preview: String = m["content"].to_string().chars().take(80).collect();
-                    log::info!("Anthropic msg[{}]: role={}, content={}, tool_calls={}, preview={}", i, role, content_type, has_tool_calls, preview);
+                    log::debug!("Anthropic msg[{}]: role={}, content={}, tool_calls={}, preview={}", i, role, content_type, has_tool_calls, preview);
                 }
                 let mut body = serde_json::json!({
                     "model": pure_model, "messages": clean_messages, "stream": true,
                     "temperature": config.temperature.unwrap_or(1.0),
                     "max_tokens": resolved_max_tokens,
                 });
-                log::info!("body 构建完成，添加 system+tools...");
+                log::debug!("body 构建完成，添加 system+tools...");
                 if let Some(sp) = system_prompt { body["system"] = Self::build_anthropic_system_blocks(sp); }
                 if let Some(t) = tools { if !t.is_empty() { body["tools"] = Self::build_anthropic_tools(t); } }
                 // Thinking（扩展推理）支持
@@ -885,22 +1060,26 @@ impl LlmClient {
         // think 标签过滤状态
         let mut in_think = false;
         let mut think_buffer = String::new();
+        // OAuth token 可能在 401 后被刷新，用 mutable 变量跟踪当前有效 key
+        let mut current_api_key = config.api_key.clone();
 
         for attempt in 0..MAX_RETRIES {
             let mut req = self.client.post(&url).json(&body);
             match config.provider.as_str() {
                 "openai" => {
                     // OAuth 自动刷新：如果是 OAuth token（ya29. 开头）且有 refresh 配置，检查过期
-                    let effective_key = if config.api_key.starts_with("ya29.") {
-                        // 可能是 Google OAuth token，尝试从 DB 刷新
-                        match try_refresh_oauth_token_if_needed(&config.api_key).await {
-                            Some(new_key) => new_key,
-                            None => config.api_key.clone(),
+                    let effective_key = if current_api_key.starts_with("ya29.") {
+                        match try_refresh_oauth_token_if_needed(&current_api_key).await {
+                            Some(new_key) => {
+                                current_api_key = new_key.clone();
+                                new_key
+                            },
+                            None => current_api_key.clone(),
                         }
                     } else {
-                        config.api_key.clone()
+                        current_api_key.clone()
                     };
-                    log::info!("LLM auth: Bearer key_len={}, prefix={}", effective_key.len(), &effective_key[..effective_key.len().min(15)]);
+                    log::debug!("LLM auth: Bearer key_len={}", effective_key.len());
                     req = req.header("Authorization", format!("Bearer {}", effective_key));
                 }
                 "anthropic" => {
@@ -917,8 +1096,9 @@ impl LlmClient {
                     if attempt < MAX_RETRIES - 1 {
                         let wait = (attempt + 1) as u64;
                         log::warn!("LLM 请求失败（第 {} 次），{}秒后重试: {}", attempt + 1, wait, e);
+                        // 通知前端清除已接收的部分 token
+                        let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
                         tokio::time::sleep(Duration::from_secs(wait)).await;
-                        // 重置累积状态
                         result = LlmResponse::default();
                         oa_tool_calls.clear();
                         anth_current_tool = None;
@@ -934,17 +1114,41 @@ impl LlmClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let body_text = response.text().await.unwrap_or_default();
-                // 安全: 清洗错误响应中可能泄露的凭据
                 let safe_body = body_text
+                    .replace(&current_api_key, "***REDACTED***")
                     .replace(&config.api_key, "***REDACTED***")
                     .chars().take(500).collect::<String>();
                 log::error!("LLM API 错误 {}: {}", status, safe_body);
 
-                // 5xx / 429 可重试；4xx（除 429）不可重试
+                // 401 + OAuth token → 强制刷新后重试
+                if status.as_u16() == 401 && current_api_key.starts_with("ya29.") && attempt < MAX_RETRIES - 1 {
+                    log::warn!("OAuth token 被拒绝(401)，强制刷新 token 后重试...");
+                    if let Some(new_key) = force_refresh_oauth_token(&current_api_key).await {
+                        log::info!("OAuth token 强制刷新成功，重试请求...");
+                        // 通知前端清除已接收的部分 token
+                        let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
+                        current_api_key = new_key;
+                        result = LlmResponse::default();
+                        oa_tool_calls.clear();
+                        anth_current_tool = None;
+                        in_think = false;
+                        think_buffer.clear();
+                        continue;
+                    }
+                }
+
+                // 404 + Cloud Code API → 模型可能不可用，提示用户
+                if status.as_u16() == 404 && url.contains("cloudcode-pa.googleapis.com") {
+                    log::warn!("Cloud Code API 404: 模型 {} 可能不可用，建议切换到 gemini-2.5-flash 或 gemini-2.5-pro", config.model);
+                }
+
+                // 5xx / 429 可重试
                 let is_retryable = status.as_u16() >= 500 || status.as_u16() == 429;
                 if is_retryable && attempt < MAX_RETRIES - 1 {
-                    let wait = (attempt + 1) as u64 * 2; // 递增等待
+                    let wait = (attempt + 1) as u64 * 2;
                     log::warn!("LLM API {} 可重试，{}秒后第 {} 次重试", status, wait, attempt + 2);
+                    // 通知前端清除已接收的部分 token
+                    let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     result = LlmResponse::default();
                     oa_tool_calls.clear();
@@ -967,6 +1171,11 @@ impl LlmClient {
 
             let stream_result: Result<(), String> = async {
                 loop {
+                    // 检查接收端是否已关闭（会话取消时 receiver 会被 drop）
+                    if tx.is_closed() {
+                        log::info!("LLM 流已取消（接收端已关闭）");
+                        return Err("请求已取消".to_string());
+                    }
                     let maybe_chunk = timeout(Duration::from_secs(60), stream.next())
                         .await.map_err(|_| "流式读取超时（60 秒无数据）".to_string())?;
                     let chunk = match maybe_chunk {
@@ -977,7 +1186,7 @@ impl LlmClient {
                     let text = String::from_utf8_lossy(&chunk);
                     buffer.push_str(&text);
                     if chunk_debug_count < 3 {
-                        log::info!("SSE raw chunk #{}: {:?}", chunk_debug_count, text.chars().take(500).collect::<String>());
+                        log::debug!("SSE raw chunk #{}: {:?}", chunk_debug_count, text.chars().take(500).collect::<String>());
                         chunk_debug_count += 1;
                     }
 
@@ -1063,6 +1272,8 @@ impl LlmClient {
                     if !has_content && !has_tools && attempt < MAX_RETRIES - 1 {
                         let wait = (attempt + 1) as u64;
                         log::warn!("LLM SSE 成功但返回空内容（第 {} 次），{}秒后重试", attempt + 1, wait);
+                        // 通知前端清除已接收的部分 token
+                        let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
                         tokio::time::sleep(Duration::from_secs(wait)).await;
                         result = LlmResponse::default();
                         oa_tool_calls.clear();
@@ -1077,6 +1288,8 @@ impl LlmClient {
                     if attempt < MAX_RETRIES - 1 && (e.contains("超时") || e.contains("timeout") || e.contains("connection")) {
                         let wait = (attempt + 1) as u64;
                         log::warn!("SSE 流读取失败（第 {} 次），{}秒后重试: {}", attempt + 1, wait, e);
+                        // 通知前端清除已接收的部分 token
+                        let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
                         tokio::time::sleep(Duration::from_secs(wait)).await;
                         result = LlmResponse::default();
                         oa_tool_calls.clear();
@@ -1348,6 +1561,18 @@ impl LlmClient {
 
     /// 从 SSE JSON 中提取 usage 统计
     fn extract_usage(json: &serde_json::Value, result: &mut LlmResponse) {
+        // Gemini 原生格式: {"usageMetadata": {"promptTokenCount": N, "candidatesTokenCount": N}}
+        if let Some(usage) = json.get("usageMetadata").and_then(|u| u.as_object()) {
+            let input = usage.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = usage.get("totalTokenCount").and_then(|v| v.as_u64()).unwrap_or(input + output);
+            if input > 0 || output > 0 {
+                let u = result.usage.get_or_insert(LlmUsage::default());
+                u.input_tokens = input;
+                u.output_tokens = u.output_tokens.max(output as u64);
+                u.total_tokens = total;
+            }
+        }
         // OpenAI 格式: {"usage": {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N}}
         if let Some(usage) = json.get("usage").and_then(|u| u.as_object()) {
             let input = usage.get("prompt_tokens").or_else(|| usage.get("input_tokens"))
@@ -1423,10 +1648,78 @@ impl LlmClient {
         in_think: &mut bool,
         think_buffer: &mut String,
     ) {
+        // Gemini 原生 API 使用独立解析器
+        if Self::should_use_gemini_native(&self.config) {
+            self.process_gemini_native_sse(json, result, oa_tool_calls, tx);
+            return;
+        }
         match self.config.provider.as_str() {
             "openai" => self.process_openai_sse(json, result, oa_tool_calls, tx, in_think, think_buffer),
             "anthropic" => self.process_anthropic_sse(json, result, anth_current_tool, tx),
             _ => {}
+        }
+    }
+
+    /// 处理 Gemini 原生 SSE 事件
+    /// 格式: {"candidates":[{"content":{"parts":[{"text":"..."}],"role":"model"}}],"usageMetadata":{...}}
+    fn process_gemini_native_sse(
+        &self,
+        json: &serde_json::Value,
+        result: &mut LlmResponse,
+        oa_tool_calls: &mut Vec<OaToolCallAccum>,
+        tx: &mpsc::UnboundedSender<String>,
+    ) {
+        // Cloud Code Assist 格式：外层有 response 包装
+        let inner = json.get("response").unwrap_or(json);
+
+        // 提取 usage（直接在这里处理，因为 extract_usage 不知道 response 包装）
+        if let Some(usage) = inner.get("usageMetadata").and_then(|u| u.as_object()) {
+            let input = usage.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = usage.get("totalTokenCount").and_then(|v| v.as_u64()).unwrap_or(input + output);
+            if input > 0 || output > 0 {
+                result.usage = Some(LlmUsage {
+                    input_tokens: input, output_tokens: output, total_tokens: total,
+                    cache_read_tokens: 0, cache_creation_tokens: 0,
+                });
+            }
+        }
+
+        // 提取候选内容
+        let candidates = match inner["candidates"].as_array() {
+            Some(c) => c,
+            None => return,
+        };
+        for candidate in candidates {
+            let parts = match candidate["content"]["parts"].as_array() {
+                Some(p) => p,
+                None => continue,
+            };
+            for part in parts {
+                // 文本内容
+                if let Some(text) = part["text"].as_str() {
+                    if !text.is_empty() {
+                        result.content.push_str(text);
+                        let _ = tx.send(text.to_string());
+                    }
+                }
+                // 工具调用（functionCall）
+                if let Some(fc) = part.get("functionCall") {
+                    let name = fc["name"].as_str().unwrap_or("").to_string();
+                    let args = fc.get("args").cloned().unwrap_or(serde_json::json!({}));
+                    let args_str = args.to_string();
+                    let id = format!("gemini_fc_{}", oa_tool_calls.len());
+                    log::info!("Gemini functionCall: id={}, name={}, args={}", id, name, &args_str[..args_str.len().min(200)]);
+                    oa_tool_calls.push(OaToolCallAccum { id: id.clone(), name: name.clone(), arguments: args_str });
+                    log::debug!("Gemini tool call 累计数: {}", oa_tool_calls.len());
+                }
+            }
+            // 检查 finish reason
+            if let Some(reason) = candidate["finishReason"].as_str() {
+                if reason == "STOP" || reason == "MAX_TOKENS" {
+                    result.stop_reason = reason.to_lowercase();
+                }
+            }
         }
     }
 
@@ -1473,7 +1766,7 @@ impl LlmClient {
             for tc in tool_calls {
                 // 首次出现 tool_calls 时记录原始 JSON，帮助调试 provider 格式
                 if oa_tool_calls.is_empty() {
-                    log::info!("原始 SSE tool_call 数据: {}", tc);
+                    log::debug!("原始 SSE tool_call 数据: {}", tc);
                 }
                 let idx = tc["index"].as_u64().unwrap_or(0) as usize;
                 // 扩展累积器
@@ -1508,7 +1801,7 @@ impl LlmClient {
         // 某些 provider 使用旧版 function_call 格式（非 tool_calls）
         if let Some(fc) = delta.get("function_call") {
             if oa_tool_calls.is_empty() {
-                log::info!("原始 SSE function_call 数据: {}", fc);
+                log::debug!("原始 SSE function_call 数据: {}", fc);
                 oa_tool_calls.push(OaToolCallAccum {
                     id: "fc_0".to_string(),
                     name: String::new(),
@@ -1655,20 +1948,7 @@ impl LlmClient {
 ///
 /// 返回 Some(新token) 如果刷新成功，None 如果不需要刷新或刷新失败
 async fn try_refresh_oauth_token_if_needed(current_key: &str) -> Option<String> {
-    // 检查 token 是否有效（调 Google tokeninfo）
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build().ok()?;
-    let resp = client.get(&format!("https://oauth2.googleapis.com/tokeninfo?access_token={}", current_key))
-        .send().await.ok()?;
-
-    if resp.status().is_success() {
-        return None; // token 有效，不需要刷新
-    }
-
-    log::info!("OAuth token 验证失败，尝试从 DB 刷新...");
-
-    // token 无效，尝试从本地 DB 找 refresh_token 并刷新
+    // 第一步：从 DB 读取 oauth.expiresAt，判断是否即将过期（5 分钟内）
     let home = dirs::home_dir()?;
     let db_path = home.join("Library/Application Support/com.xianzhu.app/xianzhu.db");
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -1682,41 +1962,146 @@ async fn try_refresh_oauth_token_if_needed(current_key: &str) -> Option<String> 
 
     // 找到匹配的 OAuth provider
     for p in &providers {
-        if p["apiKey"].as_str() == Some(current_key) {
-            if let Some(oauth) = p.get("oauth") {
-                let refresh_token = oauth["refreshToken"].as_str()?;
-                let token_url = oauth["tokenUrl"].as_str()?;
-                let client_id = oauth["clientId"].as_str()?;
+        if p["apiKey"].as_str() != Some(current_key) { continue; }
+        let oauth = p.get("oauth")?;
 
-                // 从本地 credentials 缓存读取 client_secret
-                let creds_file = home.join(".xianzhu/oauth_credentials.json");
-                let client_secret = if let Ok(content) = std::fs::read_to_string(&creds_file) {
-                    serde_json::from_str::<serde_json::Value>(&content).ok()
-                        .and_then(|c| c["google_client_secret"].as_str().map(|s| s.to_string()))
-                        .unwrap_or_default()
-                } else { String::new() };
+        // 检查 expiresAt：如果距过期超过 5 分钟，无需刷新
+        let now = chrono::Utc::now().timestamp();
+        let needs_refresh = if let Some(expires_at) = oauth["expiresAt"].as_i64() {
+            let remaining = expires_at - now;
+            if remaining > 300 {
+                log::debug!("OAuth token 距过期还有 {} 秒，无需刷新", remaining);
+                return None; // token 还有效且距过期超过 5 分钟
+            }
+            log::info!("OAuth token 即将过期（剩余 {} 秒），主动刷新...", remaining);
+            true
+        } else {
+            // expiresAt 不可用，回退到 tokeninfo API 检查
+            log::debug!("OAuth expiresAt 不可用，回退到 tokeninfo 检查");
+            let client = build_proxied_client(5, 10);
+            let resp = client.get(&format!("https://oauth2.googleapis.com/tokeninfo?access_token={}", current_key))
+                .send().await
+                .map_err(|e| log::warn!("OAuth tokeninfo 检查失败（可能是网络/代理问题）: {}", e))
+                .ok()?;
+            if resp.status().is_success() {
+                return None; // token 有效
+            }
+            log::info!("OAuth token 验证失败（tokeninfo），尝试刷新...");
+            true
+        };
 
-                let mut form: Vec<(&str, &str)> = vec![
-                    ("grant_type", "refresh_token"),
-                    ("refresh_token", refresh_token),
-                    ("client_id", client_id),
-                ];
-                if !client_secret.is_empty() {
-                    form.push(("client_secret", &client_secret));
+        if !needs_refresh { return None; }
+
+        // 执行刷新
+        let refresh_token = oauth["refreshToken"].as_str()?;
+        let token_url = oauth["tokenUrl"].as_str()?;
+        let client_id = oauth["clientId"].as_str()?;
+
+        let creds_file = home.join(".xianzhu/oauth_credentials.json");
+        let client_secret = if let Ok(content) = std::fs::read_to_string(&creds_file) {
+            serde_json::from_str::<serde_json::Value>(&content).ok()
+                .and_then(|c| c["google_client_secret"].as_str().map(|s| s.to_string()))
+                .unwrap_or_default()
+        } else { String::new() };
+
+        let client = build_proxied_client(5, 10);
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", client_id),
+        ];
+        if !client_secret.is_empty() {
+            form.push(("client_secret", &client_secret));
+        }
+
+        let token_resp = client.post(token_url).form(&form).send().await.ok()?;
+        let body: serde_json::Value = token_resp.json().await.ok()?;
+
+        let new_token = body["access_token"].as_str()?.to_string();
+        let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
+        let new_expires = chrono::Utc::now().timestamp() + expires_in;
+
+        // 更新 DB
+        let mut providers_mut: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
+        for pm in providers_mut.iter_mut() {
+            if pm["apiKey"].as_str() == Some(current_key) {
+                pm["apiKey"] = serde_json::Value::String(new_token.clone());
+                if let Some(o) = pm.get_mut("oauth") {
+                    o["expiresAt"] = serde_json::json!(new_expires);
                 }
+            }
+        }
+        let new_json = serde_json::to_string(&providers_mut).ok()?;
+        let _ = sqlx::query("UPDATE settings SET value = ? WHERE key = 'providers'")
+            .bind(&new_json).execute(&pool).await;
 
-                let token_resp = client.post(token_url).form(&form).send().await.ok()?;
-                let body: serde_json::Value = token_resp.json().await.ok()?;
+        log::info!("OAuth token 主动刷新成功，新 key 长度: {}, 有效期: {}秒", new_token.len(), expires_in);
+        return Some(new_token);
+    }
+    None
+}
 
-                let new_token = body["access_token"].as_str()?.to_string();
+/// 强制刷新 OAuth token（跳过 tokeninfo 检查，直接用 refresh_token 换新 token）
+/// 用于 401 响应后的强制刷新场景
+async fn force_refresh_oauth_token(current_key: &str) -> Option<String> {
+    let client = build_proxied_client(10, 15);
+    let home = dirs::home_dir()?;
+    let db_path = home.join("Library/Application Support/com.xianzhu.app/xianzhu.db");
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite:{}", db_path.display()))
+        .await.ok()?;
+
+    let providers_json: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'providers'")
+        .fetch_optional(&pool).await.ok().flatten()?;
+    let providers: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
+
+    // 找到匹配的 OAuth provider（按 apiKey 或 oauth.provider 匹配）
+    for p in &providers {
+        let is_match = p["apiKey"].as_str() == Some(current_key)
+            || (p.get("oauth").is_some() && p["apiKey"].as_str().map(|k| k.starts_with("ya29.")).unwrap_or(false));
+        if !is_match { continue; }
+
+        if let Some(oauth) = p.get("oauth") {
+            let refresh_token = oauth["refreshToken"].as_str()?;
+            let token_url = oauth["tokenUrl"].as_str()?;
+            let client_id = oauth["clientId"].as_str()?;
+
+            let creds_file = home.join(".xianzhu/oauth_credentials.json");
+            let client_secret = if let Ok(content) = std::fs::read_to_string(&creds_file) {
+                serde_json::from_str::<serde_json::Value>(&content).ok()
+                    .and_then(|c| c["google_client_secret"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            } else { String::new() };
+
+            let mut form: Vec<(&str, &str)> = vec![
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", client_id),
+            ];
+            if !client_secret.is_empty() {
+                form.push(("client_secret", &client_secret));
+            }
+
+            log::info!("强制刷新 OAuth token: url={}, client_id={}...", token_url, &client_id[..client_id.len().min(20)]);
+            let token_resp = match client.post(token_url).form(&form).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("OAuth token 刷新请求失败: {}", e);
+                    return None;
+                }
+            };
+            let body: serde_json::Value = token_resp.json().await.ok()?;
+
+            if let Some(new_token) = body["access_token"].as_str() {
                 let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
                 let new_expires = chrono::Utc::now().timestamp() + expires_in;
 
                 // 更新 DB
                 let mut providers_mut: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
                 for pm in providers_mut.iter_mut() {
-                    if pm["apiKey"].as_str() == Some(current_key) {
-                        pm["apiKey"] = serde_json::Value::String(new_token.clone());
+                    if pm["apiKey"].as_str() == Some(current_key) || pm.get("oauth").and_then(|o| o["refreshToken"].as_str()) == Some(refresh_token) {
+                        pm["apiKey"] = serde_json::Value::String(new_token.to_string());
                         if let Some(o) = pm.get_mut("oauth") {
                             o["expiresAt"] = serde_json::json!(new_expires);
                         }
@@ -1726,8 +2111,10 @@ async fn try_refresh_oauth_token_if_needed(current_key: &str) -> Option<String> 
                 let _ = sqlx::query("UPDATE settings SET value = ? WHERE key = 'providers'")
                     .bind(&new_json).execute(&pool).await;
 
-                log::info!("OAuth token 刷新成功（LLM 层），新 key 长度: {}", new_token.len());
-                return Some(new_token);
+                log::info!("OAuth token 强制刷新成功，新 key 长度: {}, 有效期: {}秒", new_token.len(), expires_in);
+                return Some(new_token.to_string());
+            } else {
+                log::error!("OAuth token 刷新响应无 access_token: {}", body);
             }
         }
     }
@@ -1737,14 +2124,28 @@ async fn try_refresh_oauth_token_if_needed(current_key: &str) -> Option<String> 
 pub fn classify_llm_error(error: &str) -> String {
     let lower = error.to_lowercase();
 
-    // 429 / rate limit
+    // Cloud Code API 404 → 模型不可用，给出具体建议
+    if lower.contains("404") && lower.contains("cloudcode-pa.googleapis.com") {
+        return "该模型在当前 API 中不可用，建议使用 gemini-2.5-flash".to_string();
+    }
+
+    // Cloud Code API 其他错误（5xx 等）
+    if lower.contains("cloudcode-pa.googleapis.com") && (lower.contains("500") || lower.contains("502") || lower.contains("503") || lower.contains("504") || lower.contains("service unavailable")) {
+        return "Gemini 模型暂时不可用，建议切换模型或稍后重试".to_string();
+    }
+
+    // 429 / rate limit — 提取 retry-after 提示
     if lower.contains("429") || lower.contains("rate limit") || lower.contains("too many requests") || lower.contains("请求过于频繁") {
-        return "请求过于频繁，请稍后重试".to_string();
+        // 尝试从错误文本中提取 retry-after 秒数
+        if let Some(secs) = extract_retry_after(error) {
+            return format!("请求过于频繁，建议等待 {} 秒后重试", secs);
+        }
+        return "请求过于频繁，建议等待 30 秒后重试".to_string();
     }
 
     // 401 / unauthorized
     if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key")
-        || lower.contains("invalid x-api-key") || lower.contains("authentication") || lower.contains("api key") && lower.contains("invalid")
+        || lower.contains("invalid x-api-key") || lower.contains("authentication") || (lower.contains("api key") && lower.contains("invalid"))
     {
         return "API Key 无效或已过期，请检查设置".to_string();
     }
@@ -1755,6 +2156,11 @@ pub fn classify_llm_error(error: &str) -> String {
         || lower.contains("额度") || lower.contains("credit") || lower.contains("billing")
     {
         return "API 额度不足，请充值或更换供应商".to_string();
+    }
+
+    // 404 通用（非 Cloud Code）
+    if lower.contains("404") || lower.contains("not found") {
+        return "请求的模型或端点不存在，请检查供应商配置".to_string();
     }
 
     // 5xx server errors
@@ -1773,7 +2179,7 @@ pub fn classify_llm_error(error: &str) -> String {
     // connection errors
     if lower.contains("connection refused") || lower.contains("connection reset")
         || lower.contains("connect error") || lower.contains("dns") || lower.contains("无法连接")
-        || lower.contains("连接失败") || lower.contains("network") && lower.contains("error")
+        || lower.contains("连接失败") || (lower.contains("network") && lower.contains("error"))
     {
         return "无法连接到 AI 服务，请检查网络".to_string();
     }
@@ -1781,6 +2187,24 @@ pub fn classify_llm_error(error: &str) -> String {
     // 无法分类的错误，返回原始信息（截断过长文本）
     let trimmed: String = error.chars().take(200).collect();
     trimmed
+}
+
+/// 尝试从错误文本中提取 retry-after 秒数
+fn extract_retry_after(error: &str) -> Option<u64> {
+    let lower = error.to_lowercase();
+    // 匹配 "retry-after: 30" 或 "retry after 30" 或 "retry_after":30 等模式
+    for pattern in &["retry-after: ", "retry-after:", "retry after ", "retry_after\":", "retry_after\": "] {
+        if let Some(idx) = lower.find(pattern) {
+            let rest = &error[idx + pattern.len()..];
+            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(secs) = num_str.parse::<u64>() {
+                if secs > 0 && secs < 3600 {
+                    return Some(secs);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1919,8 +2343,36 @@ mod tests {
 
     #[test]
     fn test_classify_llm_error_rate_limit() {
-        assert_eq!(classify_llm_error("LLM API 错误 429: Too Many Requests"), "请求过于频繁，请稍后重试");
-        assert_eq!(classify_llm_error("rate limit exceeded"), "请求过于频繁，请稍后重试");
+        assert_eq!(classify_llm_error("LLM API 错误 429: Too Many Requests"), "请求过于频繁，建议等待 30 秒后重试");
+        assert_eq!(classify_llm_error("rate limit exceeded"), "请求过于频繁，建议等待 30 秒后重试");
+    }
+
+    #[test]
+    fn test_classify_llm_error_rate_limit_with_retry_after() {
+        assert_eq!(
+            classify_llm_error("429 Too Many Requests, retry-after: 60"),
+            "请求过于频繁，建议等待 60 秒后重试"
+        );
+        assert_eq!(
+            classify_llm_error("rate limit exceeded {\"retry_after\":15}"),
+            "请求过于频繁，建议等待 15 秒后重试"
+        );
+    }
+
+    #[test]
+    fn test_classify_llm_error_cloud_code_404() {
+        assert_eq!(
+            classify_llm_error("LLM API 错误 404: https://cloudcode-pa.googleapis.com/v1internal model not found"),
+            "该模型在当前 API 中不可用，建议使用 gemini-2.5-flash"
+        );
+    }
+
+    #[test]
+    fn test_classify_llm_error_cloud_code_5xx() {
+        assert_eq!(
+            classify_llm_error("LLM API 错误 503: Service Unavailable cloudcode-pa.googleapis.com"),
+            "Gemini 模型暂时不可用，建议切换模型或稍后重试"
+        );
     }
 
     #[test]

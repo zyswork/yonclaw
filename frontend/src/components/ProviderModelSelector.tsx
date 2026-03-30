@@ -123,7 +123,12 @@ export default function ProviderModelSelector({ value, onChange, requireKey = tr
   }
 
   const handleSelectModel = (mid: string) => {
-    onChange(`${selectedProvider}/${mid}`)
+    if (mid === '') {
+      // 清除选择
+      onChange('')
+    } else {
+      onChange(`${selectedProvider}/${mid}`)
+    }
     setModelOpen(false)
   }
 
@@ -215,7 +220,7 @@ export default function ProviderModelSelector({ value, onChange, requireKey = tr
             type="button"
             style={{ ...triggerBase, borderColor: modelOpen ? 'var(--accent)' : 'var(--border-subtle)' }}
             onClick={() => { setModelOpen(o => !o); setProviderOpen(false) }}
-            disabled={modelsForProvider.length === 0}
+            disabled={false}
           >
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: currentModel ? 'var(--text-primary)' : 'var(--text-muted)' }}>
               {displayLabel}
@@ -224,8 +229,25 @@ export default function ProviderModelSelector({ value, onChange, requireKey = tr
               <ChevronDown />
             </span>
           </button>
-          {modelOpen && modelsForProvider.length > 0 && (
+          {modelOpen && (
             <div style={dropdownBase}>
+              {/* 清除选项 */}
+              <div
+                onClick={() => handleSelectModel('')}
+                style={{
+                  ...itemBase,
+                  backgroundColor: !currentModelId ? 'var(--accent-bg)' : 'transparent',
+                  color: !currentModelId ? 'var(--accent)' : 'var(--text-muted)',
+                  fontStyle: 'italic',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  marginBottom: 4,
+                }}
+                onMouseEnter={e => { if (currentModelId) e.currentTarget.style.backgroundColor = 'var(--bg-glass)' }}
+                onMouseLeave={e => { if (currentModelId) e.currentTarget.style.backgroundColor = 'transparent' }}
+              >
+                <span style={{ width: 12, flexShrink: 0 }} />
+                <span>-- {t('common.notConfigured')} --</span>
+              </div>
               {modelsForProvider.map(m => {
                 const isSelected = m.id === currentModelId && selectedProvider === currentProviderId
                 return (

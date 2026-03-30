@@ -45,6 +45,7 @@ export const en: TranslationMap = {
     model: 'Model',
     provider: 'Provider',
     pleaseSelect: 'Please select',
+    notConfigured: 'Not configured',
     status: 'Status',
     actions: 'Actions',
     logout: 'Logout',

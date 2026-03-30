@@ -221,6 +221,15 @@ impl ChannelManager {
             .bind(id).execute(&self.pool).await;
     }
 
+    /// 停止所有频道实例（用于应用退出清理）
+    pub fn stop_all(&self) {
+        let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
+        for (id, inst) in instances.drain() {
+            inst.cancel.cancel();
+            log::info!("频道实例已停止: {} ({})", id, inst.channel_type);
+        }
+    }
+
     /// 获取所有实例状态
     pub fn running_count(&self) -> usize {
         self.instances.lock().unwrap_or_else(|p| p.into_inner()).len()

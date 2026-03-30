@@ -239,7 +239,12 @@ impl Memory for SqliteMemory {
     }
 
     async fn store_with_priority(&self, agent_id: &str, key: &str, content: &str, category: MemoryCategory, priority: MemoryPriority) -> Result<String, String> {
-        let id = uuid::Uuid::new_v4().to_string();
+        // 如果提供了 key，用作 id，使 get(key) 和 forget(key) 能正确匹配
+        let id = if key.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            key.to_string()
+        };
         let now = chrono::Utc::now().timestamp_millis();
         let cat_str = category.as_str().to_string();
 
@@ -571,6 +576,112 @@ impl TieredMemory {
         }
     }
 
+    /// 从 Cold 层（归档文件）中按关键词召回记忆
+    ///
+    /// 读取 `workspace/memory/archive/` 下的 markdown 文件，
+    /// 按 `##` 标题分割条目，对每个条目进行关键词匹配。
+    pub fn recall_from_archive(&self, query: &str, limit: usize) -> Vec<MemoryEntry> {
+        let cold_dir = match &self.cold_dir {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let archive_dir = cold_dir.join("archive");
+        if !archive_dir.exists() {
+            return Vec::new();
+        }
+
+        // 提取查询关键词（小写化）
+        let keywords: Vec<String> = query.split_whitespace()
+            .map(|w| w.to_lowercase())
+            .filter(|w| w.len() >= 2) // 跳过过短的词
+            .collect();
+        if keywords.is_empty() {
+            return Vec::new();
+        }
+
+        let mut results: Vec<MemoryEntry> = Vec::new();
+
+        // 遍历归档目录下的 .md 文件
+        let entries = match std::fs::read_dir(&archive_dir) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("读取归档目录失败: {}", e);
+                return Vec::new();
+            }
+        };
+
+        for dir_entry in entries.flatten() {
+            let path = dir_entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // 按 ## 标题分割条目
+            for section in content.split("\n## ") {
+                let section_trimmed = section.trim();
+                if section_trimmed.is_empty() {
+                    continue;
+                }
+
+                let lower = section_trimmed.to_lowercase();
+                // 计算匹配的关键词数量作为分数
+                let matched: usize = keywords.iter()
+                    .filter(|kw| lower.contains(kw.as_str()))
+                    .count();
+
+                if matched == 0 {
+                    continue;
+                }
+
+                // 解析标题行获取 memory_type 和 id（格式：[type] id）
+                let first_line = section_trimmed.lines().next().unwrap_or("");
+                let (memory_type, entry_id) = if first_line.starts_with('[') {
+                    if let Some(end) = first_line.find(']') {
+                        let mtype = first_line[1..end].to_string();
+                        let eid = first_line[end+1..].trim().to_string();
+                        (mtype, eid)
+                    } else {
+                        ("archive".to_string(), first_line.to_string())
+                    }
+                } else {
+                    ("archive".to_string(), first_line.to_string())
+                };
+
+                // 条目内容（跳过标题行）
+                let body: String = section_trimmed.lines().skip(1)
+                    .collect::<Vec<_>>().join("\n").trim().to_string();
+
+                let score = matched as f64 / keywords.len() as f64;
+
+                results.push(MemoryEntry {
+                    id: format!("cold:{}", entry_id),
+                    key: format!("archive/{}", memory_type),
+                    content: if body.is_empty() { first_line.to_string() } else { body },
+                    category: MemoryCategory::Custom("archive".to_string()),
+                    priority: MemoryPriority::Low,
+                    timestamp: 0, // 归档条目不保留精确时间戳
+                    score: Some(score),
+                });
+            }
+
+            if results.len() >= limit * 3 {
+                break; // 足够多了，提前退出
+            }
+        }
+
+        // 按匹配分数降序排列
+        results.sort_by(|a, b| {
+            b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+        results
+    }
+
     /// 将超龄记忆归档到 Cold 层（文件系统）
     ///
     /// 将超过 `days` 天的记忆导出为 markdown 文件，然后从 Warm 层删除
@@ -670,6 +781,22 @@ impl Memory for TieredMemory {
                 merged.push(entry);
             }
         }
+
+        // Cold 层回退：如果 Hot+Warm 结果不足 3 条，从归档中补充
+        if merged.len() < 3 {
+            let cold_needed = limit.saturating_sub(merged.len());
+            let cold_results = self.recall_from_archive(query, cold_needed);
+            for entry in cold_results {
+                if seen.insert(entry.id.clone()) {
+                    merged.push(entry);
+                }
+            }
+            if merged.len() > limit {
+                // Hot+Warm 条目中可能有 0 条但 cold 返回了很多
+                // 无需截断以 limit 为准（cold_needed 已限制）
+            }
+        }
+
         merged.truncate(limit);
         Ok(merged)
     }

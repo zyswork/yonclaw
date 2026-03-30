@@ -13,11 +13,47 @@ use std::time::{Duration, Instant};
 
 use crate::runtime::NodeRuntime;
 
-const BACKEND_PORT: u16 = 3000;
+const DEFAULT_BACKEND_PORT: u16 = 3000;
+const MAX_PORT_SCAN: u16 = 3010;
 const BACKEND_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const HEALTH_CHECK_MAX_RETRIES: u32 = 20;
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 选择可用的后端端口
+///
+/// 优先级：
+/// 1. 环境变量 XIANZHU_BACKEND_PORT
+/// 2. 从 DEFAULT_BACKEND_PORT 开始扫描到 MAX_PORT_SCAN，返回第一个可用端口
+fn select_backend_port() -> u16 {
+    // 1. 环境变量优先
+    if let Ok(port_str) = std::env::var("XIANZHU_BACKEND_PORT") {
+        if let Ok(port) = port_str.parse::<u16>() {
+            info!("使用环境变量指定的后端端口: {}", port);
+            return port;
+        } else {
+            warn!("XIANZHU_BACKEND_PORT 值无效: {}", port_str);
+        }
+    }
+
+    // 2. 扫描可用端口
+    for port in DEFAULT_BACKEND_PORT..=MAX_PORT_SCAN {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(_listener) => {
+                // listener 在此 drop，释放端口
+                if port != DEFAULT_BACKEND_PORT {
+                    info!("端口 {} 被占用，自动选择端口: {}", DEFAULT_BACKEND_PORT, port);
+                }
+                return port;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    // 所有端口都不可用，返回默认值（start 中会处理占用情况）
+    warn!("端口 {}-{} 均被占用，回退到默认端口 {}", DEFAULT_BACKEND_PORT, MAX_PORT_SCAN, DEFAULT_BACKEND_PORT);
+    DEFAULT_BACKEND_PORT
+}
 
 /// 后端进程管理器
 ///
@@ -34,15 +70,21 @@ pub struct BackendManager {
     http_client: Client,
     /// 后端服务 URL
     backend_url: String,
+    /// 实际使用的端口
+    port: u16,
 }
 
 impl BackendManager {
     /// 创建新的后端管理器实例
+    ///
+    /// 自动选择可用端口（优先环境变量，然后扫描 3000-3010）
     pub fn new() -> Self {
+        let port = select_backend_port();
         Self {
             process: None,
             http_client: Client::new(),
-            backend_url: format!("http://localhost:{}", BACKEND_PORT),
+            backend_url: format!("http://localhost:{}", port),
+            port,
         }
     }
 
@@ -59,7 +101,7 @@ impl BackendManager {
 
         // 1. 检查端口是否可用
         if !self.is_port_available().await {
-            warn!("端口 {} 被占用，尝试杀死前一个进程", BACKEND_PORT);
+            warn!("端口 {} 被占用，尝试杀死前一个进程", self.port);
             self.kill_existing_process().await?;
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -69,15 +111,16 @@ impl BackendManager {
         let backend_entry = self.get_backend_entry()?;
 
         info!(
-            "启动命令: {} {}",
+            "启动命令: {} {} (端口: {})",
             node_exe.display(),
-            backend_entry.display()
+            backend_entry.display(),
+            self.port,
         );
 
         // 3. 启动 Node.js 进程
         let child = Command::new(&node_exe)
             .arg(&backend_entry)
-            .env("PORT", BACKEND_PORT.to_string())
+            .env("PORT", self.port.to_string())
             .env("NODE_ENV", "production")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -180,7 +223,7 @@ impl BackendManager {
 
     /// 检查指定端口是否可用
     async fn is_port_available(&self) -> bool {
-        match std::net::TcpListener::bind(("127.0.0.1", BACKEND_PORT)) {
+        match std::net::TcpListener::bind(("127.0.0.1", self.port)) {
             Ok(_listener) => true,
             Err(_) => false,
         }
@@ -197,14 +240,14 @@ impl BackendManager {
                 Ok(output) => {
                     let output_str = String::from_utf8_lossy(&output.stdout);
                     for line in output_str.lines() {
-                        if line.contains(&format!(":{}", BACKEND_PORT)) && line.contains("LISTENING") {
+                        if line.contains(&format!(":{}", self.port)) && line.contains("LISTENING") {
                             if let Some(pid_str) = line.split_whitespace().last() {
                                 if let Ok(pid) = pid_str.parse::<u32>() {
                                     match Command::new("taskkill")
                                         .args(&["/F", "/PID", &pid.to_string()])
                                         .output()
                                     {
-                                        Ok(_) => info!("成功杀死占用端口 {} 的进程 (PID: {})", BACKEND_PORT, pid),
+                                        Ok(_) => info!("成功杀死占用端口 {} 的进程 (PID: {})", self.port, pid),
                                         Err(e) => warn!("杀死进程失败 (PID: {}): {}", pid, e),
                                     }
                                 }
@@ -351,8 +394,8 @@ impl BackendManager {
     }
 
     /// 获取后端端口
-    pub fn backend_port() -> u16 {
-        BACKEND_PORT
+    pub fn backend_port(&self) -> u16 {
+        self.port
     }
 
     /// 检查进程是否正在运行
@@ -382,10 +425,12 @@ mod tests {
     #[test]
     fn test_backend_manager_creation() {
         let manager = BackendManager::new();
-        assert_eq!(BackendManager::backend_port(), 3000);
+        // 端口应在有效范围内（可能不是 3000 如果被占用）
+        assert!(manager.backend_port() >= DEFAULT_BACKEND_PORT);
+        assert!(manager.backend_port() <= MAX_PORT_SCAN);
         assert_eq!(
             manager.backend_url(),
-            "http://localhost:3000"
+            &format!("http://localhost:{}", manager.backend_port())
         );
         assert!(!manager.is_running());
     }
@@ -393,7 +438,7 @@ mod tests {
     #[test]
     fn test_backend_manager_default() {
         let manager = BackendManager::default();
-        assert_eq!(BackendManager::backend_port(), 3000);
+        assert!(manager.backend_port() >= DEFAULT_BACKEND_PORT);
         assert!(!manager.is_running());
     }
 }

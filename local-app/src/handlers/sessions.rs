@@ -91,13 +91,14 @@ pub async fn send_message(
     // 创建 token 推送通道
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // 后台任务：将流式 token 推送到前端
+    // 后台任务：将流式 token 推送到前端（携带 session_id 防止并发会话串扰）
     let app_clone = app.clone();
+    let sid_clone = session_id.clone();
     tokio::spawn(async move {
         while let Some(token) = rx.recv().await {
-            let _ = app_clone.emit_all("llm-token", &token);
+            let _ = app_clone.emit_all("llm-token", serde_json::json!({"sessionId": sid_clone, "text": token}));
         }
-        let _ = app_clone.emit_all("llm-done", "");
+        let _ = app_clone.emit_all("llm-done", serde_json::json!({"sessionId": sid_clone}));
     });
 
     // 调用编排器执行流式对话
@@ -225,6 +226,7 @@ pub async fn send_chat_only(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     agent_id: String,
+    session_id: String,
     message: String,
 ) -> Result<String, String> {
     // 读取 Agent 信息
@@ -251,14 +253,15 @@ pub async fn send_chat_only(
 
     let system_prompt = agent.system_prompt.clone();
 
-    // 流式 token 推送
+    // 流式 token 推送（携带 session_id 防止并发会话串扰）
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let app_clone = app.clone();
+    let sid_clone = session_id.clone();
     tokio::spawn(async move {
         while let Some(token) = rx.recv().await {
-            let _ = app_clone.emit_all("llm-token", &token);
+            let _ = app_clone.emit_all("llm-token", serde_json::json!({"sessionId": sid_clone, "text": token}));
         }
-        let _ = app_clone.emit_all("llm-done", "");
+        let _ = app_clone.emit_all("llm-done", serde_json::json!({"sessionId": sid_clone}));
     });
 
     let messages = vec![serde_json::json!({ "role": "user", "content": message })];
@@ -932,10 +935,7 @@ async fn whisper_transcribe(
         "https://api.openai.com/v1/audio/transcriptions".to_string()
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::agent::llm::build_proxied_client(15, 60);
 
     let resp = client
         .post(&url)

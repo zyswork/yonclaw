@@ -45,7 +45,9 @@ export function useVoiceInput() {
   const cancelRecording = useCallback(async () => {
     try {
       await invoke<string>('stop_voice_recording')
-    } catch {}
+    } catch (e) {
+      console.warn('stop_voice_recording failed:', e)
+    }
     setIsRecording(false)
     setIsTranscribing(false)
   }, [])

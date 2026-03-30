@@ -140,11 +140,11 @@ export default function Dashboard() {
     setError('')
     try {
       const [h, c, a, sched, subs] = await Promise.all([
-        invoke('health_check').catch(() => null),
-        invoke('get_cache_stats').catch(() => null),
-        invoke('list_agents').catch(() => []),
-        invoke('get_scheduler_status').catch(() => null),
-        invoke('list_subagent_runs', { limit: 1 }).catch(() => []),
+        invoke('health_check').catch((e) => { console.warn('health_check failed:', e); return null }),
+        invoke('get_cache_stats').catch((e) => { console.warn('get_cache_stats failed:', e); return null }),
+        invoke('list_agents').catch((e) => { console.warn('list_agents failed:', e); return [] }),
+        invoke('get_scheduler_status').catch((e) => { console.warn('get_scheduler_status failed:', e); return null }),
+        invoke('list_subagent_runs', { limit: 1 }).catch((e) => { console.warn('list_subagent_runs failed:', e); return [] }),
       ])
       setHealth(h as HealthData)
       setCache(c as CacheStats)

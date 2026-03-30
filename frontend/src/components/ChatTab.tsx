@@ -197,11 +197,12 @@ function MermaidBlock({ code }: { code: string }) {
       </div>
     )
   }
+  const cleanSvg = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } })
   return (
     <div
       ref={containerRef}
       className="mermaid-rendered"
-      dangerouslySetInnerHTML={{ __html: svg }}
+      dangerouslySetInnerHTML={{ __html: cleanSvg }}
     />
   )
 }
@@ -1309,14 +1310,36 @@ export default function ChatTab({ agentId }: { agentId: string }) {
 
   // 统一事件监听（参考 OpenClaw：事件直接携带消息内容，带 sessionId 过滤）
   useEffect(() => {
-    // 桌面对话的流式 token（无 sessionId，来自 main.rs 的 send_message）
-    const unlisten1 = listen<string>('llm-token', (e) => {
-      // 跨会话过滤：忽略非当前流式会话的 token
-      if (streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
+    // 桌面对话的流式 token（携带 sessionId，过滤非当前会话）
+    const unlisten1 = listen<any>('llm-token', (e) => {
+      // 解析 payload：新格式 {sessionId, text}，兼容旧格式 string
+      const payload = e.payload
+      const tokenSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      const tokenText = typeof payload === 'object' ? (payload?.text ?? '') : String(payload ?? '')
+
+      // 重试重置信号：清除当前流式内容
+      if (tokenText === '\x00__XIANZHU_RETRY__') {
+        streamBuf.current = ''
+        thinkingBuf.current = ''
+        setMessages((prev) => {
+          const copy = [...prev]
+          if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
+            copy[copy.length - 1] = { ...copy[copy.length - 1], content: '', thinking: '' }
+          }
+          return copy
+        })
+        return
+      }
+
+      // 跨会话过滤：如果事件携带 sessionId，必须匹配当前活跃会话
+      if (tokenSessionId && tokenSessionId !== activeSessionRef.current) return
+      // 兼容旧逻辑：无 sessionId 时使用 streamingSessionRef 过滤
+      if (!tokenSessionId && streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
+
       const THINKING_PREFIX = '\x01THINKING\x01'
-      if (e.payload.startsWith(THINKING_PREFIX)) {
+      if (tokenText.startsWith(THINKING_PREFIX)) {
         // Thinking delta：追加到 thinking buffer
-        thinkingBuf.current += e.payload.slice(THINKING_PREFIX.length)
+        thinkingBuf.current += tokenText.slice(THINKING_PREFIX.length)
         setMessages((prev) => {
           const copy = [...prev]
           if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
@@ -1325,7 +1348,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           return copy
         })
       } else {
-        streamBuf.current += e.payload
+        streamBuf.current += tokenText
         setMessages((prev) => {
           const copy = [...prev]
           if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
@@ -1335,9 +1358,12 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         })
       }
     })
-    const unlisten2 = listen('llm-done', () => {
-      // 跨会话过滤
-      if (streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
+    const unlisten2 = listen<any>('llm-done', (e) => {
+      // 跨会话过滤：新格式携带 sessionId
+      const payload = e.payload
+      const doneSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      if (doneSessionId && doneSessionId !== activeSessionRef.current) return
+      if (!doneSessionId && streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
       streamingSessionRef.current = ''
       setStreaming(false)
       streamBuf.current = ''
@@ -1358,14 +1384,18 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       loadSessionsRef.current()
       setTimeout(() => loadSessionsRef.current(), 3000)
     })
-    const unlisten3 = listen<string>('llm-error', (e) => {
+    const unlisten3 = listen<any>('llm-error', (e) => {
       // 跨会话过滤
-      if (streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
+      const payload = e.payload
+      const errSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
+      const errText = typeof payload === 'object' ? (payload?.text ?? String(payload)) : String(payload ?? '')
+      if (errSessionId && errSessionId !== activeSessionRef.current) return
+      if (!errSessionId && streamingSessionRef.current && streamingSessionRef.current !== activeSessionRef.current) return
       streamingSessionRef.current = ''
       setStreaming(false)
       streamBuf.current = ''
       thinkingBuf.current = ''
-      setMessages((prev) => [...prev, { role: 'system', content: e.payload, isError: true }])
+      setMessages((prev) => [...prev, { role: 'system', content: errText, isError: true }])
     })
 
     // 外部消息事件（Telegram/Mobile）— 带 sessionId 和消息内容
@@ -1709,7 +1739,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           sendingRef.current = false
           // 通知后端取消活跃的 agent loop
           if (activeSession) {
-            invoke('stop_generation', { sessionId: activeSession }).catch(() => {})
+            invoke('stop_generation', { sessionId: activeSession }).catch((e) => console.warn('stop_generation failed:', e))
           }
           return 'Generation stopped'
         }
@@ -1851,6 +1881,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         // 命令处理了，显示结果
         setMessages((prev) => [...prev, { role: 'user', content: userMsg }])
         setMessages((prev) => [...prev, { role: 'system', content: result }])
+        sendingRef.current = false
         return
       }
       // result === null: 命令要求走正常 LLM 流程（如 /skill <name>）
@@ -1916,6 +1947,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       })
       // 重新发送编辑后的消息给 LLM
       setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+      streamingSessionRef.current = activeSession
       setStreaming(true)
       streamBuf.current = ''
       try {
@@ -1962,6 +1994,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       setMessages(prev => prev.slice(0, msgIdx))
       // 重新发送用户消息
       setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+      streamingSessionRef.current = activeSession
       setStreaming(true)
       streamBuf.current = ''
       try {
@@ -2661,13 +2694,13 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                           </svg>
                         </button>
-                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'up' }).then(() => toast.success('Thanks!')).catch(() => {})}
+                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'up' }).then(() => toast.success('Thanks!')).catch((e) => console.warn('feedback submit failed:', e))}
                           title="Good" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/><path d="M4 22H2V11h2"/>
                           </svg>
                         </button>
-                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'down' }).then(() => toast.success('Noted')).catch(() => {})}
+                        <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'down' }).then(() => toast.success('Noted')).catch((e) => console.warn('feedback submit failed:', e))}
                           title="Bad" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/><path d="M20 2h2v11h-2"/>

@@ -584,7 +584,7 @@ async fn main() {
             save_config, get_config, get_providers, save_provider, delete_provider,
             get_api_status, test_provider_connection,
             // agents
-            create_agent, list_agents, delete_agent, update_agent, get_agent_detail,
+            create_agent, list_agents, list_agents_with_stats, delete_agent, update_agent, get_agent_detail,
             ai_generate_agent_config, get_audit_log, get_autonomy_config, update_autonomy_config,
             get_agent_relations, create_agent_relation, delete_agent_relation,
             list_subagents, cancel_subagent, list_subagent_runs,
@@ -629,7 +629,7 @@ async fn main() {
             run_doctor, doctor_auto_fix, detect_browsers, open_in_browser,
             check_runtime, setup_runtime, health_check, get_token_stats, get_token_daily_stats,
             run_memory_hygiene, get_cache_stats, get_setting, set_setting, get_settings_by_prefix,
-            export_memory_snapshot, extract_memories_from_history, cloud_api_proxy,
+            export_memory_snapshot, extract_memories_from_history, run_learner, cloud_api_proxy,
             // profile
             get_user_profile, save_user_profile, save_user_avatar, get_user_avatar,
             // oauth
@@ -650,7 +650,18 @@ async fn main() {
                 log::info!("\u{2713} 调度引擎已关闭");
             }
 
+            // 清理编排器：取消所有活跃会话
+            app_state_clone.orchestrator.cancel_all_sessions();
+            log::info!("\u{2713} 编排器已清理");
+
+            // 关闭 ChannelManager
+            if let Some(cm) = app_state_clone.channel_manager.get() {
+                cm.stop_all();
+                log::info!("\u{2713} 频道管理器已关闭");
+            }
+
             let backend_manager_clone = backend_manager_clone.clone();
+            let db_pool = app_state_clone.db.pool().clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
@@ -659,6 +670,9 @@ async fn main() {
                         bm.stop().await;
                         log::info!("\u{2713} 后端进程已停止");
                     }
+                    // 优雅关闭数据库连接池
+                    db_pool.close().await;
+                    log::info!("\u{2713} 数据库连接池已关闭");
                     std::process::exit(0);
                 });
             });

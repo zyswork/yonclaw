@@ -603,21 +603,54 @@ pub async fn run_agent_loop(
         }
 
         // 检测 yield：如果本轮有 sessions_yield 工具调用，暂停 loop
+        // 需要兼容多种 dispatcher 格式：
+        //   OpenAI:    {"role":"tool", "content":"YIELD:..."}
+        //   Anthropic: {"role":"user", "content":[{"type":"tool_result","content":"YIELD:..."}]}
+        //   XML:       {"role":"user", "content":"<tool_result>...<output>YIELD:...</output>..."}
         let mut yielded = false;
         let mut yield_message = String::new();
         let mut yield_waiting_for: Option<String> = None;
         for msg in messages.iter().rev().take(total_tools + denied_results.len()) {
-            if let Some(content) = msg["content"].as_str() {
-                if content.starts_with("YIELD:") {
-                    yielded = true;
-                    yield_message = content.strip_prefix("YIELD:").unwrap_or("").trim().to_string();
-                    // 尝试提取等待的 run_id
-                    if let Some(rid) = yield_message.strip_prefix("wait:") {
-                        yield_waiting_for = Some(rid.trim().to_string());
-                        yield_message = format!("Yielded, waiting for {}", rid.trim());
+            // 从消息中提取可能包含 YIELD: 前缀的文本
+            let yield_text = if let Some(content) = msg["content"].as_str() {
+                // OpenAI / XML 格式：content 是字符串
+                if content.contains("YIELD:") {
+                    // XML 格式可能包裹在 <output>...</output> 中
+                    if let Some(start) = content.find("YIELD:") {
+                        // 提取从 YIELD: 开始到 < 或行尾的内容
+                        let rest = &content[start..];
+                        let end = rest.find('<').unwrap_or(rest.len());
+                        Some(rest[..end].to_string())
+                    } else {
+                        None
                     }
-                    break;
+                } else {
+                    None
                 }
+            } else if let Some(arr) = msg["content"].as_array() {
+                // Anthropic 格式：content 是数组
+                arr.iter().find_map(|item| {
+                    if item["type"].as_str() == Some("tool_result") {
+                        item["content"].as_str()
+                            .filter(|c| c.starts_with("YIELD:"))
+                            .map(|c| c.to_string())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+
+            if let Some(text) = yield_text {
+                yielded = true;
+                yield_message = text.strip_prefix("YIELD:").unwrap_or(&text).trim().to_string();
+                // 尝试提取等待的 run_id
+                if let Some(rid) = yield_message.strip_prefix("wait:") {
+                    yield_waiting_for = Some(rid.trim().to_string());
+                    yield_message = format!("Yielded, waiting for {}", rid.trim());
+                }
+                break;
             }
         }
 

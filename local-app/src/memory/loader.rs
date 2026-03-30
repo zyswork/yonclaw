@@ -78,6 +78,52 @@ impl<'a> MemoryLoader<'a> {
 
         Ok(Some(parts.join("\n")))
     }
+
+    /// 检索相关记忆并返回格式化文本 + 注入的记忆 ID 和内容摘要
+    ///
+    /// 返回 (prompt_text, Vec<(memory_id, content_snippet)>)
+    /// 用于后续记忆使用反馈循环
+    pub async fn load_relevant_memories_with_ids(
+        &self,
+        agent_id: &str,
+        query: &str,
+    ) -> Result<Option<(String, Vec<(String, String)>)>, String> {
+        let entries = self.memory.recall(agent_id, query, self.top_k).await?;
+
+        // 过滤低分结果
+        let relevant: Vec<&MemoryEntry> = entries
+            .iter()
+            .filter(|e| e.score.unwrap_or(0.0) >= self.threshold)
+            .collect();
+
+        if relevant.is_empty() {
+            return Ok(None);
+        }
+
+        let mut parts = Vec::new();
+        parts.push("# Relevant Memories\n".to_string());
+
+        let mut injected_ids: Vec<(String, String)> = Vec::new();
+
+        for (i, entry) in relevant.iter().enumerate() {
+            let score_str = entry
+                .score
+                .map(|s| format!(" (relevance: {:.1}%)", s * 100.0))
+                .unwrap_or_default();
+            parts.push(format!(
+                "{}. [{}]{}\n   {}",
+                i + 1,
+                entry.category.as_str(),
+                score_str,
+                entry.content.lines().collect::<Vec<_>>().join("\n   ")
+            ));
+            // 收集注入的记忆 ID 和内容摘要（取前 100 字符）
+            let snippet: String = entry.content.chars().take(100).collect();
+            injected_ids.push((entry.id.clone(), snippet));
+        }
+
+        Ok(Some((parts.join("\n"), injected_ids)))
+    }
 }
 
 #[cfg(test)]

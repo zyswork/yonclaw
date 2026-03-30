@@ -45,6 +45,7 @@ export const zhCN: TranslationMap = {
     model: '模型',
     provider: '供应商',
     pleaseSelect: '请选择',
+    notConfigured: '不使用',
     status: '状态',
     actions: '操作',
     logout: '退出登录',

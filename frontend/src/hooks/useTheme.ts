@@ -23,15 +23,21 @@ interface ThemeState {
   resolvedTheme: () => 'light' | 'dark'
 }
 
+// 模块级标志，确保系统主题监听器只注册一次
+let themeListenerRegistered = false
+
 export const useTheme = create<ThemeState>((set, get) => {
   // 初始化时应用主题
   const initial = resolveInitial()
   applyTheme(initial) // 立即应用，避免闪屏
 
-  // 监听系统主题变化
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (get().theme === 'system') applyTheme('system')
-  })
+  // 监听系统主题变化（仅注册一次，避免内存泄漏）
+  if (!themeListenerRegistered) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (get().theme === 'system') applyTheme('system')
+    })
+    themeListenerRegistered = true
+  }
 
   return {
     theme: initial,

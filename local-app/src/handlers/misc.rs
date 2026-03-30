@@ -665,6 +665,81 @@ pub async fn extract_memories_from_history(
     }))
 }
 
+/// 手动触发 Learner 从最近会话中提取经验教训
+///
+/// 与 extract_memories_from_history 不同：
+/// - extract_memories_from_history: 提取通用记忆（core/episodic/semantic/procedural）
+/// - run_learner: 提取可复用经验（tool_pattern/user_preference/code_convention/fix_pattern/project_knowledge）
+#[tauri::command]
+pub async fn run_learner(
+    state: State<'_, Arc<AppState>>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let pool = state.orchestrator.pool();
+
+    // 获取最近的会话
+    let sessions: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM chat_sessions WHERE agent_id = ? ORDER BY created_at DESC LIMIT 5"
+    )
+    .bind(&agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("查询会话失败: {}", e))?;
+
+    if sessions.is_empty() {
+        return Ok(serde_json::json!({"extracted": 0, "message": "没有可分析的会话"}));
+    }
+
+    // 构建 LLM 配置
+    let providers = load_providers(&state.db).await?;
+    let agent_model: String = sqlx::query_scalar("SELECT model FROM agents WHERE id = ?")
+        .bind(&agent_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("查询 Agent 失败: {}", e))?;
+    let (api_type, api_key, base_url) = find_provider_for_model(&providers, &agent_model)
+        .ok_or("没有可用的 LLM 供应商，请先在设置中配置")?;
+
+    let llm_config = agent::llm::LlmConfig {
+        provider: api_type,
+        model: agent_model,
+        api_key,
+        base_url: if base_url.is_empty() { None } else { Some(base_url) },
+        temperature: Some(0.2),
+        max_tokens: Some(500),
+        thinking_level: None,
+    };
+
+    // 获取 workspace 路径
+    let workspace_path: Option<String> = sqlx::query_scalar(
+        "SELECT workspace_path FROM agents WHERE id = ?"
+    ).bind(&agent_id).fetch_optional(pool).await.ok().flatten();
+
+    let mut total_extracted = 0;
+    let mut total_skipped = 0;
+
+    for (session_id,) in &sessions {
+        let outcome = agent::learner::extract_lessons_with_llm(pool, &agent_id, session_id, &llm_config).await;
+        if !outcome.lessons.is_empty() {
+            let count = outcome.lessons.len();
+            agent::learner::persist_lessons(pool, &agent_id, workspace_path.as_deref(), &outcome.lessons).await;
+            total_extracted += count;
+        } else {
+            total_skipped += 1;
+        }
+    }
+
+    log::info!("手动 Learner: 从 {} 个会话中提取了 {} 条经验（跳过 {}）",
+        sessions.len(), total_extracted, total_skipped);
+
+    Ok(serde_json::json!({
+        "extracted": total_extracted,
+        "sessions": sessions.len(),
+        "skipped": total_skipped,
+        "message": format!("从 {} 个会话中提取了 {} 条经验教训", sessions.len(), total_extracted),
+    }))
+}
+
 /// 云端 API 代理
 #[tauri::command]
 pub async fn cloud_api_proxy(

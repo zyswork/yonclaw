@@ -89,10 +89,13 @@ impl SubagentRegistry {
     }
 
     /// 注册新的子 Agent（双写内存 + DB）
+    ///
+    /// DB 写入优先：如果 DB 写入失败，不更新内存，保证一致性。
+    /// 如果内存更新失败（理论上不会），DB 已写入，记录错误日志。
     pub async fn register(&self, record: SubagentRecord) {
         let id = record.id.clone();
 
-        // 写 DB（INSERT OR IGNORE 避免与 delegate.rs 的 save_run 冲突）
+        // 先写 DB（INSERT OR IGNORE 避免与 delegate.rs 的 save_run 冲突）
         if let Some(ref pool) = self.pool {
             let now = chrono::Utc::now().timestamp_millis();
             if let Err(e) = sqlx::query(
@@ -104,11 +107,12 @@ impl SubagentRegistry {
             .bind(now)
             .execute(pool)
             .await {
-                log::warn!("SubagentRegistry DB 写入失败: {}", e);
+                log::warn!("SubagentRegistry DB 写入失败，跳过内存更新以保持一致性: {}", e);
+                return;
             }
         }
 
-        // 写内存
+        // DB 写入成功后，更新内存
         let should_cleanup = {
             let mut records = self.records.lock().await;
             records.insert(id.clone(), record);

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tauri::State;
 
 use crate::AppState;
+use crate::agent::llm::build_proxied_client;
 use super::helpers::{load_providers, save_providers};
 
 // ─── 全局待处理 OAuth 流程存储 ────────────────────────────────
@@ -66,8 +67,8 @@ fn get_oauth_presets() -> Vec<OAuthPreset> {
             base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
             scopes: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
             models: vec![
-                ("gemini-3-pro", "Gemini 3 Pro"),
-                ("gemini-3-flash", "Gemini 3 Flash"),
+                ("gemini-3.1-pro-preview", "Gemini 3.1 Pro"),
+                ("gemini-3-flash-preview", "Gemini 3 Flash"),
                 ("gemini-2.5-pro", "Gemini 2.5 Pro"),
                 ("gemini-2.5-flash", "Gemini 2.5 Flash"),
                 ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
@@ -393,26 +394,35 @@ async fn run_oauth_callback_server(
     let code = params.get("code").cloned().unwrap_or_default();
     let state = params.get("state").cloned().unwrap_or_default();
 
+    // HTML 转义：防止注入攻击
+    fn html_escape(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#x27;")
+    }
+
     // 处理回调
     let (html, success, provider_name) = if code.is_empty() || state.is_empty() {
         let error = params.get("error").cloned().unwrap_or_else(|| "缺少 code 或 state".into());
         (format!(
             "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#ef4444'>授权失败</h2><p>{}</p></body></html>",
-            error
+            html_escape(&error)
         ), false, String::new())
     } else {
         match handle_oauth_callback(pool, &code, &state).await {
             Ok(name) => (
                 format!(
                     "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#10b981'>授权成功！</h2><p>{} 已配置完成。</p><p style='color:#888'>可以关闭此窗口。</p><script>setTimeout(()=>window.close(),2000)</script></body></html>",
-                    name
+                    html_escape(&name)
                 ),
                 true, name
             ),
             Err(e) => (
                 format!(
                     "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#ef4444'>授权失败</h2><p>{}</p></body></html>",
-                    e
+                    html_escape(&e)
                 ),
                 false, String::new()
             ),
@@ -457,7 +467,7 @@ pub async fn exchange_oauth_code(
     let redirect_uri = pending.redirect_uri;
 
     // 调用令牌端点
-    let client = reqwest::Client::new();
+    let client = build_proxied_client(10, 30);
     let mut form_params: Vec<(&str, String)> = vec![
         ("grant_type", "authorization_code".into()),
         ("code", code.clone()),
@@ -494,6 +504,36 @@ pub async fn exchange_oauth_code(
 
     let provider_id = format!("oauth-{}", pending.provider.to_lowercase().replace(' ', "-"));
 
+    // Google OAuth：发现 project ID（通过 Cloud Code API）
+    // Gemini API 的 OAuth token 需要通过 Vertex AI 端点调用，需要 project ID
+    let project_id = if pending.provider.to_lowercase().contains("google") {
+        match discover_google_project(access_token, &client).await {
+            Ok(pid) => {
+                log::info!("Google Cloud project 发现成功: {}", pid);
+                Some(pid)
+            }
+            Err(e) => {
+                log::warn!("Google Cloud project 发现失败（将使用全局端点）: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Google OAuth 使用 Vertex AI 端点（generativelanguage.googleapis.com 不支持 OAuth token）
+    // Google OAuth 使用 Cloud Code Assist API — project ID 编码在 base_url 中
+    let effective_base_url = if pending.provider.to_lowercase().contains("google") {
+        if let Some(ref pid) = project_id {
+            // 把 project ID 编码在 URL fragment 中，llm.rs 会解析
+            format!("https://cloudcode-pa.googleapis.com/v1internal#project={}", pid)
+        } else {
+            "https://cloudcode-pa.googleapis.com/v1internal".to_string()
+        }
+    } else {
+        preset.base_url.to_string()
+    };
+
     // 构建模型列表
     let model_array: Vec<serde_json::Value> = preset.models.iter()
         .map(|(mid, mname)| serde_json::json!({"id": mid, "name": mname}))
@@ -502,25 +542,27 @@ pub async fn exchange_oauth_code(
     // 加载现有 providers 并更新或添加
     let mut providers = load_providers(&state.db).await.unwrap_or_default();
 
-    let oauth_info = serde_json::json!({
+    let mut oauth_info = serde_json::json!({
         "provider": pending.provider,
         "refreshToken": refresh_token,
         "expiresAt": expires_at,
         "tokenUrl": preset.token_url,
         "clientId": preset.effective_client_id(),
     });
+    if let Some(ref pid) = project_id {
+        oauth_info["projectId"] = serde_json::Value::String(pid.clone());
+    }
 
     if let Some(existing) = providers.iter_mut().find(|p| p["id"].as_str() == Some(&provider_id)) {
-        // 更新现有 provider
         existing["apiKey"] = serde_json::Value::String(access_token.to_string());
+        existing["baseUrl"] = serde_json::Value::String(effective_base_url.clone());
         existing["oauth"] = oauth_info;
     } else {
-        // 创建新 provider
         let new_provider = serde_json::json!({
             "id": provider_id,
             "name": preset.name,
             "apiType": preset.api_type,
-            "baseUrl": preset.base_url,
+            "baseUrl": effective_base_url,
             "apiKey": access_token,
             "models": model_array,
             "enabled": true,
@@ -567,7 +609,7 @@ pub async fn refresh_oauth_token(
         .ok_or("缺少 clientId")?;
 
     // 调用令牌刷新端点
-    let client = reqwest::Client::new();
+    let client = build_proxied_client(10, 30);
     let token_response = client
         .post(token_url)
         .form(&[
@@ -651,7 +693,7 @@ pub async fn refresh_oauth_token_internal(
         client_secret_str
     };
 
-    let client = reqwest::Client::new();
+    let client = build_proxied_client(10, 30);
     let mut form_params: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", &refresh_token),
@@ -731,7 +773,7 @@ pub async fn handle_oauth_callback(
     let redirect_uri = pending.redirect_uri;
 
     // 调用令牌端点
-    let client = reqwest::Client::new();
+    let client = build_proxied_client(10, 30);
     let mut form_params: Vec<(&str, String)> = vec![
         ("grant_type", "authorization_code".into()),
         ("code", code.to_string()),
@@ -768,11 +810,36 @@ pub async fn handle_oauth_callback(
 
     let provider_id = format!("oauth-{}", pending.provider.to_lowercase().replace(' ', "-"));
 
+    // Google OAuth：发现 project ID
+    let project_id = if pending.provider.to_lowercase().contains("google") {
+        match discover_google_project(access_token, &client).await {
+            Ok(pid) => {
+                log::info!("OAuth callback: Google Cloud project 发现成功: {}", pid);
+                Some(pid)
+            }
+            Err(e) => {
+                log::warn!("OAuth callback: Google Cloud project 发现失败: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let effective_base_url = if pending.provider.to_lowercase().contains("google") {
+        if let Some(ref pid) = project_id {
+            format!("https://cloudcode-pa.googleapis.com/v1internal#project={}", pid)
+        } else {
+            "https://cloudcode-pa.googleapis.com/v1internal".to_string()
+        }
+    } else {
+        preset.base_url.to_string()
+    };
+
     let model_array: Vec<serde_json::Value> = preset.models.iter()
         .map(|(mid, mname)| serde_json::json!({"id": mid, "name": mname}))
         .collect();
 
-    // 直接操作数据库加载/保存 providers
     let providers_json_str: Option<String> = sqlx::query_scalar(
         "SELECT value FROM settings WHERE key = 'providers'"
     ).fetch_optional(pool).await.ok().flatten();
@@ -780,23 +847,27 @@ pub async fn handle_oauth_callback(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let oauth_info = serde_json::json!({
+    let mut oauth_info = serde_json::json!({
         "provider": pending.provider,
         "refreshToken": refresh_token,
         "expiresAt": expires_at,
         "tokenUrl": preset.token_url,
         "clientId": preset.effective_client_id(),
     });
+    if let Some(ref pid) = project_id {
+        oauth_info["projectId"] = serde_json::Value::String(pid.clone());
+    }
 
     if let Some(existing) = providers.iter_mut().find(|p| p["id"].as_str() == Some(&provider_id)) {
         existing["apiKey"] = serde_json::Value::String(access_token.to_string());
+        existing["baseUrl"] = serde_json::Value::String(effective_base_url.clone());
         existing["oauth"] = oauth_info;
     } else {
         providers.push(serde_json::json!({
             "id": provider_id,
             "name": preset.name,
             "apiType": preset.api_type,
-            "baseUrl": preset.base_url,
+            "baseUrl": effective_base_url,
             "apiKey": access_token,
             "models": model_array,
             "enabled": true,
@@ -815,4 +886,89 @@ pub async fn handle_oauth_callback(
     log::info!("OAuth 回调处理成功: provider={}", preset.name);
 
     Ok(preset.name.to_string())
+}
+
+/// 通过 Cloud Code API 发现用户的 Google Cloud project ID
+/// 参考 OpenClaw extensions/google/oauth.project.ts
+async fn discover_google_project(access_token: &str, client: &reqwest::Client) -> Result<String, String> {
+    let endpoints = [
+        "https://cloudcode-pa.googleapis.com",
+        "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ];
+
+    let headers_meta = serde_json::json!({
+        "ideType": "ANTIGRAVITY",
+        "pluginType": "GEMINI",
+    });
+
+    let load_body = serde_json::json!({
+        "metadata": headers_meta,
+    });
+
+    for endpoint in &endpoints {
+        let url = format!("{}/v1internal:loadCodeAssist", endpoint);
+        let resp = match client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "google-api-nodejs-client/9.15.1")
+            .header("Client-Metadata", headers_meta.to_string())
+            .json(&load_body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                log::debug!("Cloud Code endpoint {} 请求失败: {}", endpoint, e);
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            log::debug!("Cloud Code endpoint {} 返回 {}", endpoint, resp.status());
+            continue;
+        }
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+        // 尝试从 currentTier + cloudaicompanionProject 获取 project ID
+        if let Some(project) = data.get("cloudaicompanionProject") {
+            if let Some(pid) = project.as_str() {
+                return Ok(pid.to_string());
+            }
+            if let Some(pid) = project["id"].as_str() {
+                return Ok(pid.to_string());
+            }
+        }
+
+        // 如果没有 project，尝试 onboard
+        let tiers = data["allowedTiers"].as_array();
+        let tier_id = tiers
+            .and_then(|arr| arr.iter().find(|t| t["isDefault"].as_bool() == Some(true)))
+            .and_then(|t| t["id"].as_str())
+            .unwrap_or("free-tier");
+
+        let onboard_body = serde_json::json!({
+            "tierId": tier_id,
+            "metadata": headers_meta,
+        });
+
+        let onboard_resp = client
+            .post(&format!("{}/v1internal:onboardUser", endpoint))
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .json(&onboard_body)
+            .send()
+            .await
+            .map_err(|e| format!("onboardUser 失败: {}", e))?;
+
+        if onboard_resp.status().is_success() {
+            let lro: serde_json::Value = onboard_resp.json().await.map_err(|e| e.to_string())?;
+            if let Some(pid) = lro.pointer("/response/cloudaicompanionProject/id").and_then(|v| v.as_str()) {
+                return Ok(pid.to_string());
+            }
+        }
+    }
+
+    Err("无法发现 Google Cloud project ID".to_string())
 }

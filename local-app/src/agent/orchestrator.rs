@@ -254,6 +254,15 @@ impl Orchestrator {
         }
     }
 
+    /// 取消所有活跃会话的生成（用于应用退出清理）
+    pub fn cancel_all_sessions(&self) {
+        let mut tokens = self.active_cancellations.lock().unwrap_or_else(|p| p.into_inner());
+        for (session_id, token) in tokens.drain() {
+            token.cancel();
+            log::info!("已取消活跃会话: {}", session_id);
+        }
+    }
+
     /// 获取子 Agent 注册表引用
     pub fn subagent_registry(&self) -> &SubagentRegistry {
         &self.subagent_registry
@@ -613,6 +622,8 @@ impl Orchestrator {
         log::info!("最终 system_prompt 长度: {} 字节", system_prompt.len());
 
         // 3. MemoryLoader 注入记忆（三层存储：Hot LRU → Warm SQLite → Cold 归档）
+        // 使用 with_ids 版本以追踪注入了哪些记忆，用于后续反馈循环
+        let mut injected_memories: Vec<(String, String)> = Vec::new();
         {
             let sqlite_mem = if let Some(emb_config) = SqliteMemory::try_load_embedding_config(&self.pool).await {
                 SqliteMemory::with_embedding(self.pool.clone(), emb_config).await
@@ -623,8 +634,10 @@ impl Orchestrator {
             let cold_dir = workspace_path.as_ref().map(|wp| std::path::PathBuf::from(wp).join("memory"));
             let tiered_mem = memory::TieredMemory::new(sqlite_mem, cold_dir);
             let loader = MemoryLoader::new(&tiered_mem).with_top_k(5).with_threshold(0.3);
-            if let Ok(Some(memory_text)) = loader.load_relevant_memories(agent_id, user_message).await {
+            if let Ok(Some((memory_text, ids))) = loader.load_relevant_memories_with_ids(agent_id, user_message).await {
                 system_prompt = format!("{}\n\n---\n\n{}", system_prompt, memory_text);
+                injected_memories = ids;
+                log::info!("记忆注入: {} 条记忆已注入 system prompt", injected_memories.len());
             }
         }
 
@@ -1157,8 +1170,18 @@ impl Orchestrator {
         }
 
         // 9.8 记忆使用反馈循环：检查 Agent 回复是否引用了注入的记忆
-        // TODO: 需要在 MemoryLoader 中记录注入了哪些记忆 ID，此处暂用简化版
-        // 完整版需要 MemoryLoader 返回 (memory_text, injected_ids)
+        if !injected_memories.is_empty() {
+            let (used_ids, unused_ids) = super::learner::check_memory_usage(&response, &injected_memories);
+            log::info!("记忆反馈: {} 条被引用, {} 条未引用", used_ids.len(), unused_ids.len());
+            if !used_ids.is_empty() || !unused_ids.is_empty() {
+                let pool = self.pool.clone();
+                let used = used_ids.clone();
+                let unused = unused_ids.clone();
+                tokio::spawn(async move {
+                    super::learner::update_memory_feedback(&pool, &used, &unused).await;
+                });
+            }
+        }
 
         // 自动生成会话标题：如果是第一条消息且标题为默认值
         if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
@@ -1220,7 +1243,17 @@ impl Orchestrator {
         }
 
         // 11. Learner：从会话中提取经验（异步，fire-and-forget）
+        // 仅当对话有 >3 条用户消息时才触发（避免从琐碎对话中学习）
         {
+            let user_msg_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM chat_messages WHERE session_id = ? AND role = 'user'"
+            )
+            .bind(session_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+            if user_msg_count > 3 {
             let pool = self.pool.clone();
             let aid = agent_id.to_string();
             let sid = session_id.to_string();
@@ -1268,6 +1301,9 @@ impl Orchestrator {
                     log::debug!("Learner: 跳过学习 — {}", reason);
                 }
             });
+            } else {
+                log::debug!("Learner: 跳过（用户消息数 {} <= 3）", user_msg_count);
+            }
         }
 
         // 12. 每日 Token 限额检查（已在 send_message_stream 入口 0b 步骤实现）
