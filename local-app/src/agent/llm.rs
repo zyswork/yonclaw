@@ -625,12 +625,34 @@ pub struct LlmClient {
 }
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
             .timeout(std::time::Duration::from_secs(120))
-            .pool_max_idle_per_host(0) // 不复用连接，避免被上一个卡住的连接阻塞
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .pool_max_idle_per_host(0); // 不复用连接，避免被上一个卡住的连接阻塞
+
+        // 检测系统代理（macOS 常见 ClashX/V2Ray）
+        if let Ok(proxy_url) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("https_proxy")).or_else(|_| std::env::var("ALL_PROXY")) {
+            if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                builder = builder.proxy(proxy);
+                log::debug!("LLM client: 使用代理 {}", proxy_url);
+            }
+        } else {
+            // macOS 系统代理（非环境变量设置）
+            // reqwest 默认会读系统代理，但 Tauri 可能不继承
+            // 尝试常见端口
+            for port in &[7890, 7891, 1080] {
+                let proxy_url = format!("http://127.0.0.1:{}", port);
+                if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+                    if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                        builder = builder.proxy(proxy);
+                        log::info!("LLM client: 检测到本地代理 {}", proxy_url);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let client = builder.build().unwrap_or_else(|_| reqwest::Client::new());
         Self { config, client }
     }
 
