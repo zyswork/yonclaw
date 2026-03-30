@@ -867,7 +867,10 @@ impl LlmClient {
         for attempt in 0..MAX_RETRIES {
             let mut req = self.client.post(&url).json(&body);
             match config.provider.as_str() {
-                "openai" => { req = req.header("Authorization", format!("Bearer {}", config.api_key)); }
+                "openai" => {
+                    log::info!("LLM auth: Bearer key_len={}, prefix={}", config.api_key.len(), &config.api_key[..config.api_key.len().min(15)]);
+                    req = req.header("Authorization", format!("Bearer {}", config.api_key));
+                }
                 "anthropic" => {
                     req = req.header("x-api-key", &config.api_key);
                     req = req.header("anthropic-version", "2023-06-01");

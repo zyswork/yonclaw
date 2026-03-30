@@ -48,11 +48,39 @@ pub async fn send_message(
         }
     }
 
-    let (model_used, (api_type, api_key, base_url)) = selected_model
+    let (model_used, (api_type, mut api_key, base_url)) = selected_model
         .ok_or_else(|| format!(
             "未找到可用的模型供应商配置（尝试了: {}），请在设置中添加",
             failover.all_models().join(", ")
         ))?;
+
+    // OAuth token 自动刷新：检查 provider 是否有 oauth.expiresAt，快过期则刷新
+    {
+        let (qpid, _) = crate::channels::parse_qualified_model(&model_used);
+        if let Some(pid) = qpid {
+            for p in &providers {
+                if p["id"].as_str() == Some(pid) {
+                    if let Some(oauth) = p.get("oauth") {
+                        let expires_at = oauth["expiresAt"].as_i64().unwrap_or(0);
+                        let now = chrono::Utc::now().timestamp();
+                        if expires_at > 0 && now > expires_at - 300 { // 过期或 5 分钟内过期
+                            log::info!("OAuth token 即将/已过期 (expires_at={}, now={}), 自动刷新...", expires_at, now);
+                            match crate::handlers::oauth::refresh_oauth_token_internal(&state.db, pid).await {
+                                Ok(new_key) => {
+                                    log::info!("OAuth token 刷新成功, 新 key 长度: {}", new_key.len());
+                                    api_key = new_key;
+                                }
+                                Err(e) => {
+                                    log::warn!("OAuth token 刷新失败: {}, 使用旧 token", e);
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
     if model_used != agent.model {
         log::info!("Failover: 主模型 {} 不可用，使用备用模型 {}", agent.model, model_used);

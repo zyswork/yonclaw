@@ -127,6 +127,7 @@ pub async fn save_providers(db: &db::Database, providers: &[serde_json::Value]) 
 ///
 /// 返回 (api_type, api_key, base_url)
 /// 查找模型对应的 Provider（支持 `provider_id/model` 限定格式）
+/// 同步版本（给非 async 调用方用）
 pub fn find_provider_for_model(
     providers: &[serde_json::Value],
     model: &str,
@@ -143,6 +144,8 @@ pub fn find_provider_for_model(
                     let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                     let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
                     let api_key = rotate_api_key(pid, &raw_key);
+                    log::info!("find_provider_for_model: matched pid={}, api_type={}, base_url={}, key_len={}, key_prefix={}",
+                        pid, api_type, base_url, api_key.len(), &api_key[..api_key.len().min(15)]);
                     return Some((api_type, api_key, base_url));
                 }
             }

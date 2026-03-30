@@ -615,6 +615,92 @@ pub async fn refresh_oauth_token(
 
 // ─── 供网关回调使用的公共函数 ─────────────────────────────────
 
+/// 内部刷新 OAuth token（供 send_message 自动刷新调用）
+///
+/// 返回新的 access_token
+pub async fn refresh_oauth_token_internal(
+    db: &crate::db::Database,
+    provider_id: &str,
+) -> Result<String, String> {
+    let mut providers = load_providers(db).await
+        .map_err(|e| format!("加载 providers 失败: {}", e))?;
+
+    let provider = providers.iter_mut()
+        .find(|p| p["id"].as_str() == Some(provider_id))
+        .ok_or_else(|| format!("未找到 provider: {}", provider_id))?;
+
+    let oauth = provider.get("oauth")
+        .ok_or("该 provider 不是 OAuth 类型")?;
+
+    let refresh_token = oauth["refreshToken"].as_str()
+        .ok_or("缺少 refreshToken")?.to_string();
+    let token_url = oauth["tokenUrl"].as_str()
+        .ok_or("缺少 tokenUrl")?.to_string();
+    let client_id_str = oauth["clientId"].as_str()
+        .ok_or("缺少 clientId")?.to_string();
+
+    // Google 需要 client_secret
+    let client_secret_str = oauth.get("clientSecret")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // 如果 DB 没有 client_secret，从本地 credentials 缓存读取
+    let effective_secret = if client_secret_str.is_empty() && provider_id.contains("google") {
+        resolve_google_credentials().map(|(_, s)| s).unwrap_or_default()
+    } else {
+        client_secret_str
+    };
+
+    let client = reqwest::Client::new();
+    let mut form_params: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &refresh_token),
+        ("client_id", &client_id_str),
+    ];
+    if !effective_secret.is_empty() {
+        form_params.push(("client_secret", &effective_secret));
+    }
+
+    let token_response = client
+        .post(&token_url)
+        .form(&form_params)
+        .send()
+        .await
+        .map_err(|e| format!("刷新令牌请求失败: {}", e))?;
+
+    let status = token_response.status();
+    let body: serde_json::Value = token_response.json().await
+        .map_err(|e| format!("解析刷新响应失败: {}", e))?;
+
+    if !status.is_success() {
+        let error_desc = body["error_description"].as_str()
+            .or_else(|| body["error"].as_str())
+            .unwrap_or("未知错误");
+        return Err(format!("刷新令牌失败 ({}): {}", status.as_u16(), error_desc));
+    }
+
+    let new_access_token = body["access_token"].as_str()
+        .ok_or("刷新响应中缺少 access_token")?.to_string();
+    let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
+    let new_expires_at = chrono::Utc::now().timestamp() + expires_in;
+
+    // 更新 provider
+    provider["apiKey"] = serde_json::Value::String(new_access_token.clone());
+    if let Some(oauth_mut) = provider.get_mut("oauth") {
+        oauth_mut["expiresAt"] = serde_json::json!(new_expires_at);
+        if let Some(new_rt) = body["refresh_token"].as_str() {
+            oauth_mut["refreshToken"] = serde_json::Value::String(new_rt.to_string());
+        }
+    }
+
+    save_providers(db, &providers).await
+        .map_err(|e| format!("保存更新后的 provider 失败: {}", e))?;
+
+    log::info!("OAuth token 自动刷新成功: provider={}, new_expires_at={}", provider_id, new_expires_at);
+
+    Ok(new_access_token)
+}
+
 /// 处理 OAuth 回调（供 gateway/api.rs 调用）
 ///
 /// 从查询参数中提取 code 和 state，执行令牌交换，
