@@ -48,6 +48,7 @@ pub mod delegate;
 pub mod token_counter;
 pub mod execution_budget;
 pub mod file_harness;
+pub mod auto_verify;
 
 // ── 工具系统 ──
 pub mod tools;

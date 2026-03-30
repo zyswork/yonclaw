@@ -1071,6 +1071,57 @@ impl Orchestrator {
         memory::conversation::update_agent_response(&self.pool, &conv_id, &response)
             .await.map_err(|e| format!("更新回复失败: {}", e))?;
 
+        // 9.5 Verify-Fix 循环：agent_loop 结束后自动验证，失败则修复
+        if let Some(ref wp) = workspace_path {
+            // 从最近备份推断改动的文件
+            let recent_backups = super::file_harness::list_backups();
+            let changed: Vec<String> = recent_backups.iter()
+                .take(20)
+                .filter_map(|(_, name, _)| {
+                    // 备份文件名格式: YYYYMMDD_HHMMSS.mmm_filename
+                    name.splitn(2, '_').nth(1)
+                        .and_then(|rest| rest.splitn(2, '_').nth(1))
+                        .map(|f| f.to_string())
+                })
+                .collect();
+
+            if !changed.is_empty() {
+                if let Some(verify_result) = super::auto_verify::run_project_verify(&changed, Some(wp)) {
+                    if !verify_result.passed {
+                        log::warn!("Verify-Fix: 验证失败 — {}", verify_result.summary);
+                        let _ = tx.send(format!("\n⚠️ 自动验证发现问题: {}\n", verify_result.summary));
+
+                        // 尝试修复（最多 2 轮，消耗 ExecutionBudget）
+                        let fix_prompt = format!(
+                            "[Auto-Verify Failed]\n验证发现以下错误，请修复：\n\n{}\n\n请逐一修复这些问题。",
+                            verify_result.summary
+                        );
+                        // 注入修复消息到新一轮 agent_loop
+                        let fix_messages = vec![
+                            serde_json::json!({"role": "user", "content": fix_prompt}),
+                        ];
+                        let fix_response = super::agent_loop::run_agent_loop(
+                            &loop_deps, &config, fix_messages, system_prompt_opt,
+                            provider, &tx, &final_tool_defs, &skill_tools,
+                            agent_id, session_id, &cancel_token, dispatcher.as_ref(),
+                        ).await;
+                        match fix_response {
+                            Ok(fix_text) => {
+                                log::info!("Verify-Fix: 修复完成 ({}字符)", fix_text.len());
+                                let _ = tx.send("\n✅ 自动修复完成\n".to_string());
+                            }
+                            Err(e) => {
+                                log::warn!("Verify-Fix: 修复失败: {}", e.message);
+                                let _ = tx.send(format!("\n❌ 自动修复失败: {}\n", e.message));
+                            }
+                        }
+                    } else {
+                        log::info!("Verify-Fix: 验证通过 ✓");
+                    }
+                }
+            }
+        }
+
         // 自动生成会话标题：如果是第一条消息且标题为默认值
         if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
             let is_default_title = session.title == "New Session"
