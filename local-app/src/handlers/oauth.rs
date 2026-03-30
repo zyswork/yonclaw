@@ -18,6 +18,7 @@ static PENDING_FLOWS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Pendi
 struct PendingOAuth {
     provider: String,
     code_verifier: String,
+    redirect_uri: String,
     #[allow(dead_code)]
     created_at: i64,
 }
@@ -109,17 +110,15 @@ fn generate_state() -> String {
     hex::encode(u.as_bytes())
 }
 
-// ─── 默认 OAuth 回调端口 ─────────────────────────────────────
-
-const DEFAULT_OAUTH_PORT: u16 = 19985;
-
 // ─── Tauri Commands ──────────────────────────────────────────
 
 /// 启动 OAuth 授权流程
 ///
-/// 生成 PKCE 参数，构建授权 URL，打开浏览器
+/// 启动临时 HTTP server 接收回调，生成 PKCE 参数，打开浏览器
 #[tauri::command]
 pub async fn start_oauth_flow(
+    app: tauri::AppHandle,
+    state_arc: State<'_, Arc<AppState>>,
     provider: String,
 ) -> Result<serde_json::Value, String> {
     let preset = find_preset(&provider)
@@ -128,36 +127,49 @@ pub async fn start_oauth_flow(
     // 生成 PKCE 参数
     let code_verifier = generate_code_verifier();
     let code_challenge = generate_code_challenge(&code_verifier);
-    let state = generate_state();
+    let oauth_state = generate_state();
 
     // 保存到全局待处理流程
     {
         let mut flows = pending_flows().lock().map_err(|e| format!("锁定失败: {}", e))?;
-        flows.insert(state.clone(), PendingOAuth {
+        flows.insert(oauth_state.clone(), PendingOAuth {
             provider: provider.clone(),
             code_verifier,
+            redirect_uri: String::new(), // 先占位，下面设端口后更新
             created_at: chrono::Utc::now().timestamp(),
         });
-        // 清理超过 10 分钟的过期流程
         let cutoff = chrono::Utc::now().timestamp() - 600;
         flows.retain(|_, v| v.created_at > cutoff);
     }
 
-    // 构建回调 URI
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", DEFAULT_OAUTH_PORT);
+    // 启动临时 HTTP server 接收回调（随机端口）
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("绑定回调端口失败: {}", e))?;
+    let port = listener.local_addr()
+        .map_err(|e| format!("获取端口失败: {}", e))?.port();
+    drop(listener); // 释放端口给 hyper
+
+    let redirect_uri = format!("http://localhost:{}/oauth/callback", port);
+
+    // 更新 pending flow 的 redirect_uri
+    {
+        let mut flows = pending_flows().lock().map_err(|e| format!("锁定失败: {}", e))?;
+        if let Some(flow) = flows.get_mut(&oauth_state) {
+            flow.redirect_uri = redirect_uri.clone();
+        }
+    }
 
     // 构建授权 URL
     let mut params = vec![
         ("client_id", preset.client_id.to_string()),
-        ("redirect_uri", redirect_uri),
+        ("redirect_uri", redirect_uri.clone()),
         ("response_type", "code".to_string()),
         ("scope", preset.scopes.to_string()),
-        ("state", state.clone()),
+        ("state", oauth_state.clone()),
         ("code_challenge", code_challenge),
         ("code_challenge_method", "S256".to_string()),
     ];
 
-    // Google 特有参数
     if provider.to_lowercase().contains("google") {
         params.push(("access_type", "offline".to_string()));
         params.push(("prompt", "consent".to_string()));
@@ -172,24 +184,120 @@ pub async fn start_oauth_flow(
             .join("&")
     );
 
-    // 打开浏览器（macOS 使用 open 命令）
+    // 异步启动临时回调 server（2 分钟超时自动关闭）
+    let pool = state_arc.db.pool().clone();
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_oauth_callback_server(port, &pool, &app_handle).await {
+            log::warn!("OAuth 回调 server 错误: {}", e);
+        }
+    });
+
+    // 打开浏览器
     #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
+    { let _ = std::process::Command::new("open").arg(&url).spawn(); }
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-    }
+    { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
-    }
+    { let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn(); }
+
+    log::info!("OAuth 流程已启动: provider={}, callback=http://localhost:{}", provider, port);
 
     Ok(serde_json::json!({
-        "state": state,
+        "state": oauth_state,
         "authorizeUrl": url,
+        "callbackPort": port,
     }))
+}
+
+/// 临时 OAuth 回调 HTTP server
+///
+/// 只接受一次请求后自动关闭，最多等 2 分钟
+async fn run_oauth_callback_server(
+    port: u16,
+    pool: &sqlx::SqlitePool,
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await
+        .map_err(|e| format!("绑定回调端口失败: {}", e))?;
+
+    log::info!("OAuth 回调 server 启动: http://localhost:{}/oauth/callback", port);
+
+    // 等待一个连接（2 分钟超时）
+    let accept = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        listener.accept(),
+    ).await;
+
+    let (mut stream, _) = match accept {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(format!("接受连接失败: {}", e)),
+        Err(_) => return Err("OAuth 回调等待超时（2分钟）".into()),
+    };
+
+    // 读取 HTTP 请求
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.map_err(|e| format!("读取请求失败: {}", e))?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    // 解析请求行：GET /oauth/callback?code=xxx&state=yyy HTTP/1.1
+    let path = request.lines().next().unwrap_or("")
+        .split_whitespace().nth(1).unwrap_or("");
+
+    let query = path.split('?').nth(1).unwrap_or("");
+    let params: HashMap<String, String> = query.split('&')
+        .filter_map(|p| {
+            let mut kv = p.splitn(2, '=');
+            Some((kv.next()?.to_string(), urlencoding::decode(kv.next().unwrap_or("")).unwrap_or_default().to_string()))
+        })
+        .collect();
+
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
+
+    // 处理回调
+    let (html, success, provider_name) = if code.is_empty() || state.is_empty() {
+        let error = params.get("error").cloned().unwrap_or_else(|| "缺少 code 或 state".into());
+        (format!(
+            "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#ef4444'>授权失败</h2><p>{}</p></body></html>",
+            error
+        ), false, String::new())
+    } else {
+        match handle_oauth_callback(pool, &code, &state).await {
+            Ok(name) => (
+                format!(
+                    "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#10b981'>授权成功！</h2><p>{} 已配置完成。</p><p style='color:#888'>可以关闭此窗口。</p><script>setTimeout(()=>window.close(),2000)</script></body></html>",
+                    name
+                ),
+                true, name
+            ),
+            Err(e) => (
+                format!(
+                    "<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2 style='color:#ef4444'>授权失败</h2><p>{}</p></body></html>",
+                    e
+                ),
+                false, String::new()
+            ),
+        }
+    };
+
+    // 发送 HTTP 响应
+    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n{}", html);
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
+
+    // 通知前端
+    use tauri::Manager;
+    let _ = app_handle.emit_all("oauth-complete", serde_json::json!({
+        "success": success,
+        "provider": provider_name,
+    }));
+
+    log::info!("OAuth 回调处理完成: success={}, provider={}", success, provider_name);
+    Ok(())
 }
 
 /// 交换 OAuth 授权码获取令牌
@@ -211,7 +319,7 @@ pub async fn exchange_oauth_code(
     let preset = find_preset(&pending.provider)
         .ok_or_else(|| format!("未知的 OAuth 提供商: {}", pending.provider))?;
 
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", DEFAULT_OAUTH_PORT);
+    let redirect_uri = pending.redirect_uri;
 
     // 调用令牌端点
     let client = reqwest::Client::new();
@@ -388,7 +496,7 @@ pub async fn handle_oauth_callback(
     let preset = find_preset(&pending.provider)
         .ok_or_else(|| format!("未知的 OAuth 提供商: {}", pending.provider))?;
 
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", DEFAULT_OAUTH_PORT);
+    let redirect_uri = pending.redirect_uri;
 
     // 调用令牌端点
     let client = reqwest::Client::new();
