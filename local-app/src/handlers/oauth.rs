@@ -35,9 +35,22 @@ struct OAuthPreset {
     authorize_url: &'static str,
     token_url: &'static str,
     client_id: &'static str,
+    client_secret: &'static str,
     base_url: &'static str,
     scopes: &'static str,
     models: Vec<(&'static str, &'static str)>,
+    // 运行时动态填充（覆盖 client_id/client_secret）
+    client_id_owned: String,
+    client_secret_owned: String,
+}
+
+impl OAuthPreset {
+    fn effective_client_id(&self) -> &str {
+        if !self.client_id_owned.is_empty() { &self.client_id_owned } else { self.client_id }
+    }
+    fn effective_client_secret(&self) -> &str {
+        if !self.client_secret_owned.is_empty() { &self.client_secret_owned } else { self.client_secret }
+    }
 }
 
 fn get_oauth_presets() -> Vec<OAuthPreset> {
@@ -47,20 +60,26 @@ fn get_oauth_presets() -> Vec<OAuthPreset> {
             api_type: "openai",
             authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
             token_url: "https://oauth2.googleapis.com/token",
-            client_id: "936733940271-mr6960s18vmk8fgl1rcvnsdpn0dpbhb1.apps.googleusercontent.com",
+            // 运行时从本地 Gemini CLI 提取，或从环境变量读取
+            client_id: "", // 动态填充，见 resolve_google_credentials()
+            client_secret: "", // 动态填充
             base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-            scopes: "https://www.googleapis.com/auth/generative-language",
+            scopes: "https://www.googleapis.com/auth/generative-language.tuning https://www.googleapis.com/auth/generative-language.retriever https://www.googleapis.com/auth/cloud-platform",
             models: vec![
                 ("gemini-2.5-flash", "Gemini 2.5 Flash"),
                 ("gemini-2.5-pro", "Gemini 2.5 Pro"),
             ],
+            client_id_owned: String::new(),
+            client_secret_owned: String::new(),
         },
         OAuthPreset {
             name: "OpenAI",
             api_type: "openai",
             authorize_url: "https://auth.openai.com/authorize",
             token_url: "https://auth.openai.com/oauth/token",
-            client_id: "app_BYhDWa2GTIZMP2qReNz7lt7l",
+            // 从 pi-ai (@mariozechner/pi-ai) 提取的 Codex CLI 真实 Client ID
+            client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+            client_secret: "", // OpenAI 用 PKCE 不需要 secret
             base_url: "",
             scopes: "openid offline_access",
             models: vec![
@@ -68,8 +87,62 @@ fn get_oauth_presets() -> Vec<OAuthPreset> {
                 ("gpt-4o-mini", "GPT-4o Mini"),
                 ("o3-mini", "o3-mini"),
             ],
+            client_id_owned: String::new(),
+            client_secret_owned: String::new(),
         },
     ]
+}
+
+/// 从本地 Gemini CLI 提取 OAuth credentials（和 OpenClaw 相同的方式）
+fn resolve_google_credentials() -> Option<(String, String)> {
+    // 优先从环境变量读取
+    if let (Ok(id), Ok(secret)) = (std::env::var("GEMINI_CLI_OAUTH_CLIENT_ID"), std::env::var("GEMINI_CLI_OAUTH_CLIENT_SECRET")) {
+        return Some((id, secret));
+    }
+
+    // 从本地 Gemini CLI 安装中提取
+    let search_paths = [
+        "/opt/homebrew/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js",
+        "/opt/homebrew/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/code_assist/oauth2.js",
+        "/usr/local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js",
+    ];
+
+    for path in &search_paths {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            // 提取 client_id 和 client_secret
+            let id = extract_pattern(&content, r"\d+-[a-z0-9]+\.apps\.googleusercontent\.com");
+            let secret = extract_pattern(&content, r"GOCSPX-[A-Za-z0-9_-]+");
+            if let (Some(id), Some(secret)) = (id, secret) {
+                log::info!("OAuth: 从 Gemini CLI 提取到 Google credentials");
+                return Some((id, secret));
+            }
+        }
+    }
+
+    // 也搜索 PATH 中的 gemini 命令
+    if let Ok(output) = std::process::Command::new("which").arg("gemini").output() {
+        let gemini_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !gemini_path.is_empty() {
+            // 尝试从 gemini 命令的安装目录找
+            if let Some(parent) = std::path::Path::new(&gemini_path).parent() {
+                let guess = parent.parent().unwrap_or(parent)
+                    .join("lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js");
+                if let Ok(content) = std::fs::read_to_string(&guess) {
+                    let id = extract_pattern(&content, r"\d+-[a-z0-9]+\.apps\.googleusercontent\.com");
+                    let secret = extract_pattern(&content, r"GOCSPX-[A-Za-z0-9_-]+");
+                    if let (Some(id), Some(secret)) = (id, secret) {
+                        return Some((id, secret));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_pattern(content: &str, pattern: &str) -> Option<String> {
+    regex::Regex::new(pattern).ok()?.find(content).map(|m| m.as_str().to_string())
 }
 
 fn find_preset(provider: &str) -> Option<OAuthPreset> {
@@ -121,8 +194,16 @@ pub async fn start_oauth_flow(
     state_arc: State<'_, Arc<AppState>>,
     provider: String,
 ) -> Result<serde_json::Value, String> {
-    let preset = find_preset(&provider)
+    let mut preset = find_preset(&provider)
         .ok_or_else(|| format!("未知的 OAuth 提供商: {}", provider))?;
+
+    // Google: 动态填充 credentials
+    if provider.to_lowercase().contains("google") {
+        let (id, secret) = resolve_google_credentials()
+            .ok_or("未找到 Google OAuth credentials。请先安装 Gemini CLI: brew install gemini-cli（或 npm install -g @google/gemini-cli），或设置环境变量 GEMINI_CLI_OAUTH_CLIENT_ID")?;
+        preset.client_id_owned = id;
+        preset.client_secret_owned = secret;
+    }
 
     // 生成 PKCE 参数
     let code_verifier = generate_code_verifier();
@@ -161,7 +242,7 @@ pub async fn start_oauth_flow(
 
     // 构建授权 URL
     let mut params = vec![
-        ("client_id", preset.client_id.to_string()),
+        ("client_id", preset.effective_client_id().to_string()),
         ("redirect_uri", redirect_uri.clone()),
         ("response_type", "code".to_string()),
         ("scope", preset.scopes.to_string()),
@@ -323,15 +404,19 @@ pub async fn exchange_oauth_code(
 
     // 调用令牌端点
     let client = reqwest::Client::new();
+    let mut form_params: Vec<(&str, String)> = vec![
+        ("grant_type", "authorization_code".into()),
+        ("code", code.clone()),
+        ("redirect_uri", redirect_uri.clone()),
+        ("client_id", preset.effective_client_id().to_string()),
+        ("code_verifier", pending.code_verifier.clone()),
+    ];
+    if !preset.effective_client_secret().is_empty() {
+        form_params.push(("client_secret", preset.effective_client_secret().to_string()));
+    }
     let token_response = client
         .post(preset.token_url)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", &code),
-            ("redirect_uri", &redirect_uri),
-            ("client_id", preset.client_id),
-            ("code_verifier", &pending.code_verifier),
-        ])
+        .form(&form_params)
         .send()
         .await
         .map_err(|e| format!("令牌请求失败: {}", e))?;
@@ -344,7 +429,7 @@ pub async fn exchange_oauth_code(
         let error_desc = body["error_description"].as_str()
             .or_else(|| body["error"].as_str())
             .unwrap_or("未知错误");
-        return Err(format!("令牌交换失败: {}", error_desc));
+        return Err(format!("令牌交换失败 ({}): {}", status.as_u16(), error_desc));
     }
 
     let access_token = body["access_token"].as_str()
@@ -353,7 +438,6 @@ pub async fn exchange_oauth_code(
     let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
     let expires_at = chrono::Utc::now().timestamp() + expires_in;
 
-    // 构建 provider ID
     let provider_id = format!("oauth-{}", pending.provider.to_lowercase().replace(' ', "-"));
 
     // 构建模型列表
@@ -369,7 +453,7 @@ pub async fn exchange_oauth_code(
         "refreshToken": refresh_token,
         "expiresAt": expires_at,
         "tokenUrl": preset.token_url,
-        "clientId": preset.client_id,
+        "clientId": preset.effective_client_id(),
     });
 
     if let Some(existing) = providers.iter_mut().find(|p| p["id"].as_str() == Some(&provider_id)) {
@@ -500,15 +584,19 @@ pub async fn handle_oauth_callback(
 
     // 调用令牌端点
     let client = reqwest::Client::new();
+    let mut form_params: Vec<(&str, String)> = vec![
+        ("grant_type", "authorization_code".into()),
+        ("code", code.to_string()),
+        ("redirect_uri", redirect_uri.clone()),
+        ("client_id", preset.effective_client_id().to_string()),
+        ("code_verifier", pending.code_verifier.clone()),
+    ];
+    if !preset.effective_client_secret().is_empty() {
+        form_params.push(("client_secret", preset.effective_client_secret().to_string()));
+    }
     let token_response = client
         .post(preset.token_url)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", &redirect_uri),
-            ("client_id", preset.client_id),
-            ("code_verifier", &pending.code_verifier),
-        ])
+        .form(&form_params)
         .send()
         .await
         .map_err(|e| format!("令牌请求失败: {}", e))?;
@@ -549,7 +637,7 @@ pub async fn handle_oauth_callback(
         "refreshToken": refresh_token,
         "expiresAt": expires_at,
         "tokenUrl": preset.token_url,
-        "clientId": preset.client_id,
+        "clientId": preset.effective_client_id(),
     });
 
     if let Some(existing) = providers.iter_mut().find(|p| p["id"].as_str() == Some(&provider_id)) {
