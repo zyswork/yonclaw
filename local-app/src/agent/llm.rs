@@ -868,8 +868,18 @@ impl LlmClient {
             let mut req = self.client.post(&url).json(&body);
             match config.provider.as_str() {
                 "openai" => {
-                    log::info!("LLM auth: Bearer key_len={}, prefix={}", config.api_key.len(), &config.api_key[..config.api_key.len().min(15)]);
-                    req = req.header("Authorization", format!("Bearer {}", config.api_key));
+                    // OAuth 自动刷新：如果是 OAuth token（ya29. 开头）且有 refresh 配置，检查过期
+                    let effective_key = if config.api_key.starts_with("ya29.") {
+                        // 可能是 Google OAuth token，尝试从 DB 刷新
+                        match try_refresh_oauth_token_if_needed(&config.api_key).await {
+                            Some(new_key) => new_key,
+                            None => config.api_key.clone(),
+                        }
+                    } else {
+                        config.api_key.clone()
+                    };
+                    log::info!("LLM auth: Bearer key_len={}, prefix={}", effective_key.len(), &effective_key[..effective_key.len().min(15)]);
+                    req = req.header("Authorization", format!("Bearer {}", effective_key));
                 }
                 "anthropic" => {
                     req = req.header("x-api-key", &config.api_key);
@@ -1619,6 +1629,89 @@ impl LlmClient {
 /// 对 LLM 原始错误信息进行分类，返回用户友好的提示
 ///
 /// 保持原始错误在日志中，仅改善用户看到的提示文本
+/// 检查 Google OAuth token 是否过期，如果过期则尝试从 DB 刷新
+///
+/// 返回 Some(新token) 如果刷新成功，None 如果不需要刷新或刷新失败
+async fn try_refresh_oauth_token_if_needed(current_key: &str) -> Option<String> {
+    // 检查 token 是否有效（调 Google tokeninfo）
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build().ok()?;
+    let resp = client.get(&format!("https://oauth2.googleapis.com/tokeninfo?access_token={}", current_key))
+        .send().await.ok()?;
+
+    if resp.status().is_success() {
+        return None; // token 有效，不需要刷新
+    }
+
+    log::info!("OAuth token 验证失败，尝试从 DB 刷新...");
+
+    // token 无效，尝试从本地 DB 找 refresh_token 并刷新
+    let home = dirs::home_dir()?;
+    let db_path = home.join("Library/Application Support/com.xianzhu.app/xianzhu.db");
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite:{}", db_path.display()))
+        .await.ok()?;
+
+    let providers_json: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'providers'")
+        .fetch_optional(&pool).await.ok().flatten()?;
+    let providers: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
+
+    // 找到匹配的 OAuth provider
+    for p in &providers {
+        if p["apiKey"].as_str() == Some(current_key) {
+            if let Some(oauth) = p.get("oauth") {
+                let refresh_token = oauth["refreshToken"].as_str()?;
+                let token_url = oauth["tokenUrl"].as_str()?;
+                let client_id = oauth["clientId"].as_str()?;
+
+                // 从本地 credentials 缓存读取 client_secret
+                let creds_file = home.join(".xianzhu/oauth_credentials.json");
+                let client_secret = if let Ok(content) = std::fs::read_to_string(&creds_file) {
+                    serde_json::from_str::<serde_json::Value>(&content).ok()
+                        .and_then(|c| c["google_client_secret"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_default()
+                } else { String::new() };
+
+                let mut form: Vec<(&str, &str)> = vec![
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh_token),
+                    ("client_id", client_id),
+                ];
+                if !client_secret.is_empty() {
+                    form.push(("client_secret", &client_secret));
+                }
+
+                let token_resp = client.post(token_url).form(&form).send().await.ok()?;
+                let body: serde_json::Value = token_resp.json().await.ok()?;
+
+                let new_token = body["access_token"].as_str()?.to_string();
+                let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
+                let new_expires = chrono::Utc::now().timestamp() + expires_in;
+
+                // 更新 DB
+                let mut providers_mut: Vec<serde_json::Value> = serde_json::from_str(&providers_json).ok()?;
+                for pm in providers_mut.iter_mut() {
+                    if pm["apiKey"].as_str() == Some(current_key) {
+                        pm["apiKey"] = serde_json::Value::String(new_token.clone());
+                        if let Some(o) = pm.get_mut("oauth") {
+                            o["expiresAt"] = serde_json::json!(new_expires);
+                        }
+                    }
+                }
+                let new_json = serde_json::to_string(&providers_mut).ok()?;
+                let _ = sqlx::query("UPDATE settings SET value = ? WHERE key = 'providers'")
+                    .bind(&new_json).execute(&pool).await;
+
+                log::info!("OAuth token 刷新成功（LLM 层），新 key 长度: {}", new_token.len());
+                return Some(new_token);
+            }
+        }
+    }
+    None
+}
+
 pub fn classify_llm_error(error: &str) -> String {
     let lower = error.to_lowercase();
 

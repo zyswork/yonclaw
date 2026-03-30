@@ -55,8 +55,10 @@ pub async fn send_message(
         ))?;
 
     // OAuth token 自动刷新：检查 provider 是否有 oauth.expiresAt，快过期则刷新
+    log::info!("OAuth refresh check: model_used={}, api_key_len={}", model_used, api_key.len());
     {
         let (qpid, _) = crate::channels::parse_qualified_model(&model_used);
+        log::info!("OAuth refresh: qpid={:?}, providers_count={}", qpid, providers.len());
         if let Some(pid) = qpid {
             for p in &providers {
                 if p["id"].as_str() == Some(pid) {
