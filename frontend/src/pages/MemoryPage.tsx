@@ -49,6 +49,7 @@ function MemoryTypeIcon({ type }: { type: string }) {
     episodic: 'M12 8v4l3 3 M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z',
     semantic: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z',
     procedural: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
+    learned: 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3',
   }
   const d = paths[type] || 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M12 8v4 M12 16h.01'
   return (
@@ -174,6 +175,7 @@ export default function MemoryPage() {
     episodic:   { bg: 'rgba(245,158,11,0.12)', text: '#fbbf24', glow: 'rgba(245,158,11,0.06)' },
     semantic:   { bg: 'rgba(34,197,94,0.12)', text: '#4ade80', glow: 'rgba(34,197,94,0.06)' },
     procedural: { bg: 'rgba(168,85,247,0.12)', text: '#c084fc', glow: 'rgba(168,85,247,0.06)' },
+    learned:    { bg: 'rgba(16,185,129,0.12)', text: '#34d399', glow: 'rgba(16,185,129,0.06)' },
   }
 
   if (loading) return <div style={{ padding: '24px', color: 'var(--text-muted)' }}>{t('common.loading')}</div>
