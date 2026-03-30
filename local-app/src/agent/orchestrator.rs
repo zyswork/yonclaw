@@ -657,7 +657,12 @@ impl Orchestrator {
             }
         }
 
-        // 4b. 技能激活：根据用户消息匹配技能，注册技能工具
+        // 4b. IntentGate：根据用户意图过滤工具集
+        let intent = super::intent_gate::classify(user_message);
+        log::info!("IntentGate: {:?} (confidence={:.1}, filter={:?})", intent.intents, intent.confidence, intent.tool_filter);
+        final_tool_defs = super::intent_gate::filter_tools(final_tool_defs, &intent.tool_filter);
+
+        // 4c. 技能激活：根据用户消息匹配技能，注册技能工具
         let mut skill_tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
         // 检查 Node.js 运行时，为技能工具注入 PATH
         let node_runtime = crate::runtime::NodeRuntime::new();
@@ -1054,6 +1059,15 @@ impl Orchestrator {
             approval_manager: Some(&self.approval_manager),
             app_handle: None, // 由调用方注入（send_message 时传入）
         };
+
+        // C4: 跨会话恢复 — 检查 PROGRESS.md 是否有未完成任务
+        if let Some(ref wp) = workspace_path {
+            if let Some(recovery_ctx) = super::progress::check_pending_progress(wp) {
+                log::info!("Session Recovery: 注入恢复上下文");
+                final_messages.push(serde_json::json!({"role": "user", "content": recovery_ctx}));
+            }
+        }
+
         let response = match super::agent_loop::run_agent_loop(&loop_deps, &config, final_messages, system_prompt_opt, provider, &tx, &final_tool_defs, &skill_tools, agent_id, session_id, &cancel_token, dispatcher.as_ref()).await {
             Ok(resp) => resp,
             Err(e) => {

@@ -49,6 +49,8 @@ pub mod token_counter;
 pub mod execution_budget;
 pub mod file_harness;
 pub mod auto_verify;
+pub mod progress;
+pub mod intent_gate;
 
 // ── 工具系统 ──
 pub mod tools;
