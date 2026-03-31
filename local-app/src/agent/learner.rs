@@ -115,18 +115,12 @@ category 说明：
         conversation
     );
 
-    let client = super::llm::LlmClient::new(super::llm::LlmConfig {
-        model: super::orchestrator::pick_compact_model(&llm_config.model),
-        provider: llm_config.provider.clone(),
-        api_key: llm_config.api_key.clone(),
-        base_url: llm_config.base_url.clone(),
-        temperature: Some(0.2),
-        max_tokens: Some(500),
-        thinking_level: None,
-    });
+    // 直接使用传入的 llm_config（已由 orchestrator 通过 build_compact_llm_config 构建好）
+    let client = super::llm::LlmClient::new(llm_config.clone());
 
     let msgs = vec![serde_json::json!({"role": "user", "content": prompt})];
-    let (tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // _rx 必须持有直到 call_stream 完成，否则 tx.is_closed() 会立即取消流
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     let resp = match client.call_stream(&msgs, None, None, tx).await {
         Ok(r) => r.content,

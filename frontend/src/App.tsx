@@ -9,6 +9,7 @@ import { ToastContainer } from './hooks/useToast'
 import { ConfirmDialog } from './hooks/useConfirm'
 import { ApprovalDialog } from './hooks/useApproval'
 import SetupPage from './pages/SetupPage'
+import { useUpdater } from './hooks/useUpdater'
 import Layout from './components/Layout'
 
 // 懒加载页面组件
@@ -83,6 +84,7 @@ export default function App() {
   const { isConnected, retryCount } = useBackendConnection()
   const { t } = useI18n()
   const { hydrate, loadProfile } = useAuthStore()
+  const { updateAvailable, updating, installUpdate, dismissUpdate } = useUpdater()
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null)
 
   // 启动时恢复登录状态
@@ -137,6 +139,27 @@ export default function App() {
       <ToastContainer />
       <ConfirmDialog />
       <ApprovalDialog />
+      {updateAvailable && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+          background: 'linear-gradient(90deg, #238636, #1a7f37)', color: 'white',
+          padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16,
+          fontSize: 13, fontWeight: 500, boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+        }}>
+          <span>v{updateAvailable.version} {t('update.available') || '新版本可用'}</span>
+          {updateAvailable.notes && <span style={{ opacity: 0.8, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{updateAvailable.notes}</span>}
+          <button onClick={installUpdate} disabled={updating} style={{
+            padding: '4px 16px', border: '1px solid rgba(255,255,255,0.4)', borderRadius: 6,
+            background: 'rgba(255,255,255,0.15)', color: 'white', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+          }}>
+            {updating ? t('update.installing') || '安装中...' : t('update.install') || '立即更新'}
+          </button>
+          <button onClick={dismissUpdate} style={{
+            padding: '4px 8px', border: 'none', background: 'transparent', color: 'rgba(255,255,255,0.7)',
+            cursor: 'pointer', fontSize: 16, lineHeight: 1,
+          }}>×</button>
+        </div>
+      )}
       <Routes>
         <Route path="/login" element={<Suspense fallback={<PageLoader />}><LoginPage /></Suspense>} />
         <Route path="/" element={<Navigate to="/agents" replace />} />

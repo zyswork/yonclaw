@@ -565,6 +565,24 @@ impl LlmResponse {
     }
 }
 
+/// 根据模型名称推断合理的默认 temperature
+///
+/// 优先级：用户显式设置 > 意图推断（orchestrator） > 此函数兜底
+pub(crate) fn default_temperature(model: &str) -> f64 {
+    let m = model.to_lowercase();
+    // 推理/思考模型必须 temperature=1
+    if m.contains("thinking") || m.contains("o1") || m.contains("o3") || m.contains("o4")
+        || m.contains("deepseek-r1") || m.contains("glm-z1") { return 1.0; }
+    // Kimi 非思考模式
+    if m.contains("kimi-k2") && !m.contains("thinking") { return 0.6; }
+    // Flash/mini/lite 精确导向
+    if m.contains("flash") || m.contains("mini") || m.contains("lite") { return 0.3; }
+    // 代码模型
+    if m.contains("codex") || m.contains("coder") { return 0.3; }
+    // 大多数聊天模型默认
+    0.7
+}
+
 /// 根据 provider + model 推断合理的 max_tokens 默认值
 fn default_max_tokens(provider: &str, model: &str) -> i32 {
     // 按模型前缀匹配
@@ -905,7 +923,7 @@ impl LlmClient {
                 let mut inner_request = serde_json::json!({
                     "contents": contents,
                     "generationConfig": {
-                        "temperature": config.temperature.unwrap_or(0.7),
+                        "temperature": config.temperature.unwrap_or_else(|| default_temperature(&config.model)),
                         "maxOutputTokens": config.max_tokens.filter(|&t| t > 0).unwrap_or(8192),
                     }
                 });
@@ -940,7 +958,7 @@ impl LlmClient {
                 let clean_messages = sanitize_messages_for_openai(messages);
                 let mut body = serde_json::json!({
                     "model": pure_model, "messages": clean_messages, "stream": true,
-                    "temperature": config.temperature.unwrap_or(0.7),
+                    "temperature": config.temperature.unwrap_or_else(|| default_temperature(&config.model)),
                     "max_tokens": resolved_max_tokens,
                     "stream_options": {"include_usage": true},
                 });
@@ -1012,7 +1030,7 @@ impl LlmClient {
                 }
                 let mut body = serde_json::json!({
                     "model": pure_model, "messages": clean_messages, "stream": true,
-                    "temperature": config.temperature.unwrap_or(1.0),
+                    "temperature": config.temperature.unwrap_or_else(|| default_temperature(&config.model)),
                     "max_tokens": resolved_max_tokens,
                 });
                 log::debug!("body 构建完成，添加 system+tools...");

@@ -130,7 +130,7 @@ pub async fn update_agent(
     let mut set_clauses = Vec::new();
     if name.is_some() { set_clauses.push("name = ?"); }
     if model.is_some() { set_clauses.push("model = ?"); }
-    if temperature.is_some() { set_clauses.push("temperature = ?"); }
+    if temperature.is_some() { set_clauses.push("temperature = ?"); }  // temperature=0 表示自动（写入 NULL）
     if max_tokens.is_some() { set_clauses.push("max_tokens = ?"); }
     if config.is_some() { set_clauses.push("config = ?"); }
 
@@ -143,7 +143,10 @@ pub async fn update_agent(
     let mut query = sqlx::query(&sql);
     if let Some(ref v) = name { query = query.bind(v); }
     if let Some(ref v) = model { query = query.bind(v); }
-    if let Some(v) = temperature { query = query.bind(v); }
+    if let Some(v) = temperature {
+        // temperature=0 是前端约定的"自动"信号，写入 NULL 让后端根据模型/意图决定
+        if v == 0.0 { query = query.bind(Option::<f64>::None); } else { query = query.bind(v); }
+    }
     if let Some(v) = max_tokens { query = query.bind(v); }
     if let Some(ref v) = config { query = query.bind(v); }
     query = query.bind(now);

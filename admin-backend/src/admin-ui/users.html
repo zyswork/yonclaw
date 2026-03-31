@@ -125,19 +125,24 @@ async function loadUsers() {
     usersData = usersRes || [];
     if (!Array.isArray(usersData)) usersData = usersRes.users || usersRes.data || [];
 
-    // 按用户分组设备
+    // 按用户分组设备（userId 可能是 user.id、email 或 name）
     devicesMap = {};
     (devicesRes.data || []).forEach(d => {
-      if (!devicesMap[d.userId]) devicesMap[d.userId] = [];
-      devicesMap[d.userId].push(d);
+      const uid = d.userId || '';
+      // 按原始 userId 索引
+      if (uid) {
+        if (!devicesMap[uid]) devicesMap[uid] = [];
+        devicesMap[uid].push(d);
+      }
     });
 
     // 按用户统计错误数
     errorsMap = {};
     const d7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
     (errorsRes.data || []).forEach(e => {
-      if (e.createdAt >= d7 && e.userId) {
-        errorsMap[e.userId] = (errorsMap[e.userId] || 0) + 1;
+      const uid = e.userId || '';
+      if (e.createdAt >= d7 && uid) {
+        errorsMap[uid] = (errorsMap[uid] || 0) + 1;
       }
     });
 
@@ -150,8 +155,9 @@ async function loadUsers() {
 function renderUsers() {
   const tbody = document.getElementById('userTable');
   tbody.innerHTML = usersData.map(u => {
-    const devices = devicesMap[u.id] || [];
-    const errorCount = errorsMap[u.id] || 0;
+    // 匹配设备：按 user.id / user.email / user.name 查找
+    const devices = devicesMap[u.id] || devicesMap[u.email] || devicesMap[u.name] || [];
+    const errorCount = errorsMap[u.id] || errorsMap[u.email] || errorsMap[u.name] || 0;
     const lastActive = devices.length > 0 ? devices.sort((a,b) => b.lastSeen?.localeCompare(a.lastSeen || ''))[0].lastSeen : null;
     const deviceTags = devices.map(d => {
       const online = d.isOnline;

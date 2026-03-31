@@ -53,18 +53,81 @@ fn format_token_count(tokens: usize) -> String {
     else { format!("{}", tokens) }
 }
 
-/// 为压缩任务选择轻量模型（省钱+快速）
+/// 为后台任务（经验提取、压缩、cron）选择模型
+/// 优先级：全局 background_model 设置 > 自动推断轻量模型 > agent 自身模型
+/// 为后台任务构建完整的 LlmConfig（含正确的 provider/api_key/base_url）
+/// 如果 background_model 来自不同 provider，会自动查找对应 provider 配置
+pub async fn build_compact_llm_config(agent_config: &super::llm::LlmConfig, pool: &sqlx::SqlitePool) -> super::llm::LlmConfig {
+    let compact_model = pick_compact_model(&agent_config.model);
+    let (_, pure_model) = crate::channels::parse_qualified_model(&compact_model);
+
+    // 如果 compact_model 带 provider 前缀（如 "moonshot/kimi-k2.5"），查找该 provider 的配置
+    if compact_model.contains('/') {
+        if let Ok(Some(providers_json)) = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = 'providers'"
+        ).fetch_optional(pool).await {
+            if let Ok(providers) = serde_json::from_str::<Vec<serde_json::Value>>(&providers_json) {
+                for p in &providers {
+                    if let Some(models) = p["models"].as_array() {
+                        let has_model = models.iter().any(|m| {
+                            let mid = m["id"].as_str().unwrap_or("");
+                            mid.eq_ignore_ascii_case(pure_model) || mid.eq_ignore_ascii_case(&compact_model)
+                        });
+                        if has_model {
+                            if let (Some(api_key), Some(base_url)) = (p["apiKey"].as_str(), p["baseUrl"].as_str()) {
+                                let pid = p["id"].as_str().unwrap_or("");
+                                let api_type = p["apiType"].as_str().unwrap_or("openai");
+                                log::info!("compact LLM: 使用 provider={} model={}", pid, pure_model);
+                                return super::llm::LlmConfig {
+                                    provider: api_type.to_string(),
+                                    api_key: api_key.to_string(),
+                                    model: format!("{}/{}", pid, pure_model),
+                                    base_url: Some(base_url.to_string()),
+                                    temperature: Some(0.3),
+                                    max_tokens: Some(512),
+                                    thinking_level: None,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback：用 agent 自己的 provider + compact model
+    super::llm::LlmConfig {
+        provider: agent_config.provider.clone(),
+        api_key: agent_config.api_key.clone(),
+        model: compact_model,
+        base_url: agent_config.base_url.clone(),
+        temperature: Some(0.3),
+        max_tokens: Some(512),
+        thinking_level: None,
+    }
+}
+
 pub fn pick_compact_model(agent_model: &str) -> String {
+    // 1. 检查全局 background_model 设置（由用户在设置界面配置）
+    if let Some(pool) = crate::telemetry::get_global_pool() {
+        if let Ok(Some(bg_model)) = futures::executor::block_on(
+            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'background_model'")
+                .fetch_optional(pool)
+        ) {
+            if !bg_model.is_empty() {
+                return bg_model;
+            }
+        }
+    }
+
+    // 2. 如果 agent 已经是轻量模型，直接用
     let m = agent_model.to_lowercase();
-    // 如果 agent 已经是轻量模型，直接用
     if m.contains("mini") || m.contains("haiku") || m.contains("flash") || m.contains("turbo") {
         return agent_model.to_string();
     }
-    // 根据 provider 系列选择对应的最新轻量模型
-    if m.contains("gpt-5") { return "gpt-5.1-codex-mini".to_string(); }
-    if m.contains("gpt-4") { return "gpt-4o-mini".to_string(); }
+
+    // 3. 自动推断同系列的轻量模型（用户未配置 background_model 时的兜底）
     if m.contains("gpt") || m.contains("openai") { return "gpt-4o-mini".to_string(); }
-    if m.contains("claude-opus-4") || m.contains("claude-sonnet-4") { return "claude-haiku-4-5-20251001".to_string(); }
     if m.contains("claude") { return "claude-haiku-4-5-20251001".to_string(); }
     if m.contains("deepseek") { return "deepseek-chat".to_string(); }
     if m.contains("qwen") { return "qwen-turbo".to_string(); }
@@ -688,6 +751,24 @@ impl Orchestrator {
         log::info!("IntentGate: {:?} (confidence={:.1}, filter={:?})", intent.intents, intent.confidence, intent.tool_filter);
         final_tool_defs = super::intent_gate::filter_tools(final_tool_defs, &intent.tool_filter);
 
+        // 4b-2. 意图感知温度：当用户未显式设置温度时，根据意图推断
+        // 优先级：用户显式设置 > 意图推断 > 模型默认值（llm::default_temperature）
+        let intent_temperature: Option<f64> = if agent.temperature.is_none() {
+            if intent.intents.contains(&super::intent_gate::Intent::CodeChange)
+                || intent.intents.contains(&super::intent_gate::Intent::Dangerous) {
+                log::info!("意图感知温度: 0.3 (意图={:?}, 用户未显式设置)", intent.intents);
+                Some(0.3)  // 代码变更/危险操作：精确保守
+            } else if intent.intents.contains(&super::intent_gate::Intent::Question)
+                || intent.intents.contains(&super::intent_gate::Intent::Research) {
+                log::info!("意图感知温度: 0.7 (意图={:?}, 用户未显式设置)", intent.intents);
+                Some(0.7)  // 问答/调研：均衡
+            } else {
+                None  // 无明确意图，由 llm::default_temperature 兜底
+            }
+        } else {
+            None  // 用户已显式设置，不覆盖
+        };
+
         // 4c. 技能激活：根据用户消息匹配技能，注册技能工具
         let mut skill_tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
         // 检查 Node.js 运行时，为技能工具注入 PATH
@@ -825,6 +906,8 @@ impl Orchestrator {
             // 无压缩：使用完整结构化历史
             log::info!("加载 {} 条结构化历史消息", structured_history.len());
             messages.extend(structured_history);
+            // 修复历史消息中可能断裂的 tool_call/tool_result 配对
+            super::context_guard::repair_tool_pairing(&mut messages);
         } else {
             // Fallback: 旧的纯文本历史
             let history = memory::conversation::get_history(&self.pool, agent_id, session_id, 20).await.unwrap_or_default();
@@ -1047,7 +1130,7 @@ impl Orchestrator {
         let config = LlmConfig {
             provider: provider.to_string(), api_key: api_key.to_string(),
             model: selected_model, base_url: base_url.map(|s| s.to_string()),
-            temperature: agent.temperature, max_tokens: agent.max_tokens,
+            temperature: agent.temperature.or(intent_temperature), max_tokens: agent.max_tokens,
             thinking_level,
         };
         let system_prompt_opt = if provider == "anthropic" { Some(system_prompt.as_str()) } else { None };
@@ -1225,14 +1308,10 @@ impl Orchestrator {
                     let prompt = format!(
                         "请将以下对话压缩为简洁摘要（3-5 句话），保留关键决策、任务和上下文：\n\n{}", text
                     );
-                    let client = LlmClient::new(LlmConfig {
-                        provider: cfg.provider.clone(), api_key: cfg.api_key.clone(),
-                        model: pick_compact_model(&cfg.model), base_url: cfg.base_url.clone(),
-                        temperature: Some(0.3), max_tokens: Some(512),
-                        thinking_level: None,
-                    });
+                    let compact_cfg = build_compact_llm_config(&cfg, &pool).await;
+                    let client = LlmClient::new(compact_cfg);
                     let msgs = vec![serde_json::json!({"role": "user", "content": prompt})];
-                    let (tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
                     if let Ok(resp) = client.call_stream(&msgs, None, None, tx).await {
                         if !resp.content.trim().is_empty() {
                             let _ = memory::conversation::update_session_summary(&pool, &sid, resp.content.trim()).await;
@@ -1259,7 +1338,7 @@ impl Orchestrator {
             let aid = agent_id.to_string();
             let sid = session_id.to_string();
             let wp = workspace_path.clone();
-            let learner_llm_config = config.clone();
+            let learner_llm_config = build_compact_llm_config(&config, &self.pool).await;
             tokio::spawn(async move {
                 // 确保 DB schema 有 access_count / unused_recall_count 列
                 super::memory_eviction::ensure_schema(&pool).await;

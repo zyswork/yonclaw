@@ -133,12 +133,12 @@ impl AgentStore {
 
         sqlx::query("INSERT INTO agents (id, name, system_prompt, model, temperature, max_tokens, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&id).bind(name).bind(system_prompt).bind(model)
-            .bind(0.7f64).bind(2048i32).bind(&workspace_path).bind(now).bind(now)
+            .bind(Option::<f64>::None).bind(2048i32).bind(&workspace_path).bind(now).bind(now)
             .execute(&self.pool).await.map_err(|e| format!("创建 Agent 失败: {}", e))?;
 
         log::info!("Agent 已注册: {} ({})", name, id);
         self.invalidate_cache(&id);
-        Ok(Agent { id, name: name.to_string(), system_prompt: system_prompt.to_string(), model: model.to_string(), temperature: 0.7, max_tokens: 2048, created_at: now, updated_at: now, config_version: Some(1), config: None })
+        Ok(Agent { id, name: name.to_string(), system_prompt: system_prompt.to_string(), model: model.to_string(), temperature: 0.0, max_tokens: 2048, created_at: now, updated_at: now, config_version: Some(1), config: None })
     }
 
     /// 列出所有 Agent
@@ -147,7 +147,7 @@ impl AgentStore {
             .fetch_all(&self.pool).await.map_err(|e| format!("查询 Agent 列表失败: {}", e))?;
         Ok(rows.into_iter().map(|a| Agent {
             id: a.id, name: a.name, system_prompt: a.system_prompt, model: a.model,
-            temperature: a.temperature.unwrap_or(0.7), max_tokens: a.max_tokens.unwrap_or(2048),
+            temperature: a.temperature.unwrap_or(0.7), max_tokens: a.max_tokens.unwrap_or(2048),  // 注意：此处 0.7 仅用于 AgentStore::Agent（非 LlmConfig），实际推理温度由 llm::default_temperature 决定
             created_at: a.created_at, updated_at: a.updated_at,
             config_version: a.config_version, config: a.config,
         }).collect())

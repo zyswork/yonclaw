@@ -320,6 +320,27 @@ pub fn enforce(
     // Step 5: 配对修复
     repair_tool_pairing(messages);
 
+    // 最终安全网：如果仍有未配对的 tool_call，强制补全
+    let final_info = rebuild_info(messages);
+    let final_responded: HashSet<String> = messages.iter()
+        .filter(|m| m["role"].as_str() == Some("tool"))
+        .filter_map(|m| m["tool_call_id"].as_str().map(|s| s.to_string()))
+        .collect();
+    let mut final_missing: Vec<(String, String, usize)> = final_info.iter()
+        .filter(|(id, _)| !final_responded.contains(*id))
+        .map(|(id, (name, idx))| (id.clone(), name.clone(), *idx))
+        .collect();
+    if !final_missing.is_empty() {
+        log::warn!("ContextGuard: 修复后仍有 {} 个 tool_call 缺少 response，强制补全", final_missing.len());
+        final_missing.sort_by(|a, b| b.2.cmp(&a.2));
+        for (id, name, asst_idx) in final_missing {
+            let pos = find_insert_pos(messages, asst_idx);
+            messages.insert(pos, serde_json::json!({
+                "role": "tool", "tool_call_id": id, "name": name, "content": "[context compacted]"
+            }));
+        }
+    }
+
     let tokens_after = estimate_total(messages);
     let removed = original_len.saturating_sub(messages.len());
     let modified = compacted > 0 || removed > 0;
@@ -551,7 +572,7 @@ fn build_atomic_groups(
 // 配对修复
 // ────────────────────────────────────────────────────────────────
 
-fn repair_tool_pairing(messages: &mut Vec<serde_json::Value>) {
+pub fn repair_tool_pairing(messages: &mut Vec<serde_json::Value>) {
     // 收集 assistant 的 tool_call ID → (name, assistant 索引)
     let mut tool_call_info: HashMap<String, (String, usize)> = HashMap::new();
     for (i, msg) in messages.iter().enumerate() {

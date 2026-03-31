@@ -15,6 +15,7 @@ import {
 } from './routes/mod.js'
 import authRouter from './routes/auth.js'
 import telemetryRouter from './routes/telemetry.js'
+import updateRouter from './routes/update.js'
 import { setupBridgeWebSocket } from './routes/bridge.js'
 import { authMiddleware } from './middleware/auth.js'
 import { isAppError } from './utils/errors.js'
@@ -123,6 +124,7 @@ app.use('/api/v1/search', authMiddleware, searchRouter)
 
 // 遥测 API（部分端点无需认证，认证在路由内部处理）
 app.use('/api/v1/telemetry', telemetryRouter)
+app.use('/api/v1/update', updateRouter)
 
 // 管理后台静态页面（HTML 文件在 src/ 目录下，不被 tsc 编译，需要从 src 目录引用）
 app.use('/admin', express.static(path.join(__dirname, '..', 'src', 'admin-ui')))

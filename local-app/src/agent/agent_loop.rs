@@ -223,6 +223,9 @@ pub async fn run_agent_loop(
             });
         }
 
+        // 发送前最终安全网：确保所有 tool_call 有 response（防止 400 Bad Request）
+        ensure_tool_call_responses(&mut messages);
+
         let llm_start = std::time::Instant::now();
         // 通过 provider_registry 或 fallback 到传统 LlmClient
         let call_result = if let Some(p) = registry_provider {
@@ -1051,4 +1054,98 @@ mod tests {
         append_assistant_message(&mut messages, &response, "openai");
         assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 1);
     }
+}
+
+/// 确保所有 assistant 的 tool_calls 都有对应的 tool response
+/// 参照 OpenClaw 的 repairToolUseResultPairing：完全重建消息顺序
+/// assistant(tool_calls) 后面必须紧跟所有对应的 tool response
+fn ensure_tool_call_responses(messages: &mut Vec<serde_json::Value>) {
+    use std::collections::{HashMap, HashSet};
+
+    // 提取 assistant 消息中所有 tool_call id → name
+    fn extract_tool_calls(msg: &serde_json::Value) -> Vec<(String, String)> {
+        let mut calls = Vec::new();
+        // OpenAI 格式
+        if let Some(tcs) = msg["tool_calls"].as_array() {
+            for tc in tcs {
+                if let Some(id) = tc["id"].as_str() {
+                    let name = tc["function"]["name"].as_str()
+                        .or_else(|| tc["name"].as_str())
+                        .unwrap_or("unknown");
+                    calls.push((id.to_string(), name.to_string()));
+                }
+            }
+        }
+        // Anthropic 格式
+        if let Some(blocks) = msg["content"].as_array() {
+            for block in blocks {
+                if block["type"].as_str() == Some("tool_use") {
+                    if let Some(id) = block["id"].as_str() {
+                        let name = block["name"].as_str().unwrap_or("unknown");
+                        calls.push((id.to_string(), name.to_string()));
+                    }
+                }
+            }
+        }
+        calls
+    }
+
+    fn get_tool_result_id(msg: &serde_json::Value) -> Option<String> {
+        if msg["role"].as_str() == Some("tool") {
+            return msg["tool_call_id"].as_str().map(|s| s.to_string());
+        }
+        None
+    }
+
+    // 收集所有 tool response 到一个 map（id → message）
+    let mut tool_results: HashMap<String, serde_json::Value> = HashMap::new();
+    for msg in messages.iter() {
+        if let Some(id) = get_tool_result_id(msg) {
+            tool_results.entry(id).or_insert_with(|| msg.clone());
+        }
+    }
+
+    // 重建消息列表：assistant(tool_calls) 后紧跟所有 tool response
+    let mut rebuilt: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+    let mut used_result_ids: HashSet<String> = HashSet::new();
+    let mut repaired = 0usize;
+
+    for msg in messages.iter() {
+        let role = msg["role"].as_str().unwrap_or("");
+
+        // 跳过游离的 tool response（会在对应 assistant 后重新插入）
+        if role == "tool" {
+            continue;
+        }
+
+        rebuilt.push(msg.clone());
+
+        // 如果是带 tool_calls 的 assistant，紧跟插入所有 tool response
+        if role == "assistant" {
+            let calls = extract_tool_calls(msg);
+            if calls.is_empty() { continue; }
+
+            for (id, name) in &calls {
+                if let Some(result) = tool_results.get(id) {
+                    rebuilt.push(result.clone());
+                    used_result_ids.insert(id.clone());
+                } else {
+                    // 缺失的 tool response → 合成
+                    rebuilt.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "name": name,
+                        "content": "[result unavailable]"
+                    }));
+                    repaired += 1;
+                }
+            }
+        }
+    }
+
+    if repaired > 0 {
+        log::warn!("ensure_tool_call_responses: 重建消息顺序，合成 {} 个缺失的 tool response", repaired);
+    }
+
+    *messages = rebuilt;
 }

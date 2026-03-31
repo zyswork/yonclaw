@@ -17,6 +17,7 @@ import { toast } from '../hooks/useToast'
 import { useTheme, type Theme } from '../hooks/useTheme'
 import type { Locale } from '../i18n'
 import Select from '../components/Select'
+import ProviderModelSelector from '../components/ProviderModelSelector'
 import { useAuthStore } from '../store/authStore'
 
 interface ProviderModel {
@@ -282,7 +283,7 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
 ]
 
 /** 分类导航项定义 */
-type SectionId = 'profile' | 'providers' | 'appearance' | 'search' | 'heartbeat' | 'backup' | 'gateway' | 'embedding'
+type SectionId = 'profile' | 'providers' | 'appearance' | 'search' | 'heartbeat' | 'backup' | 'gateway' | 'embedding' | 'background'
 
 interface NavItem {
   id: SectionId
@@ -381,6 +382,15 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: 'background',
+    labelKey: 'settings.sectionBackground',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+      </svg>
+    ),
+  },
 ]
 
 export default function SettingsPage() {
@@ -438,7 +448,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const section = params.get('section')
-    const validSections: SectionId[] = ['profile', 'providers', 'appearance', 'search', 'heartbeat', 'backup', 'gateway', 'embedding']
+    const validSections: SectionId[] = ['profile', 'providers', 'appearance', 'search', 'heartbeat', 'backup', 'gateway', 'embedding', 'background']
     if (section && validSections.includes(section as SectionId)) {
       setActiveSection(section as SectionId)
     }
@@ -565,6 +575,7 @@ export default function SettingsPage() {
     backup: t('settings.sectionBackup') || 'Backup',
     gateway: t('settings.sectionCloud'),
     embedding: t('settings.sectionEmbedding'),
+    background: t('settings.sectionBackground'),
   }
 
   return (
@@ -919,14 +930,14 @@ export default function SettingsPage() {
                             onChange={(e) => setNewModelId(e.target.value)}
                             placeholder={t('settings.fieldModelId')}
                             style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addModelToForm() } }}
                           />
                           <input
                             value={newModelName}
                             onChange={(e) => setNewModelName(e.target.value)}
                             placeholder={t('settings.fieldModelDisplayName')}
                             style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModelToForm() } }}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addModelToForm() } }}
                           />
                           <button
                             onClick={addModelToForm}
@@ -1038,6 +1049,13 @@ export DEEPSEEK_API_KEY="sk-..."`}
           <div style={{ maxWidth: 700 }}>
             <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionEmbedding')}</h1>
             <AdvancedSettings initialSection="embedding" />
+          </div>
+        )}
+
+        {activeSection === 'background' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionBackground')}</h1>
+            <BackgroundModelSection />
           </div>
         )}
       </div>
@@ -1823,6 +1841,60 @@ function ThemeSettings() {
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+/** 后台模型配置 — 经验提取、上下文压缩、定时任务等使用的模型 */
+function BackgroundModelSection() {
+  const { t } = useI18n()
+  const [bgModel, setBgModel] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    invoke<string>('get_setting', { key: 'background_model' }).then(v => setBgModel(v || '')).catch(() => {})
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setMsg('')
+    try {
+      await invoke('set_setting', { key: 'background_model', value: bgModel })
+      setMsg(t('settings.successSaved'))
+    } catch (e) { setMsg(String(e)) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20 }}>
+        {t('settings.backgroundDesc')}
+      </p>
+
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6, color: 'var(--text-secondary)' }}>
+          {t('settings.backgroundModel')}
+        </label>
+        <ProviderModelSelector value={bgModel} onChange={setBgModel} requireKey={false} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>
+          {t('settings.backgroundModelHint')}
+        </span>
+      </div>
+
+      {msg && <p style={{ color: msg.includes('成功') || msg.includes('success') ? 'var(--accent)' : 'var(--error)', fontSize: 13, marginBottom: 12 }}>{msg}</p>}
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        style={{
+          padding: '10px 24px', border: 'none', borderRadius: 8,
+          backgroundColor: 'var(--accent)', color: 'white', cursor: 'pointer',
+          fontSize: 14, fontWeight: 600, opacity: saving ? 0.6 : 1,
+        }}
+      >
+        {saving ? '...' : t('settings.save')}
+      </button>
     </div>
   )
 }

@@ -406,7 +406,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
   const { t } = useI18n()
   const [name, setName] = useState(agent.name)
   const [model, setModel] = useState(agent.model)
-  const [temperature, setTemperature] = useState(agent.temperature ?? 0.7)
+  const [temperature, setTemperature] = useState<number | null>(agent.temperature === 0 || agent.temperature == null ? null : agent.temperature)
   const [maxTokens, setMaxTokens] = useState(agent.maxTokens ?? 2048)
   const [saving, setSaving] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
@@ -438,11 +438,11 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
         agentId,
         name: name !== agent.name ? name : null,
         model: model !== agent.model ? model : null,
-        temperature: temperature !== agent.temperature ? temperature : null,
-        maxTokens: maxTokens !== agent.maxTokens ? maxTokens : null,
+        temperature: temperature === null ? 0 : (temperature !== agent.temperature ? temperature : null),
+        maxTokens: null, // 自动管理，不手动设置
         config: configStr !== (agent.config || '{}') ? configStr : null,
       })
-      onUpdate({ ...agent, name, model, temperature, maxTokens, config: configStr })
+      onUpdate({ ...agent, name, model, temperature: temperature, maxTokens: null, config: configStr })
       setMsg(t('settings.successSaved'))
     } catch (e) { setMsg(String(e)) }
     finally { setSaving(false) }
@@ -499,28 +499,57 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
           </svg>
-          Parameters
+          {t('agentDetailSub.parameters') || 'Parameters'}
         </div>
 
+        {/* Temperature：四档快选（自动 + 三档手动）+ 滑块微调 */}
         <div style={{ marginBottom: 18 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)' }}>Temperature</label>
-            <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{temperature.toFixed(1)}</span>
+          <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 8 }}>
+            {t('agentDetailSub.tempLabel') || '回复风格'}
+          </label>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            {[
+              { value: null as number | null, label: t('agentCreate.tempAuto') },
+              { value: 0.3, label: t('agentCreate.tempPrecise') },
+              { value: 0.7, label: t('agentCreate.tempBalanced') },
+              { value: 1.2, label: t('agentCreate.tempCreative') },
+            ].map((opt, idx) => {
+              const isActive = opt.value === null ? temperature === null : (temperature !== null && Math.abs(temperature - opt.value) < 0.2)
+              return (
+                <button key={idx} onClick={() => setTemperature(opt.value)} style={{
+                  flex: 1, padding: '8px 4px', border: `1px solid ${isActive ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                  borderRadius: 8, cursor: 'pointer', fontSize: 12, textAlign: 'center',
+                  backgroundColor: isActive ? 'var(--accent-bg)' : 'transparent',
+                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontWeight: isActive ? 600 : 400,
+                }}>
+                  {opt.label}
+                </button>
+              )
+            })}
           </div>
-          <input type="range" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))}
-            style={{ width: '100%', accentColor: 'var(--accent)' }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
-            <span>{t('agentCreate.tempPrecise')}</span><span>{t('agentCreate.tempBalanced')}</span><span>{t('agentCreate.tempCreative')}</span>
-          </div>
+          {temperature === null ? (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 0' }}>
+              {t('agentCreate.tempAutoHint')}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="range" min="0" max="2" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                style={{ flex: 1, accentColor: 'var(--accent)' }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', minWidth: 30, textAlign: 'right' }}>{temperature.toFixed(1)}</span>
+            </div>
+          )}
         </div>
 
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)' }}>Max Tokens</label>
-            <span style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{maxTokens.toLocaleString()}</span>
+        {/* 上下文和 Max Tokens：自动，仅显示信息 */}
+        <div style={{ padding: '12px 14px', backgroundColor: 'var(--bg-elevated)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+            <span>{t('agentDetailSub.contextWindow') || '上下文窗口'}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{t('agentDetailSub.autoManaged') || '自动管理'}</span>
           </div>
-          <input type="range" min="256" max="8192" step="256" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))}
-            style={{ width: '100%', accentColor: 'var(--accent)' }} />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {t('agentDetailSub.contextHint') || '上下文长度和输出 token 根据模型自动配置，接近上限时自动压缩对话历史'}
+          </div>
         </div>
       </div>
 

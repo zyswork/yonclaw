@@ -18,7 +18,11 @@ pub fn init(pool: SqlitePool) {
     let _ = GLOBAL_POOL.set(pool);
 }
 
-/// 获取全局连接池
+/// 获取全局连接池（供其他模块使用）
+pub fn get_global_pool() -> Option<&'static SqlitePool> {
+    GLOBAL_POOL.get()
+}
+
 fn global_pool() -> Option<&'static SqlitePool> {
     GLOBAL_POOL.get()
 }
