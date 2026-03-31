@@ -225,13 +225,15 @@ router.get('/devices', authMiddleware, requireAdmin, (req: AuthRequest, res: Res
       SELECT d.*, u.name as userName, u.email as userEmail,
         CASE WHEN d.lastSeen >= ? THEN 1 ELSE 0 END as isOnline
       FROM device_heartbeats d
-      LEFT JOIN users u ON d.userId = u.id
+      LEFT JOIN users u ON d.userId = u.id OR d.userId = u.email OR d.userId = u.name
       ORDER BY d.lastSeen DESC
     `).all(tenMinutesAgo) as any[]
 
     res.json({
       data: rows.map(row => ({
         ...row,
+        userName: row.userName || row.userId || '--',
+        userEmail: row.userEmail || '',
         isOnline: row.isOnline === 1,
       })),
     })

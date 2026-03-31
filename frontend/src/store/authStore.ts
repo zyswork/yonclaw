@@ -52,6 +52,14 @@ export const useAuthStore = create<AuthStore>((set) => ({
     localStorage.setItem('user', JSON.stringify(user))
     markHadLogin()
     set({ token, user, isLoggedIn: true })
+    // 同步用户信息到 Tauri 后端（遥测用）
+    if (user?.email || user?.name) {
+      import('@tauri-apps/api/tauri').then(({ invoke }) => {
+        invoke('set_setting', { key: 'user_id', value: user.email || user.id || '' }).catch(() => {})
+        invoke('set_setting', { key: 'user_name', value: user.name || '' }).catch(() => {})
+        invoke('set_setting', { key: 'user_email', value: user.email || '' }).catch(() => {})
+      }).catch(() => {})
+    }
   },
   logout: () => {
     localStorage.removeItem('token')
@@ -70,6 +78,14 @@ export const useAuthStore = create<AuthStore>((set) => ({
         const user = JSON.parse(userStr) as User
         markHadLogin()
         set({ token, user, isLoggedIn: true })
+        // 确保 Tauri 后端也有用户信息（遥测用）
+        if (user?.email || user?.name) {
+          import('@tauri-apps/api/tauri').then(({ invoke }) => {
+            invoke('set_setting', { key: 'user_id', value: user.email || user.id || '' }).catch(() => {})
+            invoke('set_setting', { key: 'user_name', value: user.name || '' }).catch(() => {})
+            invoke('set_setting', { key: 'user_email', value: user.email || '' }).catch(() => {})
+          }).catch(() => {})
+        }
       } catch {
         // JSON 解析失败，清理无效数据
         localStorage.removeItem('token')

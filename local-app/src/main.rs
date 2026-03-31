@@ -423,7 +423,8 @@ async fn main() {
                     let tools = bridge_orch.tool_manager().get_tool_definitions()
                         .into_iter().map(|t| t.name).collect::<Vec<_>>();
 
-                    let device_id = format!("desktop-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+                    // 使用持久化的 device_id（与 telemetry 共享，重启不变）
+                    let device_id = crate::telemetry::get_or_create_device_id_public(&bridge_pool).await;
 
                     let config = bridge::BridgeConfig {
                         gateway_url: url,

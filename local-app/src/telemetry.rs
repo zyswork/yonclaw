@@ -39,6 +39,11 @@ fn platform() -> &'static str {
 // ─── Device ID ───────────────────────────────────────────────
 
 /// 获取或创建设备 ID（持久化到 settings 表）
+/// 公开的持久化 device_id 获取（供 Bridge 等模块共享）
+pub async fn get_or_create_device_id_public(pool: &SqlitePool) -> String {
+    get_or_create_device_id(pool).await
+}
+
 async fn get_or_create_device_id(pool: &SqlitePool) -> String {
     // 读取已有的 device_id
     let existing: Option<String> = sqlx::query_scalar(
@@ -72,20 +77,14 @@ async fn get_or_create_device_id(pool: &SqlitePool) -> String {
 
 /// 获取 userId（从 settings 表的 profile.nickname 或 user_id）
 async fn get_user_id(pool: &SqlitePool) -> String {
-    // 优先使用 user_id
-    if let Ok(Some(uid)) = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM settings WHERE key = 'user_id'"
-    ).fetch_optional(pool).await {
-        if !uid.is_empty() {
-            return uid;
-        }
-    }
-    // 降级到 profile.nickname
-    if let Ok(Some(nick)) = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM settings WHERE key = 'profile.nickname'"
-    ).fetch_optional(pool).await {
-        if !nick.is_empty() {
-            return nick;
+    // 按优先级查找用户标识：user_id > user_email > user_name > profile.nickname
+    for key in &["user_id", "user_email", "user_name", "profile.nickname"] {
+        if let Ok(Some(val)) = sqlx::query_scalar::<_, String>(
+            "SELECT value FROM settings WHERE key = ?"
+        ).bind(key).fetch_optional(pool).await {
+            if !val.is_empty() {
+                return val;
+            }
         }
     }
     "anonymous".to_string()

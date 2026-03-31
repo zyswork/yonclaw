@@ -230,12 +230,11 @@ export function initializeDatabase() {
       errorCode TEXT,
       message TEXT,
       context TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (userId) REFERENCES users(id)
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
 
-  // 设备心跳表
+  // 设备心跳表（userId 为桌面端上报的 email/name，不做 FK 约束）
   sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS device_heartbeats (
       id TEXT PRIMARY KEY,
@@ -247,8 +246,7 @@ export function initializeDatabase() {
       agentCount INTEGER DEFAULT 0,
       sessionCount INTEGER DEFAULT 0,
       lastModel TEXT,
-      lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (userId) REFERENCES users(id)
+      lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
 
