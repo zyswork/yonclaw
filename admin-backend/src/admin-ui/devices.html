@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设备列表 - XianZhu 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:600}
+.nav{display:flex;gap:16px}
+.nav a{padding:6px 12px;border-radius:6px;color:#c9d1d9;font-size:14px}
+.nav a:hover,.nav a.active{background:#21262d;color:#f0f6fc;text-decoration:none}
+.container{max-width:1400px;margin:0 auto;padding:24px}
+.summary{display:flex;gap:16px;margin-bottom:20px}
+.summary-item{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 20px;font-size:13px}
+.summary-item .num{font-size:20px;font-weight:700;margin-right:6px}
+.summary-item .num.green{color:#3fb950}
+.summary-item .num.gray{color:#8b949e}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:600;position:sticky;top:0;cursor:pointer;user-select:none}
+th:hover{color:#f0f6fc}
+th.sorted-asc::after{content:' ^';color:#58a6ff}
+th.sorted-desc::after{content:' v';color:#58a6ff}
+td{padding:10px 12px;border-bottom:1px solid #21262d}
+tr:hover td{background:#161b22}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.online{background:#3fb950}
+.dot.offline{background:#484f58}
+.status-text{font-size:12px}
+.device-id{font-family:monospace;font-size:12px;color:#8b949e}
+.login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100}
+.login-box{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;width:360px}
+.login-box h2{margin-bottom:20px;text-align:center}
+.login-box input{width:100%;padding:10px 12px;margin-bottom:12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e1e4e8;font-size:14px}
+.login-box button{width:100%;padding:10px;background:#238636;border:none;border-radius:6px;color:#fff;font-size:14px;cursor:pointer;font-weight:600}
+.login-box .error{color:#f85149;font-size:13px;margin-bottom:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>设备列表</h1>
+  <div class="nav">
+    <a href="/admin/">仪表盘</a>
+    <a href="/admin/errors.html">错误监控</a>
+    <a href="/admin/users.html">用户概览</a>
+    <a href="/admin/devices.html" class="active">设备列表</a>
+    <a href="#" id="logoutBtn">退出</a>
+  </div>
+</div>
+
+<div class="login-overlay hidden" id="loginOverlay">
+  <div class="login-box">
+    <h2>管理员登录</h2>
+    <div class="error hidden" id="loginError"></div>
+    <input type="email" id="loginEmail" placeholder="邮箱" value="admin@xianzhu.com">
+    <input type="password" id="loginPassword" placeholder="密码">
+    <button id="loginBtn">登录</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="summary" id="summary"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th data-sort="deviceId">设备 ID</th>
+        <th data-sort="userName">用户</th>
+        <th data-sort="platform">平台</th>
+        <th data-sort="appVersion">版本</th>
+        <th data-sort="ip">IP</th>
+        <th data-sort="agentCount">Agent 数</th>
+        <th data-sort="sessionCount">会话数</th>
+        <th data-sort="lastModel">最近模型</th>
+        <th data-sort="isOnline">状态</th>
+        <th data-sort="lastSeen">最后活跃</th>
+      </tr>
+    </thead>
+    <tbody id="deviceTable"></tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api/v1';
+let devicesData = [];
+let sortField = 'lastSeen';
+let sortDir = 'desc';
+
+function getToken() { return localStorage.getItem('admin_token'); }
+function setToken(t) { localStorage.setItem('admin_token', t); }
+function clearToken() { localStorage.removeItem('admin_token'); }
+function authHeaders() { const t = getToken(); return t ? { 'Authorization': 'Bearer ' + t } : {}; }
+async function apiFetch(url) {
+  const res = await fetch(API + url, { headers: authHeaders() });
+  if (res.status === 401) { showLogin(); throw new Error('未认证'); }
+  return res.json();
+}
+function showLogin() { document.getElementById('loginOverlay').classList.remove('hidden'); }
+function hideLogin() { document.getElementById('loginOverlay').classList.add('hidden'); }
+document.getElementById('loginBtn').onclick = async () => {
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  try {
+    const res = await fetch(API + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || '登录失败'; errEl.classList.remove('hidden'); return; }
+    setToken(data.token); hideLogin(); loadDevices();
+  } catch (e) { errEl.textContent = '网络错误'; errEl.classList.remove('hidden'); }
+};
+document.getElementById('logoutBtn').onclick = (e) => { e.preventDefault(); clearToken(); showLogin(); };
+
+function formatTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+async function loadDevices() {
+  try {
+    const data = await apiFetch('/telemetry/devices');
+    devicesData = data.data || [];
+    renderSummary();
+    renderDevices();
+  } catch (e) {
+    console.error('加载设备失败:', e);
+  }
+}
+
+function renderSummary() {
+  const total = devicesData.length;
+  const online = devicesData.filter(d => d.isOnline).length;
+  const offline = total - online;
+  document.getElementById('summary').innerHTML = `
+    <div class="summary-item"><span class="num green">${online}</span>在线</div>
+    <div class="summary-item"><span class="num gray">${offline}</span>离线</div>
+    <div class="summary-item"><span class="num" style="color:#58a6ff">${total}</span>总计</div>
+  `;
+}
+
+function renderDevices() {
+  // 排序
+  const sorted = [...devicesData].sort((a, b) => {
+    let va = a[sortField], vb = b[sortField];
+    if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+    if (typeof va === 'number') return sortDir === 'asc' ? va - vb : vb - va;
+    va = (va || '').toString(); vb = (vb || '').toString();
+    return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+
+  const tbody = document.getElementById('deviceTable');
+  tbody.innerHTML = sorted.map(d => `
+    <tr>
+      <td><span class="device-id">${d.deviceId ? d.deviceId.substring(0, 12) : '--'}</span></td>
+      <td>${d.userEmail || d.userName || d.userId || '--'}</td>
+      <td>${d.platform || '--'}</td>
+      <td>${d.appVersion || '--'}</td>
+      <td>${d.ip || '--'}</td>
+      <td>${d.agentCount ?? 0}</td>
+      <td>${d.sessionCount ?? 0}</td>
+      <td>${d.lastModel || '--'}</td>
+      <td><span class="dot ${d.isOnline ? 'online' : 'offline'}"></span><span class="status-text">${d.isOnline ? '在线' : '离线'}</span></td>
+      <td>${formatTime(d.lastSeen)}</td>
+    </tr>
+  `).join('');
+
+  // 更新排序指示器
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    if (th.dataset.sort === sortField) {
+      th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+    }
+  });
+}
+
+// 排序点击
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.onclick = () => {
+    const field = th.dataset.sort;
+    if (sortField === field) { sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }
+    else { sortField = field; sortDir = 'desc'; }
+    renderDevices();
+  };
+});
+
+if (!getToken()) { showLogin(); } else { loadDevices(); }
+setInterval(() => { if (getToken()) loadDevices(); }, 30000);
+</script>
+</body>
+</html>

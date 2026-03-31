@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用户概览 - XianZhu 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:600}
+.nav{display:flex;gap:16px}
+.nav a{padding:6px 12px;border-radius:6px;color:#c9d1d9;font-size:14px}
+.nav a:hover,.nav a.active{background:#21262d;color:#f0f6fc;text-decoration:none}
+.container{max-width:1400px;margin:0 auto;padding:24px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:600;position:sticky;top:0}
+td{padding:10px 12px;border-bottom:1px solid #21262d;vertical-align:top}
+tr:hover td{background:#161b22}
+tr.expandable{cursor:pointer}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.dot.online{background:#3fb950}
+.dot.offline{background:#484f58}
+.device-tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:#21262d;margin:2px;white-space:nowrap}
+.expanded-row td{background:#0d1117;padding:0}
+.expanded-content{padding:12px 24px}
+.expanded-content table{margin-top:8px}
+.expanded-content th{background:#161b22}
+.login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100}
+.login-box{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;width:360px}
+.login-box h2{margin-bottom:20px;text-align:center}
+.login-box input{width:100%;padding:10px 12px;margin-bottom:12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e1e4e8;font-size:14px}
+.login-box button{width:100%;padding:10px;background:#238636;border:none;border-radius:6px;color:#fff;font-size:14px;cursor:pointer;font-weight:600}
+.login-box .error{color:#f85149;font-size:13px;margin-bottom:8px}
+.hidden{display:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-error{background:#3d1014;color:#f85149}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>用户概览</h1>
+  <div class="nav">
+    <a href="/admin/">仪表盘</a>
+    <a href="/admin/errors.html">错误监控</a>
+    <a href="/admin/users.html" class="active">用户概览</a>
+    <a href="/admin/devices.html">设备列表</a>
+    <a href="#" id="logoutBtn">退出</a>
+  </div>
+</div>
+
+<div class="login-overlay hidden" id="loginOverlay">
+  <div class="login-box">
+    <h2>管理员登录</h2>
+    <div class="error hidden" id="loginError"></div>
+    <input type="email" id="loginEmail" placeholder="邮箱" value="admin@xianzhu.com">
+    <input type="password" id="loginPassword" placeholder="密码">
+    <button id="loginBtn">登录</button>
+  </div>
+</div>
+
+<div class="container">
+  <table>
+    <thead>
+      <tr>
+        <th>用户名</th>
+        <th>邮箱</th>
+        <th>角色</th>
+        <th>设备</th>
+        <th>最近活跃</th>
+        <th>错误数 (7天)</th>
+      </tr>
+    </thead>
+    <tbody id="userTable"></tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api/v1';
+function getToken() { return localStorage.getItem('admin_token'); }
+function setToken(t) { localStorage.setItem('admin_token', t); }
+function clearToken() { localStorage.removeItem('admin_token'); }
+function authHeaders() { const t = getToken(); return t ? { 'Authorization': 'Bearer ' + t } : {}; }
+async function apiFetch(url) {
+  const res = await fetch(API + url, { headers: authHeaders() });
+  if (res.status === 401) { showLogin(); throw new Error('未认证'); }
+  return res.json();
+}
+function showLogin() { document.getElementById('loginOverlay').classList.remove('hidden'); }
+function hideLogin() { document.getElementById('loginOverlay').classList.add('hidden'); }
+document.getElementById('loginBtn').onclick = async () => {
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  try {
+    const res = await fetch(API + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || '登录失败'; errEl.classList.remove('hidden'); return; }
+    setToken(data.token); hideLogin(); loadUsers();
+  } catch (e) { errEl.textContent = '网络错误'; errEl.classList.remove('hidden'); }
+};
+document.getElementById('logoutBtn').onclick = (e) => { e.preventDefault(); clearToken(); showLogin(); };
+
+function formatTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+let usersData = [];
+let devicesMap = {};
+let errorsMap = {};
+
+async function loadUsers() {
+  try {
+    // 获取用户、设备、错误数据
+    const [usersRes, devicesRes, errorsRes] = await Promise.all([
+      apiFetch('/users/enterprise/001'),
+      apiFetch('/telemetry/devices'),
+      apiFetch('/telemetry/errors?limit=1000')
+    ]);
+
+    usersData = usersRes || [];
+    if (!Array.isArray(usersData)) usersData = usersRes.data || [];
+
+    // 按用户分组设备
+    devicesMap = {};
+    (devicesRes.data || []).forEach(d => {
+      if (!devicesMap[d.userId]) devicesMap[d.userId] = [];
+      devicesMap[d.userId].push(d);
+    });
+
+    // 按用户统计错误数
+    errorsMap = {};
+    const d7 = new Date(Date.now() - 7*24*60*60*1000).toISOString();
+    (errorsRes.data || []).forEach(e => {
+      if (e.createdAt >= d7 && e.userId) {
+        errorsMap[e.userId] = (errorsMap[e.userId] || 0) + 1;
+      }
+    });
+
+    renderUsers();
+  } catch (e) {
+    console.error('加载用户失败:', e);
+  }
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('userTable');
+  tbody.innerHTML = usersData.map(u => {
+    const devices = devicesMap[u.id] || [];
+    const errorCount = errorsMap[u.id] || 0;
+    const lastActive = devices.length > 0 ? devices.sort((a,b) => b.lastSeen?.localeCompare(a.lastSeen || ''))[0].lastSeen : null;
+    const deviceTags = devices.map(d => {
+      const online = d.isOnline;
+      return `<span class="device-tag"><span class="dot ${online ? 'online' : 'offline'}"></span>${d.platform || d.deviceId?.substring(0,8)}</span>`;
+    }).join('');
+
+    return `
+      <tr class="expandable" onclick="toggleExpand('${u.id}', this)">
+        <td>${u.name}</td>
+        <td>${u.email}</td>
+        <td>${u.role}</td>
+        <td>${deviceTags || '--'}</td>
+        <td>${formatTime(lastActive)}</td>
+        <td>${errorCount > 0 ? '<span class="badge badge-error">' + errorCount + '</span>' : '0'}</td>
+      </tr>
+      <tr class="expanded-row hidden" id="expand-${u.id}">
+        <td colspan="6">
+          <div class="expanded-content" id="expand-content-${u.id}">加载中...</div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function toggleExpand(userId, rowEl) {
+  const expandRow = document.getElementById('expand-' + userId);
+  if (!expandRow.classList.contains('hidden')) {
+    expandRow.classList.add('hidden');
+    return;
+  }
+  expandRow.classList.remove('hidden');
+
+  try {
+    const data = await apiFetch(`/telemetry/errors?userId=${userId}&limit=10`);
+    const rows = data.data || [];
+    const content = document.getElementById('expand-content-' + userId);
+
+    if (rows.length === 0) {
+      content.innerHTML = '<div style="color:#8b949e;padding:8px">该用户近期无错误报告</div>';
+      return;
+    }
+
+    content.innerHTML = `
+      <h4 style="margin-bottom:8px;font-size:13px;color:#8b949e">最近错误</h4>
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>错误码</th><th>消息</th><th>平台</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td>${formatTime(r.createdAt)}</td>
+              <td>${r.errorType}</td>
+              <td>${r.errorCode || '--'}</td>
+              <td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.message||'').replace(/"/g,'&quot;')}">${r.message || '--'}</td>
+              <td>${r.platform || '--'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    console.error('加载用户错误失败:', e);
+  }
+}
+
+if (!getToken()) { showLogin(); } else { loadUsers(); }
+</script>
+</body>
+</html>

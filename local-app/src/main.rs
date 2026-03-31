@@ -25,6 +25,7 @@ mod routing;
 mod runtime;
 mod scheduler;
 mod sop;
+mod telemetry;
 
 use std::sync::{Arc, Mutex};
 
@@ -507,6 +508,11 @@ async fn main() {
 
     // 首次运行时从 Gemini CLI 提取 OAuth credentials 并缓存
     tokio::spawn(async { handlers::oauth::seed_oauth_credentials().await });
+
+    // 初始化遥测模块并启动心跳（后台任务，不阻塞启动）
+    telemetry::init(pool_clone.clone());
+    telemetry::start_heartbeat(pool_clone.clone());
+    log::info!("遥测心跳已启动");
 
     // 记录初始化完成时间
     let init_elapsed = app_start_time.elapsed();

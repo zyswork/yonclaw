@@ -559,6 +559,17 @@ pub async fn run_agent_loop(
                 let scrubbed = scrub_credentials(&result_text);
                 messages.push(dispatcher.format_tool_result(&tc.id, &tc.name, &scrubbed));
 
+                // 遥测：工具执行失败时上报
+                if !success {
+                    crate::telemetry::report_error(
+                        "tool_error",
+                        "exec_fail",
+                        &result_text.chars().take(500).collect::<String>(),
+                        serde_json::json!({"tool": tc.name, "source": source, "duration_ms": duration_ms}),
+                        deps.pool.clone(),
+                    );
+                }
+
                 // A1 反思重试：工具失败且错误可重试时，注入反思提示帮助 LLM 自我修正
                 if !success {
                     let error_class = super::tools::ErrorClass::classify(&result_text);

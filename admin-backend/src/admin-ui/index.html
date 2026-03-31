@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XianZhu 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:600}
+.nav{display:flex;gap:16px}
+.nav a{padding:6px 12px;border-radius:6px;color:#c9d1d9;font-size:14px}
+.nav a:hover,.nav a.active{background:#21262d;color:#f0f6fc;text-decoration:none}
+.container{max-width:1200px;margin:0 auto;padding:24px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:32px}
+.stat-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px}
+.stat-card .label{font-size:13px;color:#8b949e;margin-bottom:8px}
+.stat-card .value{font-size:32px;font-weight:700}
+.stat-card .value.green{color:#3fb950}
+.stat-card .value.red{color:#f85149}
+.stat-card .value.blue{color:#58a6ff}
+.stat-card .value.yellow{color:#d29922}
+.section{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;margin-bottom:24px}
+.section h2{font-size:16px;margin-bottom:16px;color:#f0f6fc}
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.chart-box{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;min-height:180px}
+.chart-box h3{font-size:13px;color:#8b949e;margin-bottom:12px}
+.bar-chart .bar-item{display:flex;align-items:center;margin-bottom:8px;font-size:13px}
+.bar-chart .bar-label{width:120px;color:#c9d1d9;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-chart .bar-track{flex:1;height:20px;background:#21262d;border-radius:4px;margin:0 8px;overflow:hidden}
+.bar-chart .bar-fill{height:100%;background:#58a6ff;border-radius:4px;transition:width .3s}
+.bar-chart .bar-count{width:40px;text-align:right;color:#8b949e}
+.login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:100}
+.login-box{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;width:360px}
+.login-box h2{margin-bottom:20px;text-align:center}
+.login-box input{width:100%;padding:10px 12px;margin-bottom:12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e1e4e8;font-size:14px}
+.login-box button{width:100%;padding:10px;background:#238636;border:none;border-radius:6px;color:#fff;font-size:14px;cursor:pointer;font-weight:600}
+.login-box button:hover{background:#2ea043}
+.login-box .error{color:#f85149;font-size:13px;margin-bottom:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>XianZhu 管理后台</h1>
+  <div class="nav">
+    <a href="/admin/" class="active">仪表盘</a>
+    <a href="/admin/errors.html">错误监控</a>
+    <a href="/admin/users.html">用户概览</a>
+    <a href="/admin/devices.html">设备列表</a>
+    <a href="#" id="logoutBtn">退出</a>
+  </div>
+</div>
+
+<div class="login-overlay hidden" id="loginOverlay">
+  <div class="login-box">
+    <h2>管理员登录</h2>
+    <div class="error hidden" id="loginError"></div>
+    <input type="email" id="loginEmail" placeholder="邮箱" value="admin@xianzhu.com">
+    <input type="password" id="loginPassword" placeholder="密码">
+    <button id="loginBtn">登录</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">在线设备</div>
+      <div class="value green" id="onlineDevices">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">错误数 (24h)</div>
+      <div class="value red" id="errors24h">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">错误数 (7d)</div>
+      <div class="value yellow" id="errors7d">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">总设备数</div>
+      <div class="value blue" id="totalDevices">--</div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="section">
+      <h2>错误类型分布 (7天)</h2>
+      <div class="chart-box">
+        <div class="bar-chart" id="errorTypeChart"></div>
+      </div>
+    </div>
+    <div class="section">
+      <h2>平台分布 (7天)</h2>
+      <div class="chart-box">
+        <div class="bar-chart" id="platformChart"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>模型错误分布 (7天)</h2>
+    <div class="chart-box">
+      <div class="bar-chart" id="modelChart"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api/v1';
+
+function getToken() { return localStorage.getItem('admin_token'); }
+function setToken(t) { localStorage.setItem('admin_token', t); }
+function clearToken() { localStorage.removeItem('admin_token'); }
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { 'Authorization': 'Bearer ' + t, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+}
+
+async function apiFetch(url) {
+  const res = await fetch(API + url, { headers: authHeaders() });
+  if (res.status === 401) { showLogin(); throw new Error('未认证'); }
+  return res.json();
+}
+
+function showLogin() { document.getElementById('loginOverlay').classList.remove('hidden'); }
+function hideLogin() { document.getElementById('loginOverlay').classList.add('hidden'); }
+
+document.getElementById('loginBtn').onclick = async () => {
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  try {
+    const res = await fetch(API + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || '登录失败'; errEl.classList.remove('hidden'); return; }
+    setToken(data.token);
+    hideLogin();
+    loadDashboard();
+  } catch (e) { errEl.textContent = '网络错误'; errEl.classList.remove('hidden'); }
+};
+
+document.getElementById('logoutBtn').onclick = (e) => { e.preventDefault(); clearToken(); showLogin(); };
+
+function renderBarChart(containerId, data) {
+  const el = document.getElementById(containerId);
+  if (!data || Object.keys(data).length === 0) { el.innerHTML = '<div style="color:#8b949e;font-size:13px">暂无数据</div>'; return; }
+  const max = Math.max(...Object.values(data));
+  el.innerHTML = Object.entries(data).sort((a, b) => b[1] - a[1]).map(([label, count]) => `
+    <div class="bar-item">
+      <span class="bar-label" title="${label}">${label || '未知'}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${max > 0 ? (count / max * 100) : 0}%"></div></div>
+      <span class="bar-count">${count}</span>
+    </div>
+  `).join('');
+}
+
+async function loadDashboard() {
+  try {
+    const [stats, devices] = await Promise.all([
+      apiFetch('/telemetry/errors/stats'),
+      apiFetch('/telemetry/devices')
+    ]);
+
+    document.getElementById('errors24h').textContent = stats.total_24h;
+    document.getElementById('errors7d').textContent = stats.total_7d;
+
+    const devList = devices.data || [];
+    document.getElementById('totalDevices').textContent = devList.length;
+    document.getElementById('onlineDevices').textContent = devList.filter(d => d.isOnline).length;
+
+    renderBarChart('errorTypeChart', stats.by_type);
+    renderBarChart('platformChart', stats.by_platform);
+    renderBarChart('modelChart', stats.by_model);
+  } catch (e) {
+    console.error('加载仪表盘失败:', e);
+  }
+}
+
+// 启动
+if (!getToken()) { showLogin(); } else { loadDashboard(); }
+// 自动刷新
+setInterval(() => { if (getToken()) loadDashboard(); }, 30000);
+</script>
+</body>
+</html>

@@ -1119,6 +1119,12 @@ impl LlmClient {
                     }
                     log::error!("LLM HTTP 请求最终失败（{} 次尝试）: {}", MAX_RETRIES, e);
                     let raw = format!("LLM 连接失败（重试 {} 次后）: {}", MAX_RETRIES, e);
+                    crate::telemetry::report_error_global(
+                        crate::telemetry::extract_error_type(&raw),
+                        crate::telemetry::extract_error_code(&raw),
+                        &raw,
+                        serde_json::json!({"provider": config.provider, "model": config.model, "url": url}),
+                    );
                     return Err(classify_llm_error(&raw));
                 }
             };
@@ -1169,6 +1175,12 @@ impl LlmClient {
                     continue;
                 }
                 let raw = format!("LLM API 错误 {}: {}", status, safe_body);
+                crate::telemetry::report_error_global(
+                    crate::telemetry::extract_error_type(&raw),
+                    crate::telemetry::extract_error_code(&raw),
+                    &raw,
+                    serde_json::json!({"provider": config.provider, "model": config.model, "url": url, "status": status.as_u16()}),
+                );
                 return Err(classify_llm_error(&raw));
             }
             log::info!("LLM API 响应开始: status=200, 开始读取 SSE 流");
@@ -1244,6 +1256,12 @@ impl LlmClient {
                             if let Some(err_msg) = Self::extract_sse_error(&json) {
                                 log::error!("LLM API 返回错误事件: {}", err_msg);
                                 let raw = format!("LLM 服务端错误: {}", err_msg);
+                                crate::telemetry::report_error_global(
+                                    crate::telemetry::extract_error_type(&raw),
+                                    crate::telemetry::extract_error_code(&raw),
+                                    &raw,
+                                    serde_json::json!({"provider": config.provider, "model": config.model, "url": url}),
+                                );
                                 return Err(classify_llm_error(&raw));
                             }
                             Self::extract_usage(&json, &mut result);
@@ -1309,6 +1327,12 @@ impl LlmClient {
                         think_buffer.clear();
                         continue;
                     }
+                    crate::telemetry::report_error_global(
+                        crate::telemetry::extract_error_type(&e),
+                        crate::telemetry::extract_error_code(&e),
+                        &e,
+                        serde_json::json!({"provider": config.provider, "model": config.model, "url": url}),
+                    );
                     return Err(classify_llm_error(&e));
                 }
             }

@@ -218,6 +218,40 @@ export function initializeDatabase() {
     )
   `)
 
+  // 错误报告表
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS error_reports (
+      id TEXT PRIMARY KEY,
+      userId TEXT,
+      deviceId TEXT,
+      platform TEXT,
+      appVersion TEXT,
+      errorType TEXT NOT NULL,
+      errorCode TEXT,
+      message TEXT,
+      context TEXT,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (userId) REFERENCES users(id)
+    )
+  `)
+
+  // 设备心跳表
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS device_heartbeats (
+      id TEXT PRIMARY KEY,
+      userId TEXT,
+      deviceId TEXT NOT NULL UNIQUE,
+      platform TEXT,
+      appVersion TEXT,
+      ip TEXT,
+      agentCount INTEGER DEFAULT 0,
+      sessionCount INTEGER DEFAULT 0,
+      lastModel TEXT,
+      lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (userId) REFERENCES users(id)
+    )
+  `)
+
   // 创建索引
   sqliteDb.exec(`
     CREATE INDEX IF NOT EXISTS idx_users_enterprise ON users(enterpriseId);
@@ -236,6 +270,11 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_sync_queue_priority_status ON sync_queue(priority ASC, status, timestamp ASC);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_timestamp ON sync_queue(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_error_reports_userId ON error_reports(userId);
+    CREATE INDEX IF NOT EXISTS idx_error_reports_createdAt ON error_reports(createdAt);
+    CREATE INDEX IF NOT EXISTS idx_error_reports_errorType ON error_reports(errorType);
+    CREATE INDEX IF NOT EXISTS idx_device_heartbeats_userId ON device_heartbeats(userId);
+    CREATE INDEX IF NOT EXISTS idx_device_heartbeats_deviceId ON device_heartbeats(deviceId);
   `)
 
   // 种子数据：默认企业和管理员（仅在企业表为空时插入）
