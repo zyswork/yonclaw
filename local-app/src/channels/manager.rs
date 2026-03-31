@@ -49,8 +49,10 @@ impl ChannelManager {
             if let Err(e) = self.start_instance(&id, &agent_id, &channel_type, &creds_json).await {
                 log::error!("启动频道失败: {} ({}/{}): {}", id, channel_type, agent_id, e);
                 // 更新状态为 error
-                let _ = sqlx::query("UPDATE agent_channels SET status = 'error', status_message = ? WHERE id = ?")
-                    .bind(&e).bind(&id).execute(&self.pool).await;
+                if let Err(db_err) = sqlx::query("UPDATE agent_channels SET status = 'error', status_message = ? WHERE id = ?")
+                    .bind(&e).bind(&id).execute(&self.pool).await {
+                    log::warn!("更新频道状态失败 (id={}): {}", id, db_err);
+                }
             }
         }
     }
@@ -81,8 +83,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::telegram::start_polling(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("Telegram 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "feishu" => {
@@ -97,8 +101,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::feishu::start_feishu(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("Feishu 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "discord" => {
@@ -111,8 +117,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::discord::start_discord(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("Discord 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "slack" => {
@@ -127,8 +135,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::slack::start_slack(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("Slack 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "weixin" => {
@@ -141,8 +151,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::weixin::start_weixin(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("WeChat 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "wecom" => {
@@ -165,8 +177,10 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::wecom::start_wecom(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("WeCom 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             "dingtalk" => {
@@ -181,16 +195,20 @@ impl ChannelManager {
                     if let Err(e) = crate::channels::dingtalk::start_dingtalk(config, pool.clone(), orch, app, cancel_clone).await {
                         log::error!("DingTalk 实例 {} 退出: {}", id_owned, e);
                     }
-                    let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-                        .bind(&id_owned).execute(&pool).await;
+                    if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+                        .bind(&id_owned).execute(&pool).await {
+                        log::warn!("更新频道状态失败 (id={}): {}", id_owned, e);
+                    }
                 })
             }
             _ => return Err(format!("不支持的频道类型: {}", channel_type)),
         };
 
         // 更新状态
-        let _ = sqlx::query("UPDATE agent_channels SET status = 'running', status_message = NULL WHERE id = ?")
-            .bind(id).execute(&self.pool).await;
+        if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'running', status_message = NULL WHERE id = ?")
+            .bind(id).execute(&self.pool).await {
+            log::warn!("更新频道状态为 running 失败 (id={}): {}", id, e);
+        }
 
         let mut instances = self.instances.lock().unwrap_or_else(|p| p.into_inner());
         instances.insert(id.to_string(), ChannelInstance {
@@ -217,8 +235,10 @@ impl ChannelManager {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(3), inst.handle).await;
             log::info!("频道实例已停止: {} ({})", id, inst.channel_type);
         }
-        let _ = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
-            .bind(id).execute(&self.pool).await;
+        if let Err(e) = sqlx::query("UPDATE agent_channels SET status = 'stopped' WHERE id = ?")
+            .bind(id).execute(&self.pool).await {
+            log::warn!("更新频道状态为 stopped 失败 (id={}): {}", id, e);
+        }
     }
 
     /// 停止所有频道实例（用于应用退出清理）
@@ -285,10 +305,12 @@ impl ChannelManager {
                         log::info!("健康检查: 重启频道 {} ({})", id, ch_type);
                         if let Err(e) = manager.start_instance(id, &agent_id, &ch_type, &creds_json).await {
                             log::error!("健康检查: 重启频道 {} 失败: {}", id, e);
-                            let _ = sqlx::query("UPDATE agent_channels SET status = 'error', status_message = ? WHERE id = ?")
+                            if let Err(db_err) = sqlx::query("UPDATE agent_channels SET status = 'error', status_message = ? WHERE id = ?")
                                 .bind(&format!("健康检查重启失败: {}", e))
                                 .bind(id)
-                                .execute(&manager.pool).await;
+                                .execute(&manager.pool).await {
+                                log::warn!("更新频道状态失败 (id={}): {}", id, db_err);
+                            }
 
                             // 通知前端重启失败
                             let _ = manager.app_handle.emit_all("channel-status", serde_json::json!({

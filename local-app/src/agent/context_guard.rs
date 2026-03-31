@@ -647,24 +647,17 @@ pub fn repair_tool_pairing(messages: &mut Vec<serde_json::Value>) {
         messages.remove(idx);
     }
 
-    // 重写孤儿 tool_result
+    // 移除孤儿 tool_result（没有对应 assistant tool_call 的 tool 消息）
     let tool_call_info = rebuild_info(messages);
     let known_ids: HashSet<&String> = tool_call_info.keys().collect();
-    for msg in messages.iter_mut() {
+    messages.retain(|msg| {
         if msg["role"].as_str() != Some("tool") {
-            continue;
+            return true;
         }
         let tc_id = msg["tool_call_id"].as_str().unwrap_or("").to_string();
         let is_orphaned = tc_id.is_empty() || !known_ids.contains(&tc_id);
-        if is_orphaned {
-            let tool_name = msg["name"].as_str().unwrap_or("unknown");
-            let content = msg["content"].as_str().unwrap_or("");
-            *msg = serde_json::json!({
-                "role": "user",
-                "content": format!("[Tool `{tool_name}` returned: {content}]")
-            });
-        }
-    }
+        !is_orphaned
+    });
 
     // 合成缺失的 tool_result
     let tool_call_info = rebuild_info(messages);

@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-admin-backend",
+  "name": "xianzhu-admin-backend",
   "version": "0.2.0",
   "description": "OpenClaw 企业后台 API",
   "main": "dist/index.js",

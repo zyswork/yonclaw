@@ -16,7 +16,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'react-vendor': ['react', 'react-dom'],
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-viz': ['cytoscape', 'mermaid'],
+          'vendor-dompurify': ['dompurify'],
         },
       },
     },

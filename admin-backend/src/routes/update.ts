@@ -85,9 +85,13 @@ router.get('/check', (req: Request, res: Response) => {
  * 需要 Authorization: Bearer <PUBLISH_SECRET>
  */
 router.post('/publish', (req: Request, res: Response) => {
-  const authHeader = req.headers['authorization'] || ''
-  const publishSecret = process.env.UPDATE_PUBLISH_SECRET || 'xianzhu-publish-secret'
+  const publishSecret = process.env.UPDATE_PUBLISH_SECRET
+  if (!publishSecret) {
+    res.status(500).json({ error: '服务端未配置 UPDATE_PUBLISH_SECRET' })
+    return
+  }
 
+  const authHeader = req.headers['authorization'] || ''
   if (authHeader !== `Bearer ${publishSecret}`) {
     res.status(403).json({ error: '未授权' })
     return

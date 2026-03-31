@@ -58,9 +58,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       <Sidebar />
-      <main style={{ flex: 1, minWidth: 0, overflow: 'auto', backgroundColor: 'var(--bg-base)', position: 'relative', paddingTop: 28 }}>
-        {/* 可拖拽区域（替代标题栏） */}
-        <div data-tauri-drag-region style={{ position: 'fixed', top: 0, left: 210, right: 0, height: 28, zIndex: 50 }} />
+      {/* macOS 标题栏拖拽区域 — 覆盖整个顶部，支持双击最大化 */}
+      <div data-tauri-drag-region style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 34, zIndex: 50, WebkitAppRegion: 'drag' } as any} />
+      <main style={{ flex: 1, minWidth: 0, overflow: 'auto', backgroundColor: 'var(--bg-base)', position: 'relative', paddingTop: 34, WebkitAppRegion: 'no-drag' } as any}>
         {children}
       </main>
     </div>

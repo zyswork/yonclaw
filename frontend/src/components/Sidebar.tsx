@@ -4,7 +4,8 @@
  * 支持响应式折叠：< 768px 自动折叠为图标模式
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { useAuthStore } from '../store/authStore'
@@ -37,6 +38,7 @@ export default function Sidebar() {
   const { user, logout, nickname, avatarUrl } = useAuthStore()
   const { theme, setTheme } = useTheme()
   const { collapsed, setCollapsed } = useSidebarStore()
+  const [showAbout, setShowAbout] = useState(false)
 
   // 监听视口宽度变化，自动折叠/展开
   useEffect(() => {
@@ -117,11 +119,12 @@ export default function Sidebar() {
   )
 
   return (
+    <>
     <aside
       className="sidebar"
-      style={{ width: sidebarWidth, minWidth: sidebarWidth }}
+      style={{ width: sidebarWidth, minWidth: sidebarWidth, paddingTop: 34 }}
     >
-      {/* 顶部：Logo + 折叠按钮 */}
+      {/* 顶部：Logo + 折叠按钮（34px padding 避开 macOS 红绿灯） */}
       <div className={collapsed ? 'sidebar-header--collapsed' : 'sidebar-header'}>
         {collapsed ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
@@ -338,11 +341,165 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* 版本号 */}
-        <div className={collapsed ? 'sidebar-version sidebar-version--collapsed' : 'sidebar-version'}>
-          {collapsed ? 'v0.1' : 'v0.1.0'}
-        </div>
+        {/* 关于 XianZhu — 点击打开关于弹窗 */}
+        <button
+          onClick={() => setShowAbout(true)}
+          style={{
+            width: collapsed ? 'auto' : 'calc(100% - 28px)',
+            margin: collapsed ? '4px auto' : '4px 14px 8px',
+            padding: collapsed ? '6px' : '8px 12px',
+            display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'space-between',
+            gap: 8, border: '1px solid var(--border-subtle)', borderRadius: 8,
+            background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+            fontSize: 12, transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' }}
+          title={t('sidebar.about') || '关于 XianZhu'}
+        >
+          {collapsed ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          ) : (
+            <>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                {t('sidebar.about') || '关于'} XianZhu
+              </span>
+              <span style={{ fontSize: 11, opacity: 0.6 }}>v0.2.0</span>
+            </>
+          )}
+        </button>
       </div>
+
     </aside>
+    {showAbout && createPortal(
+      <AboutDialog onClose={() => setShowAbout(false)} />,
+      document.body
+    )}
+  </>
+  )
+}
+
+/** 关于弹窗 — 版本信息 + 检查更新 */
+function AboutDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n()
+  const [checking, setChecking] = useState(false)
+  const [updateResult, setUpdateResult] = useState<string | null>(null)
+  const [updating, setUpdating] = useState(false)
+
+  const handleCheckUpdate = async () => {
+    setChecking(true)
+    setUpdateResult(null)
+    try {
+      const { checkUpdate } = await import('@tauri-apps/api/updater')
+      const { shouldUpdate, manifest } = await checkUpdate()
+      if (shouldUpdate && manifest) {
+        setUpdateResult(`v${manifest.version} ${t('update.available') || '可用'}`)
+      } else {
+        setUpdateResult(t('about.upToDate') || '已是最新版本')
+      }
+    } catch {
+      setUpdateResult(t('about.checkFailed') || '检查失败，请稍后重试')
+    }
+    setChecking(false)
+  }
+
+  const handleInstallUpdate = async () => {
+    setUpdating(true)
+    try {
+      const { installUpdate } = await import('@tauri-apps/api/updater')
+      const { relaunch } = await import('@tauri-apps/api/process')
+      await installUpdate()
+      await relaunch()
+    } catch {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg-elevated)', borderRadius: 16, padding: 32, width: 360,
+        border: '1px solid var(--border-subtle)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+        textAlign: 'center',
+      }}>
+        <img src="/avatar-ai.png" alt="XianZhu" style={{ width: 64, height: 64, borderRadius: '50%', marginBottom: 12 }} />
+        <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 700 }}>XianZhu 衔烛</h2>
+        <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--text-muted)' }}>
+          {t('about.tagline') || 'AI 原生桌面助手，多智能体协作'}
+        </p>
+        <p style={{ margin: '0 0 16px', fontSize: 14, fontWeight: 600, color: 'var(--accent)' }}>v0.2.0</p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+          <button onClick={handleCheckUpdate} disabled={checking || updating} style={{
+            padding: '10px 0', border: '1px solid var(--border-subtle)', borderRadius: 8,
+            background: 'var(--bg-base)', color: 'var(--text-primary)', cursor: 'pointer',
+            fontSize: 13, fontWeight: 500,
+          }}>
+            {checking ? '...' : updating ? (t('update.installing') || '安装中...') : (t('about.checkUpdate') || '检查更新')}
+          </button>
+          {updateResult && (
+            <div style={{ fontSize: 12, color: updateResult.includes('可用') || updateResult.includes('available') ? 'var(--accent)' : 'var(--text-muted)' }}>
+              {updateResult}
+              {(updateResult.includes('可用') || updateResult.includes('available')) && (
+                <button onClick={handleInstallUpdate} disabled={updating} style={{
+                  marginLeft: 8, padding: '2px 12px', border: 'none', borderRadius: 4,
+                  background: 'var(--accent)', color: 'white', cursor: 'pointer', fontSize: 11,
+                }}>
+                  {t('update.install') || '立即更新'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 意见反馈 */}
+        <a
+          href="https://github.com/zyswork/xianzhu/issues/new"
+          target="_blank"
+          rel="noopener"
+          style={{
+            display: 'block', padding: '10px 0', border: '1px solid var(--border-subtle)',
+            borderRadius: 8, background: 'var(--bg-base)', color: 'var(--text-primary)',
+            cursor: 'pointer', fontSize: 13, fontWeight: 500, textDecoration: 'none',
+            textAlign: 'center', marginBottom: 16,
+          }}
+        >
+          {t('about.feedback') || '意见反馈'}
+        </a>
+
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.8 }}>
+          <div style={{ marginBottom: 6 }}>
+            <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>{t('about.author') || '作者'}</span>
+            <span style={{ marginLeft: 8 }}>张永顺</span>
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>{t('about.email') || '邮箱'}</span>
+            <a href="mailto:zys_work@outlook.com" style={{ marginLeft: 8, color: 'var(--accent)', textDecoration: 'none' }}>
+              zys_work@outlook.com
+            </a>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}>
+            <a href="https://github.com/zyswork/xianzhu" target="_blank" rel="noopener"
+              style={{ color: 'var(--accent)', textDecoration: 'none' }}>GitHub</a>
+            <span>·</span>
+            <span>MIT License</span>
+            <span>·</span>
+            <span>Rust + React + Tauri</span>
+          </div>
+        </div>
+
+        <button onClick={onClose} style={{
+          marginTop: 16, padding: '8px 32px', border: '1px solid var(--border-subtle)',
+          borderRadius: 8, background: 'transparent', color: 'var(--text-secondary)',
+          cursor: 'pointer', fontSize: 13,
+        }}>
+          {t('common.close') || '关闭'}
+        </button>
+      </div>
+    </div>
   )
 }

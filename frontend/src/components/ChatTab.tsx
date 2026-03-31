@@ -1054,7 +1054,11 @@ export default function ChatTab({ agentId }: { agentId: string }) {
 
   // 事件驱动：子代理派发/完成时刷新面板 + 完成结果注入对话
   useEffect(() => {
-    const unlistenP = listen<any>('agent-event', (e) => {
+    let cancelled = false
+    let unlistenFn: (() => void) | null = null
+
+    listen<any>('agent-event', (e) => {
+      if (cancelled) return
       const type = e.payload?.type
 
       // HUD 状态追踪
@@ -1085,8 +1089,19 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         // 同时从 DB 刷新完整消息（subagent 可能写了 DB 消息）
         loadMessagesRef.current()
       }
+    }).then(f => {
+      if (cancelled) {
+        // 组件已卸载或 effect 已重新执行，立即清理
+        f()
+      } else {
+        unlistenFn = f
+      }
     })
-    return () => { unlistenP.then(f => f()) }
+
+    return () => {
+      cancelled = true
+      if (unlistenFn) unlistenFn()
+    }
   }, [showAgentPanel, loadAgentPanel, agentId])
 
   // 发送 Agent 间消息

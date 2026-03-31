@@ -95,8 +95,8 @@ app.get('/health', (req: Request, res: Response) => {
 // API 路由
 app.get('/api/v1/info', (req: Request, res: Response) => {
   res.json({
-    name: 'OpenClaw Admin Backend',
-    version: '0.1.0',
+    name: 'XianZhu Admin Backend',
+    version: '0.2.0',
     description: '企业级开源协作平台后台 API',
   })
 })

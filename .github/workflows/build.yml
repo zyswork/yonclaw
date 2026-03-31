@@ -143,11 +143,11 @@ jobs:
           REPO="zyswork/xianzhu"
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          # Read signatures
-          MACOS_ARM_SIG=$(cat artifacts/XianZhu-macOS-ARM64/**/release/bundle/macos/*.sig 2>/dev/null || echo "")
-          MACOS_X64_SIG=$(cat artifacts/XianZhu-macOS-x64/**/release/bundle/macos/*.sig 2>/dev/null || echo "")
-          WINDOWS_SIG=$(cat artifacts/XianZhu-Windows-x64/*.sig 2>/dev/null || echo "")
-          LINUX_SIG=$(cat artifacts/XianZhu-Linux-x64/*.sig 2>/dev/null || echo "")
+          # Read signatures (use find to handle nested artifact directory structure)
+          MACOS_ARM_SIG=$(find artifacts/XianZhu-macOS-ARM64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
+          MACOS_X64_SIG=$(find artifacts/XianZhu-macOS-x64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
+          WINDOWS_SIG=$(find artifacts/XianZhu-Windows-x64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
+          LINUX_SIG=$(find artifacts/XianZhu-Linux-x64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
 
           curl -s -X POST "https://zys-openclaw.com/api/v1/update/publish" \
             -H "Authorization: Bearer ${UPDATE_PUBLISH_SECRET}" \

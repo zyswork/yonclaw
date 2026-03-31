@@ -67,7 +67,7 @@ async fn get_or_create_device_id(pool: &SqlitePool) -> String {
     // 生成新的 UUID 并保存
     let new_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
-    let _ = sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO settings (key, value, updated_at) VALUES ('device_id', ?, ?) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     )
@@ -75,6 +75,10 @@ async fn get_or_create_device_id(pool: &SqlitePool) -> String {
     .bind(now)
     .execute(pool)
     .await;
+
+    if let Err(e) = result {
+        log::warn!("device_id 持久化失败，后续启动可能生成新 ID: {}", e);
+    }
 
     new_id
 }

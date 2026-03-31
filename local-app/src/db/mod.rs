@@ -26,7 +26,9 @@ impl Database {
     /// 返回初始化后的 Database 实例或错误
     pub async fn new(db_path: &str) -> Result<Self, sqlx::Error> {
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path))?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .pragma("foreign_keys", "on")
+            .busy_timeout(std::time::Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)

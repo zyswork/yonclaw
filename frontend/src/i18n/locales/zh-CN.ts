@@ -7,6 +7,7 @@ export const zhCN: TranslationMap = {
     save: '保存',
     saving: '保存中...',
     cancel: '取消',
+    close: '关闭',
     delete: '删除',
     confirm: '确认',
     edit: '编辑',
@@ -82,6 +83,7 @@ export const zhCN: TranslationMap = {
     sectionManage: '管理',
     logout: '退出登录',
     expand: '展开侧边栏',
+    about: '关于',
     collapse: '折叠侧边栏',
   },
   dashboard: {
@@ -1062,5 +1064,14 @@ export const zhCN: TranslationMap = {
     available: '新版本可用',
     install: '立即更新',
     installing: '安装中...',
+  },
+  about: {
+    tagline: 'AI 原生桌面助手，多智能体协作',
+    checkUpdate: '检查更新',
+    upToDate: '已是最新版本',
+    checkFailed: '检查失败，请稍后重试',
+    feedback: '意见反馈',
+    author: '作者',
+    email: '邮箱',
   },
 }
