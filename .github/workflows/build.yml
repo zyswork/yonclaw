@@ -149,6 +149,11 @@ jobs:
           WINDOWS_SIG=$(find artifacts/XianZhu-Windows-x64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
           LINUX_SIG=$(find artifacts/XianZhu-Linux-x64 -name '*.sig' -exec cat {} \; 2>/dev/null || echo "")
 
+          # Verify at least macOS ARM signature exists (primary platform)
+          if [ -z "$MACOS_ARM_SIG" ]; then
+            echo "::warning::No macOS ARM64 signature found — update metadata may be incomplete"
+          fi
+
           curl -s -X POST "https://zys-openclaw.com/api/v1/update/publish" \
             -H "Authorization: Bearer ${UPDATE_PUBLISH_SECRET}" \
             -H "Content-Type: application/json" \

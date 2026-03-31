@@ -43,7 +43,10 @@ impl ChannelManager {
     pub async fn start_all(&self) {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT id, agent_id, channel_type, credentials_json FROM agent_channels WHERE enabled = 1"
-        ).fetch_all(&self.pool).await.unwrap_or_default();
+        ).fetch_all(&self.pool).await.unwrap_or_else(|e| {
+            log::warn!("频道列表加载失败: {}", e);
+            vec![]
+        });
 
         for (id, agent_id, channel_type, creds_json) in rows {
             if let Err(e) = self.start_instance(&id, &agent_id, &channel_type, &creds_json).await {
@@ -299,7 +302,10 @@ impl ChannelManager {
                     // 从数据库读取凭据并重启
                     let row: Option<(String, String, String)> = sqlx::query_as(
                         "SELECT agent_id, channel_type, credentials_json FROM agent_channels WHERE id = ? AND enabled = 1"
-                    ).fetch_optional(&manager.pool).await.ok().flatten();
+                    ).fetch_optional(&manager.pool).await.unwrap_or_else(|e| {
+                        log::warn!("频道凭据查询失败: {}", e);
+                        None
+                    });
 
                     if let Some((agent_id, ch_type, creds_json)) = row {
                         log::info!("健康检查: 重启频道 {} ({})", id, ch_type);
