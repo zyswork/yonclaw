@@ -7,9 +7,9 @@ const BASE = 'https://zys-openclaw.com/downloads';
 const VER = '1.0.0';
 
 const downloadUrls: Record<Platform, string> = {
-  macos: `${BASE}/XianZhu_${VER}_aarch64.dmg`,
-  windows: `${BASE}/XianZhu_${VER}_x64_en-US.msi`,
-  linux: `${BASE}/xian-zhu_${VER}_amd64.AppImage`,
+  macos: `${BASE}/XianZhuClaw_${VER}_aarch64.dmg`,
+  windows: `${BASE}/XianZhuClaw_${VER}_x64_en-US.msi`,
+  linux: `${BASE}/xian-zhu-claw_${VER}_amd64.AppImage`,
 };
 
 function detectPlatform(): Platform {
