@@ -40,6 +40,7 @@ impl SoulEngine {
         let mut engine = Self::new();
         engine.add_section(Box::new(IdentitySection));
         engine.add_section(Box::new(SoulSection));
+        engine.add_section(Box::new(StrategySection));
         engine.add_section(Box::new(SafetySection));
         engine.add_section(Box::new(ToolsSection));
         engine.add_section(Box::new(MemorySection));
@@ -89,7 +90,7 @@ impl SoulEngine {
         workspace: &AgentWorkspace,
         budget: &SectionBudget,
     ) -> String {
-        let protected = ["identity", "safety", "datetime"];
+        let protected = ["identity", "strategy", "safety", "datetime"];
         let mut parts: Vec<(String, String)> = Vec::new(); // (name, content)
 
         for section in &self.sections {
@@ -159,6 +160,7 @@ impl Default for SectionBudget {
         let limits = HashMap::from([
             ("identity".into(), 1_500),
             ("soul".into(), 3_000),
+            ("strategy".into(), 2_000),
             ("safety".into(), 2_000),
             ("tools".into(), 4_000),
             ("memory".into(), 3_000),
@@ -207,6 +209,7 @@ impl SoulEngine {
             SessionType::Full => {
                 engine.add_section(Box::new(IdentitySection));
                 engine.add_section(Box::new(SoulSection));
+                engine.add_section(Box::new(StrategySection));
                 engine.add_section(Box::new(SafetySection));
                 engine.add_section(Box::new(ToolsSection));
                 engine.add_section(Box::new(MemorySection));
@@ -218,12 +221,14 @@ impl SoulEngine {
             SessionType::Light => {
                 engine.add_section(Box::new(IdentitySection));
                 engine.add_section(Box::new(SoulSection));
+                engine.add_section(Box::new(StrategySection));
                 engine.add_section(Box::new(ToolsSection));
                 engine.add_section(Box::new(StandingOrdersSection));
                 engine.add_section(Box::new(DateTimeSection));
             }
             SessionType::SubAgent => {
                 engine.add_section(Box::new(IdentitySection));
+                engine.add_section(Box::new(StrategySection));
                 engine.add_section(Box::new(ToolsSection));
                 engine.add_section(Box::new(DateTimeSection));
             }
@@ -231,6 +236,7 @@ impl SoulEngine {
                 // 群聊：排除 MEMORY.md 和 USER.md，防止泄露私人记忆
                 engine.add_section(Box::new(IdentitySection));
                 engine.add_section(Box::new(SoulSection));
+                engine.add_section(Box::new(StrategySection));
                 engine.add_section(Box::new(SafetySection));
                 engine.add_section(Box::new(ToolsSection));
                 engine.add_section(Box::new(StandingOrdersSection));
@@ -277,6 +283,58 @@ impl PromptSection for SoulSection {
         Some(format!("{directive}{content}"))
     }
 }
+
+/// 策略指导 Section — 教 Agent 如何思考和使用工具
+///
+/// 高优先级 Section，始终注入，不依赖工作区文件。
+/// 包含：思考方式、工具使用策略、技能选择、错误处理。
+pub struct StrategySection;
+
+impl PromptSection for StrategySection {
+    fn name(&self) -> &str {
+        "strategy"
+    }
+
+    fn render(&self, _workspace: &AgentWorkspace) -> Option<String> {
+        Some(STRATEGY_CONTENT.to_string())
+    }
+}
+
+const STRATEGY_CONTENT: &str = r#"## 思考方式
+收到任务后，先在内部思考（不要输出给用户），然后行动：
+1. 理解：用户真正想要什么？（不要只看字面意思）
+2. 规划：需要哪些步骤？用哪些工具？什么顺序？
+3. 执行：一步步执行，每步检查结果
+4. 验证：结果是否符合预期？需要调整吗？
+
+重要原则：
+- 先动手，后汇报。不要问"要不要帮你执行"，直接执行
+- 遇到错误时，先自己分析原因并重试，不要立刻报错给用户
+- 一次性完成整个任务，不要做一半就停下来汇报进度
+- 如果需要多个工具配合，按逻辑顺序依次调用，不要等用户确认每一步
+
+## 工具使用策略
+- 能用工具解决的，不要口头回答（比如用户问文件内容，直接 file_read，不要猜）
+- 能并行的工具调用尽量并行（比如同时搜索+读文件）
+- bash_exec 是万能后备：当其他工具不够时，用 bash 命令解决
+- web_fetch 抓网页内容时，如果是 GitHub 仓库，优先用 raw.githubusercontent.com 获取原始文件
+- 遇到大文件，先用 file_list 了解结构，再有针对性地 file_read
+- 安装软件/包：直接用 bash_exec 执行安装命令，不要只告诉用户怎么装
+- 不要重复调用同一个工具获取相同的信息
+
+## 技能使用
+收到请求时，先扫描可用技能列表的描述。
+- 如果恰好有一个技能匹配：用 file_read 读取该技能的 SKILL.md，然后按照指引执行
+- 如果多个技能可能相关：选最具体的那个
+- 如果没有匹配的技能：用基础工具直接完成任务
+- 不要一次读取多个技能文档，只读最相关的一个
+
+## 错误处理
+- 工具调用失败时：分析错误信息，调整参数重试（最多 2 次）
+- 网络请求失败时：尝试替代 URL 或不同的搜索词
+- 文件不存在时：用 file_list 查看目录确认路径，然后重试
+- 权限不足时：尝试 sudo 或告知用户需要权限
+- 不要因为一次失败就放弃整个任务"#;
 
 /// 安全红线 Section — 从 AGENTS.md 读取
 pub struct SafetySection;
@@ -721,9 +779,10 @@ mod tests {
     fn test_session_type_full() {
         let engine = SoulEngine::for_session(SessionType::Full);
         let names = engine.section_names();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         assert!(names.contains(&"identity"));
         assert!(names.contains(&"soul"));
+        assert!(names.contains(&"strategy"));
         assert!(names.contains(&"safety"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"user"));
@@ -735,9 +794,10 @@ mod tests {
     fn test_session_type_light() {
         let engine = SoulEngine::for_session(SessionType::Light);
         let names = engine.section_names();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
         assert!(names.contains(&"identity"));
         assert!(names.contains(&"soul"));
+        assert!(names.contains(&"strategy"));
         assert!(names.contains(&"tools"));
         assert!(names.contains(&"datetime"));
         assert!(!names.contains(&"memory"));
@@ -749,8 +809,9 @@ mod tests {
     fn test_session_type_subagent() {
         let engine = SoulEngine::for_session(SessionType::SubAgent);
         let names = engine.section_names();
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 4);
         assert!(names.contains(&"identity"));
+        assert!(names.contains(&"strategy"));
         assert!(names.contains(&"tools"));
         assert!(names.contains(&"datetime"));
         assert!(!names.contains(&"soul"));

@@ -579,9 +579,14 @@ pub async fn run_agent_loop(
                 if !success {
                     let error_class = super::tools::ErrorClass::classify(&result_text);
                     if error_class.is_retryable() {
+                        let error_preview: String = result_text.chars().take(200).collect();
                         let reflection = format!(
-                            "[Reflection] 工具 `{}` 执行失败（错误类型: {:?}）。请分析失败原因并调整参数重试，或选择替代方案。不要重复使用完全相同的参数。",
-                            tc.name, error_class
+                            "[系统提示] 工具 `{}` 执行失败（错误类型: {:?}），错误: {}。请分析失败原因：\n\
+                            1. 参数是否正确？（路径、URL、格式）\n\
+                            2. 是否需要换一种方式？（不同的工具或命令）\n\
+                            3. 是否缺少前置步骤？（先安装依赖、先创建目录等）\n\
+                            请调整后重试，不要直接告诉用户失败了。",
+                            tc.name, error_class, error_preview
                         );
                         messages.push(serde_json::json!({"role": "user", "content": reflection}));
                         log::info!("反思注入: {} ({:?})", tc.name, error_class);

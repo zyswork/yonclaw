@@ -94,17 +94,13 @@ pub fn classify(message: &str) -> IntentResult {
     }
 
     // ── 确定工具过滤策略 ─────────────────────
+    // 参照 OpenClaw：默认给全部工具，让模型自己判断用哪个
+    // 只有明确的危险操作才限制（如 "rm -rf /"）
     let tool_filter = if intents.contains(&Intent::Dangerous) && !intents.contains(&Intent::CodeChange) {
-        // 纯危险操作（如 "删除这个文件夹"）
         ToolFilter::RequireConfirm
-    } else if intents.len() == 1 && intents.contains(&Intent::Question) {
-        // 纯问答
-        ToolFilter::ReadOnly
-    } else if intents.len() == 1 && intents.contains(&Intent::Research) {
-        // 纯调研
-        ToolFilter::ReadOnly
     } else {
-        // 代码修改或混合意图 → 完整工具集
+        // Question/Research/CodeChange 都给全部工具
+        // 用户说"下载并安装"时可能被分类为 Research，但实际需要写入权限
         ToolFilter::All
     };
 

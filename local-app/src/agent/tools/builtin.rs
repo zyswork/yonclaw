@@ -106,7 +106,7 @@ impl Tool for MemoryReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "memory_read".to_string(),
-            description: "检索 Agent 的长期记忆。支持语义搜索（向量）和关键词搜索（FTS5）。".to_string(),
+            description: "检索 Agent 的长期记忆。适用于：回忆用户偏好、查找历史对话中的信息、获取之前保存的知识。支持语义搜索（向量）和关键词搜索（FTS5）混合检索。当用户提到「之前说过」「上次」「记得吗」时应主动使用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -206,7 +206,7 @@ impl Tool for MemoryWriteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "memory_write".to_string(),
-            description: "将重要信息保存为 Agent 的长期记忆。记忆会跨会话持久保存，并自动建立全文索引和语义向量。".to_string(),
+            description: "将重要信息保存为 Agent 的长期记忆。适用于：记住用户偏好、保存重要事实、存储学到的知识。记忆会跨会话持久保存，并自动建立全文索引和语义向量。当用户说「记住」「以后都这样」或透露重要偏好时应主动使用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -281,7 +281,7 @@ impl Tool for FileReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "file_read".to_string(),
-            description: "读取文件内容".to_string(),
+            description: "读取指定文件的内容。适用于：查看代码、配置文件、日志。对于大文件，先用 file_list 确认文件存在和大小，再有针对性地读取。可以指定 offset 和 limit 只读取文件的一部分。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -400,7 +400,7 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "在网络上搜索信息。支持 6 个搜索引擎：Brave、Exa、Serper(Google)、Tavily、Firecrawl、DuckDuckGo(免费)。".to_string(),
+            description: "搜索互联网获取最新信息。适用于：查找技术文档、了解最新动态、搜索错误解决方案。搜索词建议精简且具体（如 'Rust tokio async runtime 2025' 而不是 '帮我查一下 Rust'）。搜索结果只有摘要，需要详细内容请用 web_fetch 打开链接。支持 Brave/Exa/Serper/Tavily/Firecrawl/DuckDuckGo 引擎。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -865,7 +865,7 @@ impl Tool for BashExecTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "bash_exec".to_string(),
-            description: "执行终端命令。可以运行 shell 命令并返回输出结果。支持 ls、cat、grep、find、echo、node、npm、python3、git 等常用命令。".to_string(),
+            description: "在沙箱环境中执行 Shell 命令。适用于：安装软件包（npm/pip/brew）、git 操作、文件批量处理、运行脚本、系统管理。当其他专用工具无法满足需求时，bash_exec 是万能后备。注意：长时间运行的命令请设置合理的 timeout。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -957,7 +957,7 @@ impl Tool for FileWriteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "file_write".to_string(),
-            description: "写入内容到文件。如果文件不存在则创建，如果存在则覆盖。自动创建父目录。".to_string(),
+            description: "创建新文件或覆盖已有文件。适用于：创建配置文件、写入代码、保存下载内容。注意：会覆盖已有内容！如需修改已有文件的部分内容，优先使用 file_edit。自动创建父目录。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1024,7 +1024,7 @@ impl Tool for FileListTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "file_list".to_string(),
-            description: "列出目录中的文件和子目录".to_string(),
+            description: "列出目录内容。适用于：了解项目结构、查找文件位置、确认文件是否存在。建议在 file_read 之前先用 file_list 确认路径。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1083,7 +1083,7 @@ impl Tool for FileEditTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "file_edit".to_string(),
-            description: "精准编辑文件：在文件中查找 old_text 并替换为 new_text。支持多行文本。如果 old_text 为空则在 insert_line 位置插入 new_text。".to_string(),
+            description: "修改已有文件的部分内容（查找替换）。适用于：修改配置项、修复代码 bug、更新文本。需要提供 old_text（要替换的原文）和 new_text（替换后的内容）。old_text 必须能在文件中精确匹配。支持多行文本。如果 old_text 为空则在 insert_line 位置插入 new_text。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1402,7 +1402,7 @@ impl Tool for CodeSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "code_search".to_string(),
-            description: "在指定目录中搜索包含关键词的文件和行。支持递归搜索，返回匹配行及其文件路径和行号。".to_string(),
+            description: "在指定目录中搜索包含关键词的代码和文本。适用于：查找函数定义、定位 bug、追踪引用。支持正则表达式和文件类型过滤。返回匹配行及其文件路径和行号。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1492,7 +1492,7 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "通过 HTTP GET 获取网页或 API 的文本内容。支持设置超时。返回响应体文本（最多 100KB）。".to_string(),
+            description: "获取指定 URL 的网页内容并提取正文。适用于：抓取网页信息、读取 GitHub 文件（优先使用 raw.githubusercontent.com）、获取 API 文档。对于 GitHub 仓库页面，建议获取 raw 文件而不是 HTML 页面。返回内容可能较长，注意提取关键信息。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2034,7 +2034,7 @@ impl Tool for SkillManageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "skill_manage".to_string(),
-            description: "管理 Agent 技能：列出已安装技能、查看可安装技能、安装、卸载、搜索在线技能市场。用户说「帮我装个邮件技能」时使用此工具。".to_string(),
+            description: "管理 Agent 的技能。支持：列出已安装技能、安装新技能（从市场或 URL）、卸载技能、搜索在线技能市场。安装技能后会自动激活，无需重启。用户说「帮我装个邮件技能」时使用此工具。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
