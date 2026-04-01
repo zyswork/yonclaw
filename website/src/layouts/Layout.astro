@@ -1,0 +1,32 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = '衔烛 XianZhu — AI 原生桌面助手',
+  description = '开源免费的 OpenClaw 替代品。AI 原生桌面助手，支持多智能体协作、持久化记忆、技能市场。本地优先，隐私安全。',
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#0a0a0f" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
+  </head>
+  <body class="aurora-bg min-h-screen">
+    <slot />
+  </body>
+</html>

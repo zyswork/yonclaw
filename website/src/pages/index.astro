@@ -1,0 +1,23 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Navbar from '../components/Navbar';
+import Hero from '../components/Hero';
+import Features from '../components/Features';
+import Demo from '../components/Demo';
+import Architecture from '../components/Architecture';
+import Download from '../components/Download';
+import Footer from '../components/Footer';
+import '../styles/global.css';
+---
+
+<Layout>
+  <Navbar client:load />
+  <main>
+    <Hero client:load />
+    <Features client:visible />
+    <Demo client:visible />
+    <Architecture client:visible />
+    <Download client:visible />
+  </main>
+  <Footer client:visible />
+</Layout>

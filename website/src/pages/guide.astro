@@ -1,0 +1,15 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Navbar from '../components/Navbar';
+import Guide from '../components/Guide';
+import Footer from '../components/Footer';
+import '../styles/global.css';
+---
+
+<Layout title="使用手册 — 衔烛 XianZhu" description="从安装到精通，快速上手衔烛 AI 桌面助手。包含配置、Agent 创建、技能安装、多 Agent 协作等完整指南。">
+  <Navbar client:load />
+  <main>
+    <Guide client:load />
+  </main>
+  <Footer client:visible />
+</Layout>

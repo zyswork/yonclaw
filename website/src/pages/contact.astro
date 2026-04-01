@@ -1,0 +1,15 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Navbar from '../components/Navbar';
+import Contact from '../components/Contact';
+import Footer from '../components/Footer';
+import '../styles/global.css';
+---
+
+<Layout title="联系我们 — 衔烛 XianZhu" description="联系衔烛团队，提交问题反馈、功能建议或合作洽谈。">
+  <Navbar client:load />
+  <main>
+    <Contact client:load />
+  </main>
+  <Footer client:visible />
+</Layout>
