@@ -38,3 +38,22 @@ log/
 .worktrees/
 local-app/target/
 **/target/
+
+# Generated
+website/.astro/
+website/dist/
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+
+# Backup files
+*.old
+*.bak
+*.backup
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
