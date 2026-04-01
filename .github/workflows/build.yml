@@ -140,7 +140,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           TAG="${GITHUB_REF_NAME}"
-          REPO="zyswork/xianzhu"
+          REPO="zyswork/xianzhu-claw"
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
           # Read signatures (use find to handle nested artifact directory structure)

@@ -26,7 +26,7 @@
         "fullscreen": false,
         "height": 800,
         "resizable": true,
-        "title": "XianZhu",
+        "title": "XianZhuClaw",
         "width": 1200,
         "fileDropEnabled": false,
         "titleBarStyle": "Overlay",
@@ -61,7 +61,7 @@
     }
   },
   "package": {
-    "productName": "XianZhu",
+    "productName": "XianZhuClaw",
     "version": "0.2.0"
   }
 }

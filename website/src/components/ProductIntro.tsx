@@ -256,7 +256,7 @@ function Comparison() {
             <thead>
               <tr className="border-b border-white/[0.06]">
                 <th className="text-left px-6 py-4 text-white/40 font-medium"></th>
-                <th className="text-center px-6 py-4 text-amber-400 font-semibold">衔烛 XianZhu</th>
+                <th className="text-center px-6 py-4 text-amber-400 font-semibold">衔烛Claw XianZhuClaw</th>
                 <th className="text-center px-6 py-4 text-white/50 font-semibold">OpenClaw</th>
               </tr>
             </thead>

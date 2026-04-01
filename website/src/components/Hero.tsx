@@ -221,7 +221,7 @@ export default function Hero() {
             下载 {platformLabel} 版
           </a>
           <a
-            href="https://github.com/zyswork/xianzhu"
+            href="https://github.com/zyswork/xianzhu-claw"
             target="_blank"
             rel="noopener noreferrer"
             className="btn-secondary"
@@ -232,6 +232,14 @@ export default function Hero() {
             GitHub
           </a>
         </motion.div>
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.6, delay: 0.6 }}
+          className="text-white/30 text-sm mt-3"
+        >
+          同时支持 macOS · Windows · Linux &nbsp;|&nbsp; <a href="#download" className="text-amber-400/60 hover:text-amber-400 transition-colors">查看所有平台</a>
+        </motion.p>
       </div>
 
       {/* 产品截图 */}

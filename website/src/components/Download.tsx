@@ -3,6 +3,15 @@ import { useEffect, useState } from 'react';
 
 type Platform = 'macos' | 'windows' | 'linux';
 
+const BASE = 'https://zys-openclaw.com/downloads';
+const VER = '0.1.0';
+
+const downloadUrls: Record<Platform, string> = {
+  macos: `${BASE}/XianZhu_${VER}_aarch64.dmg`,
+  windows: `${BASE}/XianZhu_${VER}_x64_en-US.msi`,
+  linux: `${BASE}/xian-zhu_${VER}_amd64.AppImage`,
+};
+
 function detectPlatform(): Platform {
   if (typeof navigator === 'undefined') return 'macos';
   const ua = navigator.userAgent.toLowerCase();
@@ -89,7 +98,7 @@ export default function Download() {
             return (
               <a
                 key={p.key}
-                href={`https://github.com/zyswork/xianzhu/releases/latest`}
+                href={downloadUrls[p.key]}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={`
@@ -129,7 +138,7 @@ export default function Download() {
         >
           v0.1.0 Preview &middot;{' '}
           <a
-            href="https://github.com/zyswork/xianzhu/releases"
+            href="https://github.com/zyswork/xianzhu-claw/releases"
             target="_blank"
             rel="noopener noreferrer"
             className="underline hover:text-white/40 transition-colors"

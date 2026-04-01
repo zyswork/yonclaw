@@ -137,7 +137,7 @@ export default function Sidebar() {
             </button>
             <img
               src="/avatar-ai.png"
-              alt="XianZhu"
+              alt="XianZhuClaw"
               style={{ width: 28, height: 28, borderRadius: '50%', opacity: 0.8 }}
             />
           </div>
@@ -152,7 +152,7 @@ export default function Sidebar() {
             </button>
             <img
               src="/avatar-ai.png"
-              alt="XianZhu"
+              alt="XianZhuClaw"
               style={{ width: 32, height: 32, borderRadius: '50%' }}
             />
             <div>
@@ -341,7 +341,7 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* 关于 XianZhu — 点击打开关于弹窗 */}
+        {/* 关于 XianZhuClaw — 点击打开关于弹窗 */}
         <button
           onClick={() => setShowAbout(true)}
           style={{
@@ -355,7 +355,7 @@ export default function Sidebar() {
           }}
           onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)' }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' }}
-          title={t('sidebar.about') || '关于 XianZhu'}
+          title={t('sidebar.about') || '关于 XianZhuClaw'}
         >
           {collapsed ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
@@ -363,7 +363,7 @@ export default function Sidebar() {
             <>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-                {t('sidebar.about') || '关于'} XianZhu
+                {t('sidebar.about') || '关于'} XianZhuClaw
               </span>
               <span style={{ fontSize: 11, opacity: 0.6 }}>v0.2.0</span>
             </>
@@ -426,8 +426,8 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
         border: '1px solid var(--border-subtle)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
         textAlign: 'center',
       }}>
-        <img src="/avatar-ai.png" alt="XianZhu" style={{ width: 64, height: 64, borderRadius: '50%', marginBottom: 12 }} />
-        <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 700 }}>XianZhu 衔烛</h2>
+        <img src="/avatar-ai.png" alt="XianZhuClaw" style={{ width: 64, height: 64, borderRadius: '50%', marginBottom: 12 }} />
+        <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 700 }}>XianZhuClaw 衔烛Claw</h2>
         <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--text-muted)' }}>
           {t('about.tagline') || 'AI 原生桌面助手，多智能体协作'}
         </p>
@@ -458,7 +458,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
 
         {/* 意见反馈 */}
         <a
-          href="https://github.com/zyswork/xianzhu/issues/new"
+          href="https://github.com/zyswork/xianzhu-claw/issues/new"
           target="_blank"
           rel="noopener"
           style={{
@@ -483,7 +483,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
             </a>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 }}>
-            <a href="https://github.com/zyswork/xianzhu" target="_blank" rel="noopener"
+            <a href="https://github.com/zyswork/xianzhu-claw" target="_blank" rel="noopener"
               style={{ color: 'var(--accent)', textDecoration: 'none' }}>GitHub</a>
             <span>·</span>
             <span>MIT License</span>

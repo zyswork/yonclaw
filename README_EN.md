@@ -2,7 +2,7 @@
   <img src="docs/assets/logo.png" alt="XianZhu Logo" width="120" />
 </p>
 
-<h1 align="center">XianZhu 衔烛</h1>
+<h1 align="center">XianZhuClaw 衔烛Claw</h1>
 
 <p align="center">
   <strong>AI-native desktop assistant with multi-agent orchestration</strong>
@@ -24,7 +24,7 @@
   <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen" alt="Platform" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://github.com/zyswork/xianzhu/actions/workflows/build.yml/badge.svg" alt="Build" />
+  <img src="https://github.com/zyswork/xianzhu-claw/actions/workflows/build.yml/badge.svg" alt="Build" />
 </p>
 
 ---
@@ -111,7 +111,7 @@ Download the latest release for your platform:
 
 ```bash
 # Clone
-git clone https://github.com/zyswork/xianzhu.git
+git clone https://github.com/zyswork/xianzhu-claw.git
 cd xianzhu
 
 # Install frontend dependencies
@@ -215,5 +215,5 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 <p align="center">
   Built with Rust, React, and Tauri<br/>
-  <sub>XianZhu 衔烛 — bearing the torch of AI assistance</sub>
+  <sub>XianZhuClaw 衔烛Claw — bearing the torch of AI assistance</sub>
 </p>

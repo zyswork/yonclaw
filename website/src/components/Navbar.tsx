@@ -47,7 +47,7 @@ export default function Navbar() {
           {/* Logo */}
           <a href="/" className="flex items-center gap-2 text-white font-bold text-lg tracking-wide">
             <span className="gradient-text text-xl font-black">衔烛</span>
-            <span className="text-white/40 text-sm font-normal hidden sm:inline">XianZhu</span>
+            <span className="text-white/40 text-sm font-normal hidden sm:inline">XianZhuClaw</span>
           </a>
 
           {/* 桌面导航 */}
@@ -63,7 +63,7 @@ export default function Navbar() {
               </a>
             ))}
             <a
-              href="https://github.com/zyswork/xianzhu"
+              href="https://github.com/zyswork/xianzhu-claw"
               target="_blank"
               rel="noopener noreferrer"
               className="ml-2 px-4 py-2 text-sm text-white/50 hover:text-white/90 transition-colors rounded-lg hover:bg-white/[0.04]"
@@ -119,7 +119,7 @@ export default function Navbar() {
                 </a>
               ))}
               <a
-                href="https://github.com/zyswork/xianzhu"
+                href="https://github.com/zyswork/xianzhu-claw"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-4 py-3 text-sm text-white/60 hover:text-white/90 hover:bg-white/[0.04] rounded-lg transition-colors"

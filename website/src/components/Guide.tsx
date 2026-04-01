@@ -144,7 +144,7 @@ export default function Guide() {
               <Step number={1} title="下载安装包">
                 <p>
                   前往{' '}
-                  <a href="https://github.com/zyswork/xianzhu/releases/latest" target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:underline">
+                  <a href="https://github.com/zyswork/xianzhu-claw/releases/latest" target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:underline">
                     GitHub Releases
                   </a>{' '}
                   页面，根据你的操作系统选择对应的安装包。
@@ -314,7 +314,7 @@ chmod +x XianZhu-0.1.0.AppImage
                   <h4 className="text-white font-semibold mb-2">Q: 遇到问题怎么办？</h4>
                   <p>
                     请在{' '}
-                    <a href="https://github.com/zyswork/xianzhu/issues" target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:underline">
+                    <a href="https://github.com/zyswork/xianzhu-claw/issues" target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:underline">
                       GitHub Issues
                     </a>{' '}
                     提交问题，附上日志文件（位于 ~/Library/Logs/XianZhu/）可以帮助我们更快定位问题。

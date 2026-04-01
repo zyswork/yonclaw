@@ -30,7 +30,7 @@ export default function Footer() {
         {/* 外部链接 */}
         <div className="flex items-center justify-center gap-8 text-sm text-white/30 mb-8">
           <a
-            href="https://github.com/zyswork/xianzhu"
+            href="https://github.com/zyswork/xianzhu-claw"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-white/60 transition-colors"
@@ -39,7 +39,7 @@ export default function Footer() {
           </a>
           <span className="w-1 h-1 rounded-full bg-white/10" />
           <a
-            href="https://github.com/zyswork/xianzhu/issues"
+            href="https://github.com/zyswork/xianzhu-claw/issues"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-white/60 transition-colors"

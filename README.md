@@ -2,7 +2,7 @@
   <img src="docs/assets/logo.png" alt="XianZhu Logo" width="120" />
 </p>
 
-<h1 align="center">XianZhu 衔烛</h1>
+<h1 align="center">XianZhuClaw 衔烛Claw</h1>
 
 <p align="center">
   <strong>AI-native desktop assistant with multi-agent orchestration</strong><br/>
@@ -25,7 +25,7 @@
   <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen" alt="Platform" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
-  <img src="https://github.com/zyswork/xianzhu/actions/workflows/build.yml/badge.svg" alt="Build" />
+  <img src="https://github.com/zyswork/xianzhu-claw/actions/workflows/build.yml/badge.svg" alt="Build" />
 </p>
 
 ---
@@ -114,7 +114,7 @@ XianZhu (衔烛, "bearing the torch") is an open-source, cross-platform AI deskt
 
 ```bash
 # 克隆仓库
-git clone https://github.com/zyswork/xianzhu.git
+git clone https://github.com/zyswork/xianzhu-claw.git
 cd xianzhu
 
 # 安装前端依赖
@@ -221,5 +221,5 @@ MIT 许可证，详见 [LICENSE](LICENSE)。
 <p align="center">
   Built with Rust, React, and Tauri<br/>
   基于 Rust、React 和 Tauri 构建<br/>
-  <sub>XianZhu 衔烛 — 衔火而行，烛照前路</sub>
+  <sub>XianZhuClaw 衔烛Claw — 衔火而行，烛照前路</sub>
 </p>
