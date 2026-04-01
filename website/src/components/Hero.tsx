@@ -177,7 +177,7 @@ export default function Hero() {
           className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-amber-500/20 bg-amber-500/5 text-amber-400 text-sm mb-8"
         >
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-          v0.1.0 Preview
+          v1.0.0
         </motion.div>
 
         {/* 主标题 */}
