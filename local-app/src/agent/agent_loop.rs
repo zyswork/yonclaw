@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use sqlx::SqlitePool;
 
 /// 多轮工具调用最大轮数
-pub const MAX_TOOL_ROUNDS: usize = 10;
+pub const MAX_TOOL_ROUNDS: usize = 15;
 
 /// 单次请求默认 token 预算上限
 pub const DEFAULT_TOKEN_BUDGET: u64 = 100_000;
@@ -114,6 +114,9 @@ pub async fn run_agent_loop(
     let mut accumulated_tokens: u64 = 0;
     let mut _accumulated_cost: f64 = 0.0;
     let mut empty_retries: u32 = 0;
+    // 工具循环检测（参照 OpenClaw tool-loop-detection）
+    // 按 "工具名:错误分类" 计数，同类失败超 2 次就强制停止
+    let mut fail_history: Vec<String> = Vec::new(); // "tool_name:ErrorClass"
 
     for round in 0..MAX_TOOL_ROUNDS {
         // 取消检查
@@ -137,6 +140,34 @@ pub async fn run_agent_loop(
                 break;
             }
         }
+        // 主动 Tool Result 截断（per-run, 参照 OpenClaw tool-result-truncation）
+        // 单条 tool_result 超过 context window 的 30% 时，截断为 head + tail
+        {
+            let ctx_window = super::token_counter::TokenCounter::model_context_window(&config.model);
+            let max_result_tokens = (ctx_window as f64 * 0.30) as usize;
+            let max_result_chars = max_result_tokens * 4; // 粗估 1 token ≈ 4 chars
+            for msg in messages.iter_mut() {
+                let is_tool = msg["role"].as_str() == Some("tool");
+                if !is_tool { continue; }
+                if let Some(content) = msg["content"].as_str() {
+                    if content.len() > max_result_chars {
+                        // Head 70% + Tail 20% + 截断标记
+                        let head_len = (max_result_chars as f64 * 0.7) as usize;
+                        let tail_len = (max_result_chars as f64 * 0.2) as usize;
+                        let head: String = content.chars().take(head_len).collect();
+                        let total_chars = content.chars().count();
+                        let tail: String = content.chars().skip(total_chars.saturating_sub(tail_len)).collect();
+                        let truncated = format!(
+                            "{}\n\n[... 已截断 {}/{} 字符 ...]\n\n{}",
+                            head, total_chars, max_result_chars, tail
+                        );
+                        log::info!("主动截断 tool_result: {} → {} 字符", total_chars, truncated.len());
+                        msg["content"] = serde_json::json!(truncated);
+                    }
+                }
+            }
+        }
+
         // 每轮执行 ContextGuard（防止工具调用累积导致上下文爆炸）
         if round > 0 {
             let guard_config = super::context_guard::ContextGuardConfig::for_model(&config.model);
@@ -279,7 +310,21 @@ pub async fn run_agent_loop(
                         }
                     }
                 }
-                log::error!("LLM 调用失败（第 {} 轮）: {}", round + 1, e);
+                // Failover: 分类错误，决定是否重试
+                let failover_err = super::failover::FailoverError::classify(&e);
+                if failover_err.should_retry() && round == 0 {
+                    log::warn!("LLM 调用失败（{:?}），等待 1s 后重试...", failover_err);
+                    let _ = tx.send(format!("\n⚙️ {}，正在重试...\n", match &failover_err {
+                        super::failover::FailoverError::RateLimit => "速率限制",
+                        super::failover::FailoverError::Timeout => "请求超时",
+                        super::failover::FailoverError::Overloaded => "服务繁忙",
+                        _ => "临时错误",
+                    }));
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let _ = forward_handle.await;
+                    continue; // 重试当前轮次
+                }
+                log::error!("LLM 调用失败（第 {} 轮, {:?}）: {}", round + 1, failover_err, e);
                 let _ = tx.send(format!("\n\n⚠️ LLM 调用出错: {}\n", e));
                 let _ = forward_handle.await;
                 let mut partial = full_content.clone();
@@ -369,7 +414,7 @@ pub async fn run_agent_loop(
             if round == 0 && !tool_defs.is_empty() && detect_tool_intent(&llm_response.content) {
                 log::info!("检测到工具意图但未调用，注入 nudge");
                 messages.push(serde_json::json!({"role": "assistant", "content": &llm_response.content}));
-                messages.push(serde_json::json!({"role": "user", "content": "请直接使用工具来执行操作，而不是描述你会做什么。你有可用的工具，请调用它们。"}));
+                messages.push(serde_json::json!({"role": "user", "content": "请直接使用工具来执行操作，而不是描述你会做什么。你有可用的工具，请调用它们。", "_internal": true}));
                 continue;
             }
 
@@ -380,7 +425,7 @@ pub async fn run_agent_loop(
                 if round > 0 {
                     // 工具调用后空回复：提示 LLM 根据工具结果回答
                     messages.push(serde_json::json!({"role": "assistant", "content": ""}));
-                    messages.push(serde_json::json!({"role": "user", "content": "请根据上面工具的执行结果，给出完整的回复。"}));
+                    messages.push(serde_json::json!({"role": "user", "content": "请根据上面工具的执行结果，给出完整的回复。", "_internal": true}));
                 }
                 // round == 0 时直接重试（代理 API 偶发空响应）
                 continue;
@@ -575,11 +620,54 @@ pub async fn run_agent_loop(
                     );
                 }
 
-                // A1 反思重试：工具失败且错误可重试时，注入反思提示帮助 LLM 自我修正
+                // A0 Python ModuleNotFoundError 自动修复
+                // 检测到缺包时，自动 pip install 到沙箱，将修复结果追加到 tool result
+                if !success && result_text.contains("ModuleNotFoundError") {
+                    if let Some(pkg) = super::python_sandbox::extract_missing_module(&result_text) {
+                        if super::python_sandbox::is_initialized() {
+                            log::info!("自动安装缺失 Python 包: {}", pkg);
+                            let _ = tx.send(format!("\n⚙️ 自动安装 {}...\n", pkg));
+                            match super::python_sandbox::pip_install(&pkg).await {
+                                Ok(msg) => {
+                                    log::info!("自动安装成功: {}", msg);
+                                    // 注入提示让 LLM 知道已经安装了，重试即可
+                                    messages.push(serde_json::json!({
+                                        "role": "user",
+                                        "content": format!("[系统提示] 已自动安装 Python 包 `{}`，请重试刚才的命令。", pkg),
+                                        "_internal": true
+                                    }));
+                                    continue; // 跳过反思，直接进入下一轮重试
+                                }
+                                Err(e) => {
+                                    log::warn!("自动安装失败: {}", e);
+                                    // 安装失败则走正常反思流程
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A1 反思重试 + 循环检测（参照 OpenClaw tool-loop-detection）
                 if !success {
                     let error_class = super::tools::ErrorClass::classify(&result_text);
-                    if error_class.is_retryable() {
-                        let error_preview: String = result_text.chars().take(200).collect();
+                    let error_preview: String = result_text.chars().take(200).collect();
+                    // 循环检测：按 "工具名:错误类型" 计数（不是精确错误文本）
+                    let fail_sig = format!("{}:{:?}", tc.name, error_class);
+                    fail_history.push(fail_sig.clone());
+                    let repeat_count = fail_history.iter().filter(|s| **s == fail_sig).count();
+
+                    if repeat_count >= 2 {
+                        // 同样类型的错误出现 2 次 — 强制停止重试
+                        log::warn!("工具循环检测: {}:{:?} 失败 {} 次，停止重试", tc.name, error_class, repeat_count);
+                        let stop_msg = format!(
+                            "[系统提示] 工具 `{}` 已失败 {} 次（{:?}），错误: {}。\n\
+                            **禁止再用同样的工具和方式重试。** 请：\n\
+                            1. 改用其他内置工具（如 doc_write 代替 bash_exec+Python 写 Excel）\n\
+                            2. 或者直接告诉用户遇到了什么问题和解决方案。",
+                            tc.name, repeat_count, error_class, error_preview
+                        );
+                        messages.push(serde_json::json!({"role": "user", "content": stop_msg, "_internal": true}));
+                    } else if error_class.is_retryable() {
                         let reflection = format!(
                             "[系统提示] 工具 `{}` 执行失败（错误类型: {:?}），错误: {}。请分析失败原因：\n\
                             1. 参数是否正确？（路径、URL、格式）\n\
@@ -588,8 +676,8 @@ pub async fn run_agent_loop(
                             请调整后重试，不要直接告诉用户失败了。",
                             tc.name, error_class, error_preview
                         );
-                        messages.push(serde_json::json!({"role": "user", "content": reflection}));
-                        log::info!("反思注入: {} ({:?})", tc.name, error_class);
+                        messages.push(serde_json::json!({"role": "user", "content": reflection, "_internal": true}));
+                        log::info!("反思注入: {} ({:?}), 失败次数={}", tc.name, error_class, repeat_count);
                     }
                 }
 
@@ -675,7 +763,7 @@ pub async fn run_agent_loop(
             }
         }
 
-        // 持久化工具结果
+        // 持久化工具结果（跳过 _internal 标记的内部消息，如反思注入、nudge）
         {
             let msg_count = messages.len();
             let mut save_start = msg_count;
@@ -683,6 +771,9 @@ pub async fn run_agent_loop(
                 if messages[idx]["role"].as_str() == Some("assistant") { save_start = idx + 1; break; }
             }
             for idx in save_start..msg_count {
+                if messages[idx].get("_internal").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    continue; // 内部消息不持久化
+                }
                 let _ = memory::conversation::save_chat_message(deps.pool, session_id, agent_id, &messages[idx]).await;
             }
         }
@@ -747,8 +838,54 @@ pub async fn run_agent_loop(
         }
 
         if round == MAX_TOOL_ROUNDS - 1 {
-            let _ = tx.send(format!("\n[警告: 工具调用轮数已达上限 {}]\n", MAX_TOOL_ROUNDS));
+            log::warn!("工具调用轮数达上限 {}，强制生成最终回复", MAX_TOOL_ROUNDS);
         }
+    }
+
+    // 如果循环结束后没有文字回复（全是工具调用），强制再调一次 LLM（不给工具）生成回复
+    if full_content.trim().is_empty() {
+        log::info!("工具循环结束但无文字回复，强制生成最终回复");
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": "你已经完成了所有工具操作。请根据以上工具执行结果，给用户一个完整的总结回复。",
+            "_internal": true
+        }));
+        // 强制回复前也走 ContextGuard（防止 15 轮工具调用后 context 过大）
+        let guard_config = super::context_guard::ContextGuardConfig::for_model(&config.model);
+        let _ = super::context_guard::enforce(&guard_config, &mut messages);
+        super::tool_call_sanitizer::sanitize_messages_for_llm(&mut messages, &config.provider);
+
+        let (final_tx, mut final_rx) = mpsc::unbounded_channel::<String>();
+        let tx_clone = tx.clone();
+        let forward = tokio::spawn(async move {
+            while let Some(token) = final_rx.recv().await {
+                let _ = tx_clone.send(token);
+            }
+        });
+
+        let final_result = if let Some(p) = registry_provider {
+            let call_config = crate::plugin_system::CallConfig {
+                model: config.model.clone(),
+                api_key: config.api_key.clone(),
+                base_url: config.base_url.clone(),
+                temperature: config.temperature.map(|t| t as f64),
+                max_tokens: config.max_tokens.map(|m| m as u32),
+            };
+            p.call_stream(&call_config, &messages, system_prompt, None, final_tx).await
+        } else {
+            client.call_stream(&messages, system_prompt, None, final_tx).await
+        };
+
+        if let Ok(resp) = final_result {
+            full_content.push_str(&resp.content);
+            // 持久化最终回复
+            let final_msg = serde_json::json!({
+                "role": "assistant", "content": &resp.content,
+                "provider": config.provider, "model": config.model,
+            });
+            let _ = memory::conversation::save_chat_message(deps.pool, session_id, agent_id, &final_msg).await;
+        }
+        let _ = forward.await;
     }
 
     // 缓存

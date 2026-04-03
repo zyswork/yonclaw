@@ -35,10 +35,16 @@ router.post('/send-code', async (req: Request, res: Response) => {
     }
 
     const code = generateCode()
-    await sendVerificationCode(email, code)
+    const directCode = await sendVerificationCode(email, code)
 
-    console.log(`[认证] 验证码已发送至 ${email}`)
-    res.json({ message: '验证码已发送', expiresIn: 300 })
+    if (directCode) {
+      // SMTP 未配置，验证码直接返回（用户无需查邮件）
+      console.log(`[认证] 验证码直接返回: ${email}`)
+      res.json({ message: '验证码已生成', expiresIn: 300, code: directCode })
+    } else {
+      console.log(`[认证] 验证码已发送至 ${email}`)
+      res.json({ message: '验证码已发送', expiresIn: 300 })
+    }
   } catch (error) {
     console.error('发送验证码失败:', error)
     res.status(500).json({ error: '发送验证码失败，请稍后重试' })

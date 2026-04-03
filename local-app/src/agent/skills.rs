@@ -144,6 +144,9 @@ pub struct SkillRequirements {
     /// 需要的环境变量
     #[serde(default)]
     pub env: Vec<String>,
+    /// 需要的 Python 包（安装技能时自动 pip install 到沙箱）
+    #[serde(default)]
+    pub python_deps: Vec<String>,
 }
 
 impl SkillManifest {
@@ -587,6 +590,24 @@ impl SkillManager {
         for env_var in &requires.env {
             if std::env::var(env_var).is_err() {
                 log::warn!("技能依赖的环境变量未设置: {}", env_var);
+            }
+        }
+        // 安装 Python 依赖到沙箱
+        if !requires.python_deps.is_empty() && super::python_sandbox::is_initialized() {
+            log::info!("安装技能 Python 依赖: {:?}", requires.python_deps);
+            let pip = super::python_sandbox::pip_path();
+            if pip.exists() {
+                let mut args = vec!["install".to_string()];
+                args.extend(requires.python_deps.iter().cloned());
+                let output = std::process::Command::new(&pip)
+                    .args(&args)
+                    .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => log::info!("Python 依赖安装成功"),
+                    Ok(o) => log::warn!("Python 依赖安装部分失败: {}", String::from_utf8_lossy(&o.stderr).chars().take(200).collect::<String>()),
+                    Err(e) => log::warn!("Python 依赖安装失败: {}", e),
+                }
             }
         }
         Ok(())

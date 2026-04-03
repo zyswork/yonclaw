@@ -44,6 +44,8 @@ prost = "0.13"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
+calamine = "0.26"
+zip = "2"
 toml = "0.8"
 lancedb = { version = "0.15", optional = true }
 arrow-array = { version = "53", optional = true }

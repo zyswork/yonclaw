@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import { useAsyncData } from '../hooks/useAsyncData'
 
 interface DiagResult {
@@ -59,7 +59,7 @@ export default function DoctorPage() {
       } else {
         toast.success('Nothing to fix')
       }
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     finally { setFixing(false) }
   }
 

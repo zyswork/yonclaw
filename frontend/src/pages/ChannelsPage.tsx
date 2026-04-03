@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { QRCodeSVG } from 'qrcode.react'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import { useConfirm } from '../hooks/useConfirm'
 import Modal from '../components/Modal'
 import Select from '../components/Select'
@@ -343,7 +343,7 @@ export default function ChannelsPage() {
                           try {
                             await invoke('toggle_agent_channel', { id: ac.id, enabled: !ac.enabled })
                             loadAgentChannels()
-                          } catch (e) { toast.error(String(e)) }
+                          } catch (e) { toast.error(friendlyError(e)) }
                         }} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border-subtle)', cursor: 'pointer', color: ac.enabled ? 'var(--success)' : 'var(--text-muted)' }}>
                           {ac.enabled ? 'ON' : 'OFF'}
                         </button>
@@ -351,7 +351,7 @@ export default function ChannelsPage() {
                           try {
                             await invoke('delete_agent_channel', { id: ac.id })
                             loadAgentChannels()
-                          } catch (e) { toast.error(String(e)) }
+                          } catch (e) { toast.error(friendlyError(e)) }
                         }} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border-subtle)', cursor: 'pointer', color: 'var(--error)' }}>
                           ×
                         </button>
@@ -390,7 +390,7 @@ export default function ChannelsPage() {
                     toast.success(t('agentChannels.created'))
                     setAddingChannel(null)
                     loadAgentChannels()
-                  } catch (e) { toast.error(String(e)) }
+                  } catch (e) { toast.error(friendlyError(e)) }
                 }}
                   style={{ padding: '8px 20px', borderRadius: 6, border: 'none', backgroundColor: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13, opacity: addAgentId ? 1 : 0.5 }}>
                   {t('agentChannels.connect')}

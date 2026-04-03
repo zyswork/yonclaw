@@ -51,6 +51,23 @@ export const toast = {
   info: (msg: string) => useToastStore.getState().add('info', msg),
 }
 
+/** 将原始错误转为用户友好消息 */
+export function friendlyError(e: unknown): string {
+  const raw = String(e)
+  // Tauri invoke 错误通常是 "Unhandled Rejection: ..."
+  if (raw.includes('Unhandled')) return '操作失败，请稍后重试'
+  // 网络错误
+  if (raw.includes('Network Error') || raw.includes('fetch')) return '网络连接失败，请检查网络'
+  if (raw.includes('timeout') || raw.includes('Timeout')) return '请求超时，请重试'
+  // 权限
+  if (raw.includes('Permission') || raw.includes('permission')) return '权限不足'
+  // 文件
+  if (raw.includes('No such file') || raw.includes('not found')) return '文件不存在'
+  // 截断过长的技术错误
+  if (raw.length > 100) return raw.slice(0, 100) + '...'
+  return raw
+}
+
 const COLORS = {
   success: { bg: '#dcfce7', border: '#86efac', color: '#166534' },
   error: { bg: '#fef2f2', border: '#fecaca', color: '#991b1b' },

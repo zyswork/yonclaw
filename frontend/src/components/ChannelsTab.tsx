@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import Modal from './Modal'
 
 interface AgentChannel {
@@ -63,7 +63,7 @@ export default function ChannelsTab({ agentId }: { agentId: string }) {
       setAdding(null)
       setFormValues({})
       await load()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     setSaving(false)
   }
 
@@ -72,14 +72,14 @@ export default function ChannelsTab({ agentId }: { agentId: string }) {
       await invoke('delete_agent_channel', { id })
       toast.success(t('agentChannels.deleted'))
       await load()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const handleToggle = async (id: string, enabled: boolean) => {
     try {
       await invoke('toggle_agent_channel', { id, enabled })
       await load()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   // 已配置的频道类型

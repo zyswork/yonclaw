@@ -782,3 +782,18 @@ pub async fn cloud_api_proxy(
 
     resp.json::<serde_json::Value>().await.map_err(|e| format!("解析响应失败: {}", e))
 }
+
+/// Python 沙箱状态查询
+#[tauri::command]
+pub async fn get_python_sandbox_status() -> Result<serde_json::Value, String> {
+    let initialized = crate::agent::python_sandbox::is_initialized();
+    let initializing = crate::agent::python_sandbox::is_initializing();
+    let python_path = crate::agent::python_sandbox::python_path();
+
+    Ok(serde_json::json!({
+        "initialized": initialized,
+        "initializing": initializing,
+        "pythonPath": python_path.to_string_lossy(),
+        "status": if initialized { "ready" } else if initializing { "initializing" } else { "not_started" }
+    }))
+}

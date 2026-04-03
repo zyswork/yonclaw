@@ -8,7 +8,7 @@ use super::skill_tool::SkillTool;
 use super::media::MediaProvider; // 导入 trait 使 describe_image 可用
 use super::skills::SkillManager;
 use super::soul::{SoulEngine, SectionBudget};
-use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, TtsTool, SttTool, DocParseTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
+use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, TtsTool, SttTool, DocParseTool, DocWriteTool, ClipboardTool, ScreenshotTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
 use super::tools::{parse_tools_config, is_tool_enabled};
 use super::workspace::AgentWorkspace;
 use super::subagent::SubagentRegistry;
@@ -253,6 +253,9 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(BrowserTool));
         tool_manager.register_tool(Box::new(SttTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(DocParseTool));
+        tool_manager.register_tool(Box::new(DocWriteTool));
+        tool_manager.register_tool(Box::new(ClipboardTool));
+        tool_manager.register_tool(Box::new(ScreenshotTool));
         tool_manager.register_tool(Box::new(ApplyPatchTool));
         tool_manager.register_tool(Box::new(HttpRequestTool));
         tool_manager.register_tool(Box::new(SessionTool::new(pool.clone())));
@@ -822,36 +825,12 @@ impl Orchestrator {
             log::info!("可用工具: {} 个（通过 API tools 参数传递）", final_tool_defs.len());
         }
 
-        // 5. 构建消息列表（LRU 缓存 → DB fallback）
-        let structured_history = {
-            // 先查 LRU 缓存（10秒内有效）
-            let cached = {
-                match self.session_msg_cache.lock() {
-                    Ok(mut cache) => {
-                        cache.get(session_id).and_then(|(msgs, time)| {
-                            if time.elapsed() < std::time::Duration::from_secs(10) {
-                                Some(msgs.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    }
-                    Err(_) => None,
-                }
-            };
-            if let Some(msgs) = cached {
-                log::debug!("会话消息缓存命中: session_id={}", session_id);
-                msgs
-            } else {
-                // 加载更多历史（100条），让 ContextGuard 根据 token 预算裁剪
-                let msgs = memory::conversation::load_chat_messages(&self.pool, session_id, 100).await.unwrap_or_default();
-                // 写入缓存
-                if let Ok(mut cache) = self.session_msg_cache.lock() {
-                    cache.put(session_id.to_string(), (msgs.clone(), std::time::Instant::now()));
-                }
-                msgs
-            }
-        };
+        // 5. 构建消息列表 — 轮次感知加载（参照 OpenClaw limitHistoryTurns）
+        //
+        // 核心改进：按「用户轮次」而非「消息条数」加载历史。
+        // 1 轮 = 1 条 user 消息 + 后续所有 assistant/tool 消息。
+        // 避免 tool_call 噪声稀释新请求（250 条 session 中 tool 消息占 80%+）。
+        const MAX_HISTORY_TURNS: usize = 10; // 保留最近 10 轮用户对话
 
         // 获取压缩边界和会话摘要
         let compact_boundary: i64 = {
@@ -876,8 +855,8 @@ impl Orchestrator {
             messages.push(serde_json::json!({"role": "system", "content": &system_prompt}));
         }
 
-        // 参照 OpenClaw：摘要作为消息注入对话流（不是系统提示）
-        // 这样 LLM 能看到"之前聊了什么 → 现在的消息"的衔接
+        // 参照 OpenClaw：摘要作为 assistant 消息注入对话流（不是系统提示）
+        // 这样 LLM 能看到"之前聊了什么 → 现在的消息"的自然衔接
         if let Some(ref summary) = session_summary {
             messages.push(serde_json::json!({
                 "role": "assistant",
@@ -887,30 +866,84 @@ impl Orchestrator {
         }
 
         if compact_boundary > 0 {
-            // 有压缩边界：加载边界之后的所有消息（上限 100 条，让 ContextGuard 裁剪）
-            let recent_msgs: Vec<(String, String)> = sqlx::query_as(
-                "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 100"
-            ).bind(session_id).bind(compact_boundary)
-                .fetch_all(&self.pool).await.unwrap_or_default();
+            // 有压缩边界：加载边界之后的结构化消息（保留 tool_calls 结构）
+            let recent_msgs = memory::conversation::load_chat_messages_after_boundary(
+                &self.pool, session_id, compact_boundary, 200
+            ).await.unwrap_or_default();
 
-            log::info!("compact mode: 加载 boundary_seq={} 之后的 {} 条消息", compact_boundary, recent_msgs.len());
-            for (role, content) in &recent_msgs {
-                messages.push(serde_json::json!({"role": role, "content": content}));
-            }
-        } else if !structured_history.is_empty() {
-            // 无压缩：使用完整结构化历史
-            log::info!("加载 {} 条结构化历史消息", structured_history.len());
-            messages.extend(structured_history);
+            log::info!("compact mode: 加载 boundary_seq={} 之后的 {} 条结构化消息", compact_boundary, recent_msgs.len());
+            messages.extend(recent_msgs);
         } else {
-            // Fallback: 旧的纯文本历史（加载更多条，让 ContextGuard 处理裁剪）
-            let history = memory::conversation::get_history(&self.pool, agent_id, session_id, 50).await.unwrap_or_default();
-            for (user_msg, agent_resp) in history.into_iter().rev() {
-                messages.push(serde_json::json!({"role": "user", "content": user_msg}));
-                if !agent_resp.is_empty() {
-                    messages.push(serde_json::json!({"role": "assistant", "content": agent_resp}));
+            // 无压缩：按轮次加载（而非固定 100 条）
+            let structured_history = {
+                let cached = {
+                    match self.session_msg_cache.lock() {
+                        Ok(mut cache) => {
+                            cache.get(session_id).and_then(|(msgs, time)| {
+                                if time.elapsed() < std::time::Duration::from_secs(10) {
+                                    Some(msgs.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        }
+                        Err(_) => None,
+                    }
+                };
+                if let Some(msgs) = cached {
+                    log::debug!("会话消息缓存命中: session_id={}", session_id);
+                    msgs
+                } else {
+                    // 按轮次加载：保留最近 N 轮完整对话
+                    let msgs = memory::conversation::load_chat_messages_by_turns(
+                        &self.pool, session_id, MAX_HISTORY_TURNS
+                    ).await.unwrap_or_default();
+                    // 写入缓存
+                    if let Ok(mut cache) = self.session_msg_cache.lock() {
+                        cache.put(session_id.to_string(), (msgs.clone(), std::time::Instant::now()));
+                    }
+                    msgs
+                }
+            };
+
+            if !structured_history.is_empty() {
+                log::info!("按轮次加载 {} 条结构化历史消息（最近{}轮）", structured_history.len(), MAX_HISTORY_TURNS);
+                messages.extend(structured_history);
+            } else {
+                // Fallback: 旧的纯文本历史
+                let history = memory::conversation::get_history(&self.pool, agent_id, session_id, 20).await.unwrap_or_default();
+                for (user_msg, agent_resp) in history.into_iter().rev() {
+                    messages.push(serde_json::json!({"role": "user", "content": user_msg}));
+                    if !agent_resp.is_empty() {
+                        messages.push(serde_json::json!({"role": "assistant", "content": agent_resp}));
+                    }
                 }
             }
         }
+        // 5.1 Focus Directive — 长对话中引导 LLM 聚焦当前请求
+        //
+        // 当历史消息超过 6 条时，在用户消息前注入一个轻量提示，
+        // 明确告知 LLM "以下是用户最新请求，请聚焦回答"。
+        // 这是一个 system-level hint（以 user 消息注入，避免 Anthropic 不支持多 system）。
+        {
+            // 统计历史中的 user 消息数（不含即将添加的当前消息）
+            let history_user_count = messages.iter()
+                .filter(|m| m["role"].as_str() == Some("user"))
+                .count();
+            if history_user_count >= 3 {
+                messages.push(serde_json::json!({
+                    "role": "system",
+                    "content": "[Focus] 以上是历史对话背景。请聚焦回答用户接下来的最新消息，不要被之前的话题带偏。"
+                }));
+                // 对于不支持 system 角色在中间的 provider，改为 user 角色
+                if provider != "openai" {
+                    if let Some(last) = messages.last_mut() {
+                        last["role"] = serde_json::json!("user");
+                    }
+                }
+            }
+        }
+
         // 媒体理解：图片处理（提取 → 保存到磁盘 → 传给 LLM）
         let image_urls = super::multimodal::extract_image_urls(user_message);
         // 把 base64 图片保存到磁盘，DB 存路径引用
@@ -948,10 +981,12 @@ impl Orchestrator {
             messages.push(serde_json::json!({"role": "user", "content": user_message}));
         }
 
-        // 5a. 自动压缩：上下文使用率超过 80% 时自动触发 compact_session
+        // 5a. 自动压缩 — 双触发：token 预算 80% 或消息数 > 40
         //
-        // 在 ContextGuard 截断之前检查，优先用 LLM 摘要压缩（保留语义），
-        // 避免 ContextGuard 的暴力截断丢失重要上下文。
+        // 改进点：
+        // 1. 移除 compact_boundary==0 限制，允许重复压缩
+        // 2. 增加消息数触发（>40条），不必等到 token 预算紧张
+        // 3. 压缩后摘要统一注入为 assistant 消息（不是 system prompt）
         {
             let sys_tokens = super::token_counter::TokenCounter::count(&system_prompt);
             let pre_guard_config = super::context_guard::ContextGuardConfig::for_model(&agent.model)
@@ -959,17 +994,20 @@ impl Orchestrator {
             let budget = pre_guard_config.total_budget();
             let current_tokens = super::token_counter::TokenCounter::count_messages(&messages);
             let usage_percent = if budget > 0 { (current_tokens as f64 / budget as f64) * 100.0 } else { 0.0 };
+            let msg_count = messages.len();
 
-            if usage_percent > 80.0 && compact_boundary == 0 {
-                // 仅在尚未压缩过的 session 触发自动压缩
+            // 双触发条件：token 超 80% 或 消息超 40 条（排除 system 消息）
+            let need_compact = usage_percent > 80.0 || msg_count > 40;
+
+            if need_compact {
                 log::info!(
-                    "自动压缩: 上下文使用率 {:.1}% ({}/{} tokens)，触发 compact_session",
-                    usage_percent, current_tokens, budget
+                    "自动压缩触发: 上下文 {:.1}% ({}/{} tokens), 消息 {} 条, 已有边界={}",
+                    usage_percent, current_tokens, budget, msg_count, compact_boundary
                 );
                 match self.compact_session(agent_id, session_id, api_key, provider, base_url).await {
                     Ok(result) => {
                         log::info!("自动压缩完成: {}", result.chars().take(200).collect::<String>());
-                        // 压缩后重新加载消息：从新的 compact_boundary 之后加载
+                        // 压缩后重新加载消息
                         let new_boundary: i64 = {
                             let key = format!("compact_boundary_{}", session_id);
                             sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
@@ -979,35 +1017,29 @@ impl Orchestrator {
                                 .unwrap_or(0)
                         };
                         if new_boundary > 0 {
-                            // 注入摘要到 system prompt
-                            if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
-                                if let Some(ref summary) = session.summary {
-                                    if !summary.is_empty() {
-                                        // 替换 system prompt 中可能已有的摘要（或追加新摘要）
-                                        if !system_prompt.contains("# Previous conversation summary") {
-                                            system_prompt = format!(
-                                                "{}\n\n---\n\n# Previous conversation summary\n\n{}\n\n---\n\nThe above is a summary of earlier conversation. Continue naturally from the recent messages below.",
-                                                system_prompt, summary
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            // 重建消息列表
-                            let recent_msgs: Vec<(String, String)> = sqlx::query_as(
-                                "SELECT role, COALESCE(content, '') FROM chat_messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 50"
-                            ).bind(session_id).bind(new_boundary)
-                                .fetch_all(&self.pool).await.unwrap_or_default();
-
+                            // 重建消息列表（摘要作为 assistant 消息，统一路径）
                             messages.clear();
-                            // 重新添加 system message（如果是 openai provider）
                             if provider == "openai" {
                                 messages.push(serde_json::json!({"role": "system", "content": &system_prompt}));
                             }
-                            for (role, content) in &recent_msgs {
-                                messages.push(serde_json::json!({"role": role, "content": content}));
+                            // 注入新摘要为 assistant 消息
+                            if let Ok(Some(session)) = memory::conversation::get_session(&self.pool, session_id).await {
+                                if let Some(ref summary) = session.summary {
+                                    if !summary.is_empty() {
+                                        messages.push(serde_json::json!({
+                                            "role": "assistant",
+                                            "content": format!("[对话摘要] 以下是之前对话的要点：\n\n{}\n\n---\n请基于以上背景继续对话。", summary)
+                                        }));
+                                    }
+                                }
                             }
-                            // 重新添加当前用户消息（recent_msgs 可能不包含刚保存的消息）
+                            // 加载结构化消息（保留 tool_calls）
+                            let recent_msgs = memory::conversation::load_chat_messages_after_boundary(
+                                &self.pool, session_id, new_boundary, 200
+                            ).await.unwrap_or_default();
+                            messages.extend(recent_msgs);
+
+                            // 确保当前用户消息在末尾
                             let has_current_user_msg = messages.last()
                                 .and_then(|m| m["content"].as_str())
                                 .map(|c| c == user_message)
@@ -1017,8 +1049,8 @@ impl Orchestrator {
                             }
                             let new_tokens = super::token_counter::TokenCounter::count_messages(&messages);
                             log::info!(
-                                "自动压缩后重建消息: {} 条, {} tokens (原 {} tokens)",
-                                messages.len(), new_tokens, current_tokens
+                                "自动压缩后重建消息: {} 条, {} tokens (原 {} 条 {} tokens)",
+                                messages.len(), new_tokens, msg_count, current_tokens
                             );
                         }
                     }
@@ -1026,11 +1058,6 @@ impl Orchestrator {
                         log::warn!("自动压缩失败（将继续使用 ContextGuard 截断）: {}", e);
                     }
                 }
-            } else if usage_percent > 80.0 && compact_boundary > 0 {
-                log::info!(
-                    "自动压缩: 上下文使用率 {:.1}%，但已有压缩边界（boundary={}），跳过重复压缩",
-                    usage_percent, compact_boundary
-                );
             }
         }
 
@@ -1533,28 +1560,49 @@ impl Orchestrator {
 
         log::info!("compact: 将压缩 {} 条，保留 {} 条", compact_count, keep_count);
 
-        // 构建要压缩的对话文本（限制总长度，避免发送太多给 LLM）
+        // 构建要压缩的对话文本
+        // 改进：增加字符预算到 16000，每条消息截断到 300 字符，保留更多语义
         let mut conversation_text = String::new();
-        let char_budget = 8000usize; // 最多 8000 字符用于摘要生成
+        let char_budget = 16000usize;
         for (_, role, content) in to_compact.iter() {
-            // 安全截断（避免在多字节 UTF-8 字符中间切断导致 panic）
-            let truncated: String = content.chars().take(200).collect();
+            let truncated: String = content.chars().take(300).collect();
             let line = format!("{}: {}\n", role, truncated);
             if conversation_text.len() + line.len() > char_budget { break; }
             conversation_text.push_str(&line);
         }
 
-        // 3. 用 Agent 自身模型生成摘要（确保 provider 有配置）
+        // 提取最后一条 user 消息（用于 "MUST PRESERVE" 指令）
+        let last_user_request: String = to_compact.iter()
+            .rev()
+            .find(|(_, role, _)| role == "user")
+            .map(|(_, _, content)| content.chars().take(200).collect())
+            .unwrap_or_default();
+
+        // 3. 用 Agent 自身模型生成摘要
         let agent_info = self.get_agent_cached(agent_id).await?;
-        // 直接用 agent 的模型，不切换轻量模型（避免 provider 里没配置该模型）
         let compact_model = agent_info.model.clone();
         log::info!("compact: 使用模型 {} 生成摘要", compact_model);
 
+        // 参照 OpenClaw compaction.ts 的保留指令
         let summary_prompt = format!(
-            "Compress the following conversation into a concise summary (max 500 chars). \
-             Keep key decisions, facts, and context. Use the same language as the conversation. \
-             Output ONLY the summary.\n\n---\n{}\n---",
-            conversation_text
+            "请将以下对话压缩为简洁摘要（最多 800 字符）。使用与对话相同的语言。\n\
+             \n\
+             **必须保留：**\n\
+             - 用户最后的请求是什么，以及当前的处理状态\n\
+             - 活跃的任务及其进度（进行中、已阻塞、待处理）\n\
+             - 已做出的决策及其理由\n\
+             - 待办事项、开放问题和约束条件\n\
+             - 所有文件路径、URL、ID 等标识符必须精确保留\n\
+             \n\
+             **可以省略：**\n\
+             - 工具调用的详细参数和返回值\n\
+             - 重复的对话内容\n\
+             - 已完成且不再相关的中间步骤\n\
+             \n\
+             用户最后的请求: {}\n\
+             \n\
+             只输出摘要，不要其他内容。\n\n---\n{}\n---",
+            last_user_request, conversation_text
         );
 
         let config = LlmConfig {
@@ -1563,14 +1611,14 @@ impl Orchestrator {
             model: compact_model,
             base_url: base_url.map(|s| s.to_string()),
             temperature: Some(0.2),
-            max_tokens: Some(512),
+            max_tokens: Some(1024),
             thinking_level: None,
         };
         let client = LlmClient::new(config);
         let messages = vec![
             serde_json::json!({"role": "user", "content": summary_prompt}),
         ];
-        let (dummy_tx, _) = mpsc::unbounded_channel::<String>();
+        let (dummy_tx, _rx) = mpsc::unbounded_channel::<String>();
         log::info!("compact: 开始调 LLM 生成摘要...");
 
         // 30 秒超时保护
@@ -1633,6 +1681,12 @@ impl Orchestrator {
 
         log::info!("compact 完成: session={}, boundary_seq={}, tokens {}→{} (LLM context only, 消息不删除)",
             &session_id[..8.min(session_id.len())], boundary_seq, tokens_before, tokens_after);
+
+        // 失效 LRU 缓存（避免下次请求用到压缩前的旧消息）
+        if let Ok(mut cache) = self.session_msg_cache.lock() {
+            cache.pop(session_id);
+            log::debug!("compact: 已失效 session 消息缓存");
+        }
 
         Ok(format!(
             "Context compacted: {} → {} (LLM context)\n{} messages summarized, all history preserved.\n\n{}",

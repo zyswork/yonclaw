@@ -34,8 +34,36 @@ function markHadLogin() {
   localStorage.setItem('had_login', 'true')
 }
 
+// 安全存储辅助：token/user 存到 Tauri 后端 SQLite，不用 localStorage（防 XSS）
+const secureSet = async (key: string, value: string) => {
+  try {
+    const { invoke } = await import('@tauri-apps/api/tauri')
+    await invoke('set_setting', { key: `auth.${key}`, value })
+  } catch {
+    // Tauri 未就绪时 fallback localStorage（开发模式）
+    localStorage.setItem(key, value)
+  }
+}
+const secureGet = async (key: string): Promise<string | null> => {
+  try {
+    const { invoke } = await import('@tauri-apps/api/tauri')
+    return await invoke<string | null>('get_setting', { key: `auth.${key}` })
+  } catch {
+    return localStorage.getItem(key)
+  }
+}
+const secureRemove = async (key: string) => {
+  try {
+    const { invoke } = await import('@tauri-apps/api/tauri')
+    await invoke('set_setting', { key: `auth.${key}`, value: '' })
+  } catch {
+    localStorage.removeItem(key)
+  }
+}
+
 export const useAuthStore = create<AuthStore>((set) => ({
   user: null,
+  // 初始状态从 localStorage 快速读取（hydrate 会从安全存储覆盖）
   token: typeof window !== 'undefined' ? localStorage.getItem('token') : null,
   isLoggedIn: typeof window !== 'undefined' ? !!localStorage.getItem('token') : false,
   nickname: '',
@@ -43,21 +71,31 @@ export const useAuthStore = create<AuthStore>((set) => ({
   bio: '',
   setUser: (user) => set({ user }),
   setToken: (token) => {
-    localStorage.setItem('token', token)
+    localStorage.setItem('token', token) // 快速 UI 响应
+    secureSet('token', token) // 安全持久化
     markHadLogin()
     set({ token, isLoggedIn: true })
   },
   login: (token, user) => {
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(user))
+    secureSet('token', token)
+    secureSet('user', JSON.stringify(user))
     markHadLogin()
     set({ token, user, isLoggedIn: true })
-    // 同步用户信息到 Tauri 后端（遥测用）
+    // 同步用户信息到 Tauri 后端（遥测 + 本地 profile 初始化）
     if (user?.email || user?.name) {
       import('@tauri-apps/api/tauri').then(({ invoke }) => {
         invoke('set_setting', { key: 'user_id', value: user.email || user.id || '' }).catch(() => {})
         invoke('set_setting', { key: 'user_name', value: user.name || '' }).catch(() => {})
         invoke('set_setting', { key: 'user_email', value: user.email || '' }).catch(() => {})
+        // 新设备首次登录：如果本地没有 profile，用服务端的 name 初始化
+        invoke<{ nickname: string; bio: string }>('get_user_profile').then((profile) => {
+          if (!profile?.nickname && user.name) {
+            invoke('save_user_profile', { nickname: user.name, bio: '' }).catch(() => {})
+            set({ nickname: user.name })
+          }
+        }).catch(() => {})
       }).catch(() => {})
     }
   },
@@ -65,12 +103,15 @@ export const useAuthStore = create<AuthStore>((set) => ({
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     localStorage.setItem('had_login', 'true')
+    secureRemove('token')
+    secureRemove('user')
     set({ user: null, token: null, isLoggedIn: false })
     useEnterpriseStore.setState({ enterprise: null })
     // ProtectedPage 检测到 !isLoggedIn + had_login → 重定向到 /login
     // LoginPage 检测到 had_login → 显示登录页（不会自动跳走）
   },
   hydrate: () => {
+    // 优先从 localStorage 快速恢复（同步，UI 无闪烁）
     const token = localStorage.getItem('token')
     const userStr = localStorage.getItem('user')
     if (token && userStr) {
@@ -78,7 +119,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
         const user = JSON.parse(userStr) as User
         markHadLogin()
         set({ token, user, isLoggedIn: true })
-        // 确保 Tauri 后端也有用户信息（遥测用）
         if (user?.email || user?.name) {
           import('@tauri-apps/api/tauri').then(({ invoke }) => {
             invoke('set_setting', { key: 'user_id', value: user.email || user.id || '' }).catch(() => {})
@@ -87,16 +127,30 @@ export const useAuthStore = create<AuthStore>((set) => ({
           }).catch(() => {})
         }
       } catch {
-        // JSON 解析失败，清理无效数据
         localStorage.removeItem('token')
         localStorage.removeItem('user')
         set({ token: null, user: null, isLoggedIn: false })
       }
     } else if (token) {
-      // 有 token 但没有 user JSON（兼容 setToken 路径）
       markHadLogin()
       set({ token, isLoggedIn: true })
     } else {
+      // localStorage 没有 → 尝试从安全存储恢复（异步）
+      secureGet('token').then(secToken => {
+        if (!secToken) return
+        secureGet('user').then(secUser => {
+          if (secToken && secUser) {
+            try {
+              const user = JSON.parse(secUser) as User
+              // 回写 localStorage 以备下次快速恢复
+              localStorage.setItem('token', secToken)
+              localStorage.setItem('user', secUser)
+              markHadLogin()
+              set({ token: secToken, user, isLoggedIn: true })
+            } catch {}
+          }
+        })
+      })
       set({ token: null, user: null, isLoggedIn: false })
     }
   },

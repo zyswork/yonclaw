@@ -159,7 +159,11 @@ async fn main() {
 
     // 初始化数据库
     let data_dir = &app_config.data_dir;
-    std::fs::create_dir_all(data_dir).expect("无法创建数据目录");
+    if let Err(e) = std::fs::create_dir_all(data_dir) {
+        log::error!("无法创建数据目录 {:?}: {}，尝试使用当前目录", data_dir, e);
+        // 降级到当前目录而不是崩溃
+        let _ = std::fs::create_dir_all(".");
+    }
     let db_path = data_dir.join("xianzhu.db");
     let db = match db::Database::new(db_path.to_str().unwrap_or("xianzhu.db")).await {
         Ok(db) => {
@@ -510,6 +514,10 @@ async fn main() {
     // 首次运行时从 Gemini CLI 提取 OAuth credentials 并缓存
     tokio::spawn(async { handlers::oauth::seed_oauth_credentials().await });
 
+    // Python 沙箱后台初始化（检测系统 Python → 创建 venv → 预装基础库）
+    agent::python_sandbox::spawn_background_init();
+    log::info!("Python 沙箱后台初始化已启动");
+
     // 初始化遥测模块并启动心跳（后台任务，不阻塞启动）
     telemetry::init(pool_clone.clone());
     telemetry::start_heartbeat(pool_clone.clone());
@@ -646,6 +654,8 @@ async fn main() {
             get_user_profile, save_user_profile, save_user_avatar, get_user_avatar,
             // oauth
             start_oauth_flow, exchange_oauth_code, refresh_oauth_token,
+            // python sandbox
+            get_python_sandbox_status,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");

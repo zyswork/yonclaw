@@ -190,7 +190,7 @@ pub async fn auto_name_session(
                     log::info!("Session 自动命名: {} → {}", session_id, final_title);
                 }
             }
-            Err(e) => log::debug!("Session 标题生成失败（静默）: {}", e),
+            Err(e) => log::warn!("Session 标题生成失败: {}", e),
         }
     });
 }
@@ -669,6 +669,203 @@ pub async fn load_chat_messages(
             "user" => {
                 if let Some(ref tcid) = tool_call_id {
                     // Anthropic tool_result 格式
+                    let raw = content.unwrap_or_default();
+                    msg["content"] = serde_json::json!([{
+                        "type": "tool_result",
+                        "tool_use_id": tcid,
+                        "content": raw
+                    }]);
+                } else {
+                    msg["content"] = serde_json::json!(content.unwrap_or_default());
+                }
+            }
+            _ => {
+                msg["content"] = serde_json::json!(content.unwrap_or_default());
+            }
+        }
+
+        msg["seq"] = serde_json::json!(seq);
+        messages.push(msg);
+    }
+
+    Ok(messages)
+}
+
+/// 按用户轮次加载历史消息
+///
+/// 1 轮 = 1 条 user 消息 + 后续所有 assistant/tool 消息（直到下一条 user）。
+/// 保留最近 `max_turns` 轮完整对话，避免 tool_call 噪声稀释新请求。
+/// 参照 OpenClaw 的 `limitHistoryTurns` 策略。
+pub async fn load_chat_messages_by_turns(
+    pool: &SqlitePool,
+    session_id: &str,
+    max_turns: usize,
+) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    // 加载全部消息（按 seq 正序）
+    let rows = sqlx::query(
+        r#"
+        SELECT role, content, tool_calls_json, tool_call_id, tool_name, seq
+        FROM chat_messages
+        WHERE session_id = ?
+        ORDER BY seq ASC
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+
+    // 找出所有 user 消息的索引位置
+    let mut user_indices: Vec<usize> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let role: String = row.get("role");
+        if role == "user" {
+            // 跳过 Anthropic 的 tool_result 格式（role=user 但有 tool_call_id）
+            let tool_call_id: Option<String> = row.get("tool_call_id");
+            if tool_call_id.is_none() {
+                user_indices.push(i);
+            }
+        }
+    }
+
+    // 取最近 max_turns 轮的起始索引
+    let start_from = if user_indices.len() > max_turns {
+        user_indices[user_indices.len() - max_turns]
+    } else {
+        0
+    };
+
+    // 从 start_from 开始构建消息
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    for row in rows.into_iter().skip(start_from) {
+        let role: String = row.get("role");
+        let content: Option<String> = row.get("content");
+        let tool_calls_json: Option<String> = row.get("tool_calls_json");
+        let tool_call_id: Option<String> = row.get("tool_call_id");
+        let tool_name: Option<String> = row.get("tool_name");
+        let seq: i64 = row.get("seq");
+
+        if role == "system" { continue; }
+
+        let mut msg = serde_json::json!({"role": role});
+
+        match role.as_str() {
+            "tool" => {
+                if let Some(ref tcid) = tool_call_id {
+                    msg["tool_call_id"] = serde_json::json!(tcid);
+                }
+                if let Some(ref name) = tool_name {
+                    msg["name"] = serde_json::json!(name);
+                }
+                msg["content"] = serde_json::json!(content.unwrap_or_default());
+            }
+            "assistant" => {
+                if let Some(ref c) = content {
+                    if !c.is_empty() {
+                        msg["content"] = serde_json::json!(c);
+                    } else {
+                        msg["content"] = serde_json::Value::Null;
+                    }
+                } else {
+                    msg["content"] = serde_json::Value::Null;
+                }
+                if let Some(ref tc_json) = tool_calls_json {
+                    if let Ok(tc) = serde_json::from_str::<serde_json::Value>(tc_json) {
+                        msg["tool_calls"] = tc;
+                    }
+                }
+            }
+            "user" => {
+                if let Some(ref tcid) = tool_call_id {
+                    let raw = content.unwrap_or_default();
+                    msg["content"] = serde_json::json!([{
+                        "type": "tool_result",
+                        "tool_use_id": tcid,
+                        "content": raw
+                    }]);
+                } else {
+                    msg["content"] = serde_json::json!(content.unwrap_or_default());
+                }
+            }
+            _ => {
+                msg["content"] = serde_json::json!(content.unwrap_or_default());
+            }
+        }
+
+        msg["seq"] = serde_json::json!(seq);
+        messages.push(msg);
+    }
+
+    log::info!(
+        "load_by_turns: session={}, 总消息={}, user轮次={}, 保留最近{}轮, 返回{}条消息",
+        session_id, start_from + messages.len(), user_indices.len(), max_turns, messages.len()
+    );
+
+    Ok(messages)
+}
+
+/// 按 compact_boundary 加载结构化消息（保留 tool_calls 结构）
+pub async fn load_chat_messages_after_boundary(
+    pool: &SqlitePool,
+    session_id: &str,
+    boundary_seq: i64,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        SELECT role, content, tool_calls_json, tool_call_id, tool_name, seq
+        FROM chat_messages
+        WHERE session_id = ? AND seq > ?
+        ORDER BY seq ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(session_id)
+    .bind(boundary_seq)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    for row in rows {
+        let role: String = row.get("role");
+        let content: Option<String> = row.get("content");
+        let tool_calls_json: Option<String> = row.get("tool_calls_json");
+        let tool_call_id: Option<String> = row.get("tool_call_id");
+        let tool_name: Option<String> = row.get("tool_name");
+        let seq: i64 = row.get("seq");
+
+        if role == "system" { continue; }
+
+        let mut msg = serde_json::json!({"role": role});
+
+        match role.as_str() {
+            "tool" => {
+                if let Some(ref tcid) = tool_call_id {
+                    msg["tool_call_id"] = serde_json::json!(tcid);
+                }
+                if let Some(ref name) = tool_name {
+                    msg["name"] = serde_json::json!(name);
+                }
+                msg["content"] = serde_json::json!(content.unwrap_or_default());
+            }
+            "assistant" => {
+                if let Some(ref c) = content {
+                    if !c.is_empty() {
+                        msg["content"] = serde_json::json!(c);
+                    } else {
+                        msg["content"] = serde_json::Value::Null;
+                    }
+                } else {
+                    msg["content"] = serde_json::Value::Null;
+                }
+                if let Some(ref tc_json) = tool_calls_json {
+                    if let Ok(tc) = serde_json::from_str::<serde_json::Value>(tc_json) {
+                        msg["tool_calls"] = tc;
+                    }
+                }
+            }
+            "user" => {
+                if let Some(ref tcid) = tool_call_id {
                     let raw = content.unwrap_or_default();
                     msg["content"] = serde_json::json!([{
                         "type": "tool_result",

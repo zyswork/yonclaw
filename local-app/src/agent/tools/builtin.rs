@@ -884,16 +884,20 @@ impl Tool for BashExecTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
-        let command = arguments
+        let raw_command = arguments
             .get("command")
             .and_then(|c| c.as_str())
             .ok_or("缺少 command 参数")?;
+
+        // Python 沙箱：将 python3/python/pip 命令重写为沙箱路径
+        let command = crate::agent::python_sandbox::rewrite_python_command(raw_command);
+        let command = command.as_str();
 
         // Shell 安全守卫
         crate::agent::sandbox::ShellGuard::validate_command(command)?;
 
         // 环境变量清洗
-        let safe_env = crate::agent::sandbox::EnvSanitizer::sanitized_env();
+        let mut safe_env = crate::agent::sandbox::EnvSanitizer::sanitized_env();
 
         log::info!("执行 bash 命令: {}", command);
 
@@ -914,20 +918,46 @@ impl Tool for BashExecTool {
             );
             env_path = format!("{}:{}", extra, env_path);
         }
+        // Python 沙箱：将 venv/bin 注入 PATH 最前面，使 python3/pip3 自动走沙箱
+        for (key, val) in crate::agent::python_sandbox::sandbox_env() {
+            if key == "_XIANZHU_PYTHON_BIN" {
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                env_path = format!("{}{}{}", val, sep, env_path);
+            } else {
+                safe_env.insert(key, val);
+            }
+        }
 
-        // 使用 sh -c 执行完整命令字符串（支持管道、重定向等）
+        // 动态超时：pip/npm/cargo 等长命令给更多时间
+        let timeout_secs = if command.contains("pip install") || command.contains("npm install")
+            || command.contains("cargo build") || command.contains("cargo install")
+            || command.contains("brew install") || command.contains("apt install")
+        { 300 } else { 120 };
+
+        // 跨平台 Shell 执行（支持管道、重定向等）
+        #[cfg(windows)]
+        let mut shell_cmd = {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(&["/C", command]);
+            cmd
+        };
+        #[cfg(not(windows))]
+        let mut shell_cmd = {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(&["-c", command]);
+            cmd
+        };
+
         let output = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command)
+            std::time::Duration::from_secs(timeout_secs),
+            shell_cmd
                 .env_clear()
                 .envs(&safe_env)
                 .env("PATH", &env_path)
                 .output(),
         )
         .await
-        .map_err(|_| "命令执行超时（30秒）".to_string())?
+        .map_err(|_| format!("命令执行超时（{}秒）", timeout_secs))?
         .map_err(|e| format!("命令执行失败: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -3460,7 +3490,7 @@ impl Tool for DocParseTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "doc_parse".to_string(),
-            description: "解析文档文件为纯文本。支持 PDF、DOCX、TXT、CSV、Markdown 等格式。".to_string(),
+            description: "解析文档文件为纯文本。支持 PDF、DOCX、XLSX、XLS、TXT、CSV、Markdown 等格式。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -3503,7 +3533,8 @@ impl Tool for DocParseTool {
                     .map_err(|e| format!("读取文件失败: {}", e))?
             }
             "docx" => parse_docx(file_path).await?,
-            _ => return Err(format!("不支持的文档格式: .{}。支持: pdf/docx/txt/md/csv/json/xml/yaml", ext)),
+            "xlsx" | "xls" | "xlsm" => parse_excel(file_path)?,
+            _ => return Err(format!("不支持的文档格式: .{}。支持: pdf/docx/xlsx/xls/txt/md/csv/json/xml/yaml", ext)),
         };
 
         // 截断
@@ -3619,6 +3650,55 @@ async fn parse_docx(file_path: &str) -> Result<String, String> {
     }
 
     Err("DOCX 解析失败。请安装 pandoc（brew install pandoc / apt install pandoc）".into())
+}
+
+/// Excel 解析（纯 Rust，calamine crate，零外部依赖）
+fn parse_excel(file_path: &str) -> Result<String, String> {
+    use calamine::{Reader, open_workbook_auto};
+
+    let mut workbook = open_workbook_auto(file_path)
+        .map_err(|e| format!("Excel 文件打开失败: {}", e))?;
+
+    let mut result = String::new();
+    let sheet_names = workbook.sheet_names().to_vec();
+
+    for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
+        if let Ok(range) = workbook.worksheet_range(sheet_name) {
+            if sheet_idx > 0 { result.push_str("\n\n"); }
+            result.push_str(&format!("## Sheet: {}\n\n", sheet_name));
+
+            // 转为 Markdown 表格格式
+            let mut rows_iter = range.rows();
+            if let Some(header) = rows_iter.next() {
+                let header_cells: Vec<String> = header.iter().map(|c| format!("{}", c)).collect();
+                result.push_str("| ");
+                result.push_str(&header_cells.join(" | "));
+                result.push_str(" |\n");
+                result.push_str("| ");
+                result.push_str(&header_cells.iter().map(|_| "---").collect::<Vec<_>>().join(" | "));
+                result.push_str(" |\n");
+            }
+            let mut row_count = 0;
+            for row in rows_iter {
+                let cells: Vec<String> = row.iter().map(|c| format!("{}", c)).collect();
+                result.push_str("| ");
+                result.push_str(&cells.join(" | "));
+                result.push_str(" |\n");
+                row_count += 1;
+                if row_count >= 500 {
+                    result.push_str(&format!("\n[... 已截断，共 {} 行数据 ...]\n", range.height()));
+                    break;
+                }
+            }
+            result.push_str(&format!("\n共 {} 行 x {} 列\n", range.height(), range.width()));
+        }
+    }
+
+    if result.is_empty() {
+        Err("Excel 文件为空或无法读取".into())
+    } else {
+        Ok(result)
+    }
 }
 
 // ─── Agent 模板 ──────────────────────────────────────────────
@@ -4423,4 +4503,447 @@ impl Tool for A2aTool {
             Err(e) => Err(e),
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────
+// Excel/CSV 写入工具（纯 Rust，不依赖 Python）
+// ──────────────────────────────────────────────────────────
+
+pub struct DocWriteTool;
+
+#[async_trait]
+impl Tool for DocWriteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "doc_write".to_string(),
+            description: "将数据写入 Excel(.xlsx) 或 CSV 文件。输入 JSON 格式数据，自动生成表格文件。不需要 Python 或 pip。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "输出文件路径（.xlsx 或 .csv）"
+                    },
+                    "headers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "列标题数组，如 [\"姓名\", \"年龄\", \"邮箱\"]"
+                    },
+                    "rows": {
+                        "type": "array",
+                        "items": { "type": "array", "items": { "type": "string" } },
+                        "description": "数据行数组，每行是字符串数组，如 [[\"张三\", \"25\", \"a@b.com\"]]"
+                    },
+                    "sheet_name": {
+                        "type": "string",
+                        "description": "Sheet 名称（仅 xlsx，默认 Sheet1）"
+                    }
+                },
+                "required": ["file_path", "rows"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let file_path = arguments["file_path"].as_str().ok_or("缺少 file_path")?;
+        let ext = std::path::Path::new(file_path)
+            .extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+        let headers: Vec<String> = arguments.get("headers")
+            .and_then(|h| serde_json::from_value(h.clone()).ok())
+            .unwrap_or_default();
+
+        let rows: Vec<Vec<String>> = arguments["rows"].as_array()
+            .ok_or("rows 必须是二维数组")?
+            .iter()
+            .map(|row| {
+                row.as_array()
+                    .map(|cells| cells.iter().map(|c| {
+                        c.as_str().map(|s| s.to_string()).unwrap_or_else(|| c.to_string())
+                    }).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        match ext.as_str() {
+            "csv" | "tsv" => {
+                let sep = if ext == "tsv" { "\t" } else { "," };
+                let mut content = String::new();
+                if !headers.is_empty() {
+                    content.push_str(&headers.join(sep));
+                    content.push('\n');
+                }
+                for row in &rows {
+                    content.push_str(&row.join(sep));
+                    content.push('\n');
+                }
+                tokio::fs::write(file_path, &content).await
+                    .map_err(|e| format!("写入失败: {}", e))?;
+                Ok(format!("CSV 文件已写入: {} ({} 行)", file_path, rows.len()))
+            }
+            "xlsx" | "xls" => {
+                write_xlsx(file_path, &headers, &rows, arguments.get("sheet_name").and_then(|s| s.as_str()))?;
+                Ok(format!("Excel 文件已写入: {} ({} 行 x {} 列)", file_path, rows.len(),
+                    headers.len().max(rows.first().map(|r| r.len()).unwrap_or(0))))
+            }
+            _ => Err(format!("不支持的格式: .{}。支持: xlsx/csv/tsv", ext)),
+        }
+    }
+}
+
+/// 纯 Rust xlsx 写入（使用简单的 OpenXML 结构）
+fn write_xlsx(file_path: &str, headers: &[String], rows: &[Vec<String>], sheet_name: Option<&str>) -> Result<(), String> {
+    use std::io::Write;
+    let sheet = sheet_name.unwrap_or("Sheet1");
+    let file = std::fs::File::create(file_path).map_err(|e| format!("创建文件失败: {}", e))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // [Content_Types].xml
+    zip.start_file("[Content_Types].xml", options).map_err(|e| e.to_string())?;
+    write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#).map_err(|e| e.to_string())?;
+
+    // _rels/.rels
+    zip.start_file("_rels/.rels", options).map_err(|e| e.to_string())?;
+    write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#).map_err(|e| e.to_string())?;
+
+    // xl/_rels/workbook.xml.rels
+    zip.start_file("xl/_rels/workbook.xml.rels", options).map_err(|e| e.to_string())?;
+    write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#).map_err(|e| e.to_string())?;
+
+    // xl/workbook.xml
+    zip.start_file("xl/workbook.xml", options).map_err(|e| e.to_string())?;
+    write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="{}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#, sheet).map_err(|e| e.to_string())?;
+
+    // xl/worksheets/sheet1.xml
+    zip.start_file("xl/worksheets/sheet1.xml", options).map_err(|e| e.to_string())?;
+    let mut sheet_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#);
+
+    let mut row_num = 1u32;
+    // 写标题行
+    if !headers.is_empty() {
+        sheet_xml.push_str(&format!("<row r=\"{}\">", row_num));
+        for (ci, h) in headers.iter().enumerate() {
+            let col = (b'A' + ci as u8) as char;
+            let escaped = h.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            sheet_xml.push_str(&format!("<c r=\"{}{}\" t=\"inlineStr\"><is><t>{}</t></is></c>", col, row_num, escaped));
+        }
+        sheet_xml.push_str("</row>");
+        row_num += 1;
+    }
+    // 写数据行
+    for row in rows {
+        sheet_xml.push_str(&format!("<row r=\"{}\">", row_num));
+        for (ci, cell) in row.iter().enumerate() {
+            let col = if ci < 26 { format!("{}", (b'A' + ci as u8) as char) }
+                      else { format!("{}{}", (b'A' + (ci / 26 - 1) as u8) as char, (b'A' + (ci % 26) as u8) as char) };
+            let escaped = cell.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            // 尝试解析为数字
+            if cell.parse::<f64>().is_ok() {
+                sheet_xml.push_str(&format!("<c r=\"{}{}\"><v>{}</v></c>", col, row_num, cell));
+            } else {
+                sheet_xml.push_str(&format!("<c r=\"{}{}\" t=\"inlineStr\"><is><t>{}</t></is></c>", col, row_num, escaped));
+            }
+        }
+        sheet_xml.push_str("</row>");
+        row_num += 1;
+    }
+    sheet_xml.push_str("</sheetData></worksheet>");
+    write!(zip, "{}", sheet_xml).map_err(|e| e.to_string())?;
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────
+// 剪贴板工具（跨平台：macOS pbcopy/pbpaste, Windows clip/PowerShell, Linux xclip）
+// ──────────────────────────────────────────────────────────
+
+pub struct ClipboardTool;
+
+#[async_trait]
+impl Tool for ClipboardTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "clipboard".to_string(),
+            description: "读取或写入系统剪贴板。action=read 读取剪贴板内容，action=write 写入文本到剪贴板。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["read", "write"],
+                        "description": "操作类型：read（读取）或 write（写入）"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "要写入剪贴板的文本（仅 write 时需要）"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().ok_or("缺少 action 参数")?;
+
+        match action {
+            "read" => clipboard_read().await,
+            "write" => {
+                let text = arguments["text"].as_str().ok_or("write 操作需要 text 参数")?;
+                clipboard_write(text).await
+            }
+            _ => Err(format!("不支持的操作: {}，请用 read 或 write", action)),
+        }
+    }
+}
+
+async fn clipboard_read() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = tokio::process::Command::new("pbpaste")
+            .output().await.map_err(|e| format!("pbpaste 失败: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        return Err("剪贴板读取失败".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let output = tokio::process::Command::new("powershell")
+            .args(&["-Command", "Get-Clipboard"])
+            .output().await.map_err(|e| format!("PowerShell 失败: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        return Err("剪贴板读取失败".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // 优先 xclip，备选 xsel
+        for cmd in &["xclip", "xsel"] {
+            let args: Vec<&str> = if *cmd == "xclip" {
+                vec!["-selection", "clipboard", "-o"]
+            } else {
+                vec!["--clipboard", "--output"]
+            };
+            if let Ok(output) = tokio::process::Command::new(cmd).args(&args).output().await {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                }
+            }
+        }
+        return Err("剪贴板读取失败，请安装 xclip 或 xsel".into());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Err("当前平台不支持剪贴板操作".into())
+}
+
+async fn clipboard_write(text: &str) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = tokio::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn().map_err(|e| format!("pbcopy 失败: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(text.as_bytes()).await.map_err(|e| format!("写入失败: {}", e))?;
+            drop(stdin);
+        }
+        let status = child.wait().await.map_err(|e| format!("等待失败: {}", e))?;
+        if status.success() {
+            return Ok(format!("已复制到剪贴板（{} 字符）", text.len()));
+        }
+        return Err("写入剪贴板失败".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let escaped = text.replace('\'', "''");
+        let output = tokio::process::Command::new("powershell")
+            .args(&["-Command", &format!("Set-Clipboard '{}'", escaped)])
+            .output().await.map_err(|e| format!("PowerShell 失败: {}", e))?;
+        if output.status.success() {
+            return Ok(format!("已复制到剪贴板（{} 字符）", text.len()));
+        }
+        return Err("写入剪贴板失败".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for cmd in &["xclip", "xsel"] {
+            let args: Vec<&str> = if *cmd == "xclip" {
+                vec!["-selection", "clipboard"]
+            } else {
+                vec!["--clipboard", "--input"]
+            };
+            if let Ok(mut child) = tokio::process::Command::new(cmd)
+                .args(&args)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(text.as_bytes()).await;
+                    drop(stdin);
+                }
+                if let Ok(status) = child.wait().await {
+                    if status.success() {
+                        return Ok(format!("已复制到剪贴板（{} 字符）", text.len()));
+                    }
+                }
+            }
+        }
+        return Err("写入剪贴板失败，请安装 xclip 或 xsel".into());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Err("当前平台不支持剪贴板操作".into())
+}
+
+// ──────────────────────────────────────────────────────────
+// 截图工具（macOS screencapture, Windows PowerShell, Linux import/scrot）
+// ──────────────────────────────────────────────────────────
+
+pub struct ScreenshotTool;
+
+#[async_trait]
+impl Tool for ScreenshotTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "screenshot".to_string(),
+            description: "截取屏幕截图并保存到文件。可截取全屏或指定区域。返回截图文件路径。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "output_path": {
+                        "type": "string",
+                        "description": "截图保存路径（可选，默认保存到桌面）"
+                    },
+                    "region": {
+                        "type": "string",
+                        "enum": ["fullscreen", "window", "selection"],
+                        "description": "截图范围：fullscreen（全屏）、window（当前窗口）、selection（用户选区）。默认 fullscreen"
+                    }
+                }
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let region = arguments.get("region").and_then(|r| r.as_str()).unwrap_or("fullscreen");
+
+        // 生成默认输出路径
+        let output_path = if let Some(p) = arguments.get("output_path").and_then(|p| p.as_str()) {
+            p.to_string()
+        } else {
+            let desktop = dirs::desktop_dir()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Desktop"));
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            desktop.join(format!("screenshot_{}.png", ts)).to_string_lossy().to_string()
+        };
+
+        // 确保父目录存在
+        if let Some(parent) = std::path::Path::new(&output_path).parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+
+        take_screenshot(&output_path, region).await?;
+
+        // 检查文件是否生成
+        if tokio::fs::metadata(&output_path).await.is_ok() {
+            let size = tokio::fs::metadata(&output_path).await
+                .map(|m| m.len()).unwrap_or(0);
+            Ok(format!("截图已保存: {} ({:.1}KB)", output_path, size as f64 / 1024.0))
+        } else {
+            Err("截图文件未生成".into())
+        }
+    }
+}
+
+async fn take_screenshot(output_path: &str, region: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut args = vec!["-x".to_string()]; // 静音
+        match region {
+            "window" => args.push("-w".to_string()),
+            "selection" => args.push("-s".to_string()),
+            _ => {} // fullscreen 不需要额外参数
+        }
+        args.push(output_path.to_string());
+
+        let output = tokio::process::Command::new("screencapture")
+            .args(&args)
+            .output().await.map_err(|e| format!("screencapture 失败: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("截图失败: {}", stderr));
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell 截图（全屏）
+        let ps_script = format!(
+            r#"Add-Type -AssemblyName System.Windows.Forms; $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); $bmp.Save('{}')"#,
+            output_path.replace('\'', "''")
+        );
+        let output = tokio::process::Command::new("powershell")
+            .args(&["-Command", &ps_script])
+            .output().await.map_err(|e| format!("PowerShell 截图失败: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("截图失败: {}", stderr));
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // 优先 import (ImageMagick)，备选 scrot
+        let (cmd, args) = match region {
+            "window" => ("import", vec!["-window", "root", output_path]),
+            "selection" => ("import", vec![output_path]),
+            _ => ("scrot", vec![output_path.to_string()].iter().map(|s| s.as_str()).collect()),
+        };
+        let output = tokio::process::Command::new(cmd)
+            .args(&args)
+            .output().await;
+
+        if let Ok(out) = output {
+            if out.status.success() { return Ok(()); }
+        }
+
+        // fallback: scrot
+        let output = tokio::process::Command::new("scrot")
+            .arg(output_path)
+            .output().await.map_err(|e| format!("scrot 失败: {}", e))?;
+
+        if output.status.success() { return Ok(()); }
+        return Err("截图失败，请安装 scrot 或 ImageMagick".into());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Err("当前平台不支持截图".into())
 }

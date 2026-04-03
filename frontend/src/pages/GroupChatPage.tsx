@@ -11,7 +11,7 @@ import { listen } from '@tauri-apps/api/event'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import Modal from '../components/Modal'
 import Select from '../components/Select'
 
@@ -450,7 +450,7 @@ export default function GroupChatPage() {
       const targetAgent = allAgents.find(a => a.id === mentionedId)
       try {
         await sendToAgent(mentionedId, targetAgent ? agentDisplayName(targetAgent) : 'Agent', userText, [...messages, userMsg], 0)
-      } catch (e) { toast.error(String(e)) }
+      } catch (e) { toast.error(friendlyError(e)) }
     } else if (activeRoom.freeChat !== false) {
       // 自由会话模式：所有成员多轮讨论
       let currentContext = [...messages, userMsg]
@@ -466,7 +466,7 @@ export default function GroupChatPage() {
       const defaultAgent = allAgents.find(a => a.id === activeRoom.defaultAgentId)
       try {
         await sendToAgent(activeRoom.defaultAgentId, defaultAgent ? agentDisplayName(defaultAgent) : 'Agent', userText, [...messages, userMsg], 0)
-      } catch (e) { toast.error(String(e)) }
+      } catch (e) { toast.error(friendlyError(e)) }
     }
 
     // 所有轮次完成后：强制重置 streaming 状态 + 保存

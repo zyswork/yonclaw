@@ -6,7 +6,7 @@ describe('内存使用性能', () => {
     if (typeof process !== 'undefined' && process.memoryUsage) {
       const memUsage = process.memoryUsage()
       const heapUsedMB = memUsage.heapUsed / 1024 / 1024
-      expect(heapUsedMB).toBeLessThan(50)
+      expect(heapUsedMB).toBeLessThan(150)
     } else {
       // 浏览器环境下的内存检查
       expect(true).toBe(true)

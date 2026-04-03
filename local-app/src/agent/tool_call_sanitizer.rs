@@ -73,6 +73,14 @@ pub fn sanitize_messages_for_llm(messages: &mut Vec<serde_json::Value>, provider
     if provider == "anthropic" || is_strict_provider(provider) {
         validate_turn_ordering(messages);
     }
+
+    // Step 5: 剥离内部标记字段（LLM API 可能拒绝未知字段）
+    for msg in messages.iter_mut() {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.remove("_internal");
+            obj.remove("seq"); // 也清理 DB 序号字段
+        }
+    }
 }
 
 /// 是否为对消息顺序严格的 provider

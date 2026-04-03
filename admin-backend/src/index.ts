@@ -57,8 +57,31 @@ function logMemoryUsage(label: string) {
 }
 
 // 中间件
+// CORS: 允许 Tauri 桌面应用（macOS/Windows/Linux 的 origin 各不相同）+ 开发模式
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Tauri 1.x origins:
+    // - macOS WKWebView: tauri://localhost 或无 origin（custom protocol）
+    // - Windows WebView2: https://tauri.localhost 或 http://tauri.localhost
+    // - Linux WebKitGTK: tauri://localhost
+    // 开发模式: http://localhost:*
+    const allowedPatterns = [
+      /^https?:\/\/tauri\.localhost$/,
+      /^tauri:\/\/localhost$/,
+      /^https?:\/\/localhost(:\d+)?$/,
+      /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+    ]
+    // 无 origin（非浏览器请求、macOS Tauri custom protocol）也放行
+    if (!origin || allowedPatterns.some(p => p.test(origin))) {
+      callback(null, true)
+    } else if (process.env.CORS_ORIGIN && origin === process.env.CORS_ORIGIN) {
+      callback(null, true)
+    } else {
+      console.warn(`CORS 拒绝: origin=${origin}`)
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
+  credentials: true,
 }))
 
 // 启用响应压缩 - 减少网络传输时间

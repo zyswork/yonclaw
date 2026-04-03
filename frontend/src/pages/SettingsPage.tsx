@@ -13,7 +13,7 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { useLocation } from 'react-router-dom'
 import { useI18n, SUPPORTED_LOCALES, LOCALE_LABELS } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import { useTheme, type Theme } from '../hooks/useTheme'
 import type { Locale } from '../i18n'
 import Select from '../components/Select'
@@ -930,14 +930,14 @@ export default function SettingsPage() {
                             onChange={(e) => setNewModelId(e.target.value)}
                             placeholder={t('settings.fieldModelId')}
                             style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addModelToForm() } }}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); addModelToForm() } }}
                           />
                           <input
                             value={newModelName}
                             onChange={(e) => setNewModelName(e.target.value)}
                             placeholder={t('settings.fieldModelDisplayName')}
                             style={{ flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '12px' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addModelToForm() } }}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); addModelToForm() } }}
                           />
                           <button
                             onClick={addModelToForm}
@@ -1342,7 +1342,7 @@ function ChangePasswordSection() {
         <div>
           <label style={labelStyle}>{t('profile.confirmPassword')}</label>
           <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleChange() }}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) handleChange() }}
             placeholder={t('profile.confirmPwPlaceholder')} style={inputStyle} />
         </div>
         {msg && (
@@ -1392,7 +1392,7 @@ function HeartbeatSettings() {
     try {
       await invoke('set_setting', { key: 'heartbeat_config', value: JSON.stringify(updated) })
       toast.success(t('common.saved'))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   if (!loaded) return null
@@ -1482,7 +1482,7 @@ function SearchSettings() {
     try {
       await invoke('set_setting', { key: 'web_search_provider', value: v })
       toast.success(t('common.saved'))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const saveApiKey = async (keyName: string, value: string) => {
@@ -1491,7 +1491,7 @@ function SearchSettings() {
       await invoke('set_setting', { key: `plugin_key_${keyName}`, value })
       setApiKeys(prev => ({ ...prev, [keyName]: value }))
       toast.success(`${keyName} ${t('common.saved')}`)
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     finally { setSavingKey('') }
   }
 
@@ -1546,7 +1546,7 @@ function SearchSettings() {
                     if (v && v !== apiKeys[opt.keyName!]) saveApiKey(opt.keyName!, v)
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                       const v = (e.target as HTMLInputElement).value.trim()
                       if (v) saveApiKey(opt.keyName!, v)
                     }
@@ -1588,7 +1588,7 @@ function BackupSettings() {
       const parsed = JSON.parse(result)
       setBackupResult(`Backup saved: ${parsed.path} (${(parsed.size_bytes / 1024 / 1024).toFixed(1)} MB)`)
       toast.success('Backup complete')
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     finally { setBacking(false) }
   }
 

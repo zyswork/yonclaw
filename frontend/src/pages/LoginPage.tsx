@@ -51,6 +51,10 @@ export default function LoginPage() {
       const res = await authAPI.sendCode(email.trim())
       setCountdown(res.data.expiresIn || 60)
       setStep('code')
+      // SMTP 未配置时，后端直接返回验证码，自动填入
+      if (res.data.code) {
+        setCode(res.data.code)
+      }
     } catch (e: any) {
       setError(e.response?.data?.error || e.message || t('login.sendCodeFailed'))
     } finally { setLoading(false) }
@@ -62,9 +66,14 @@ export default function LoginPage() {
     setLoading(true); setError('')
     try {
       const res = await authAPI.verifyCode(email.trim(), code.trim())
-      // ★ 不调 login()！暂存 auth，等设完密码再登录
-      setPendingAuth({ token: res.data.token, user: res.data.user })
-      setStep('set-password')
+      if (res.data.isNewUser) {
+        // 新用户：暂存 auth，先设密码
+        setPendingAuth({ token: res.data.token, user: res.data.user })
+        setStep('set-password')
+      } else {
+        // 老用户：直接登录
+        login(res.data.token, res.data.user)
+      }
     } catch (e: any) {
       setError(e.response?.data?.error || e.message || t('login.verifyFailed'))
     } finally { setLoading(false) }

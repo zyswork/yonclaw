@@ -39,6 +39,22 @@
         "all": false,
         "writeFile": true,
         "scope": ["$DOCUMENT/**", "$DOWNLOAD/**", "$DESKTOP/**", "$HOME/**"]
+      },
+      "notification": {
+        "all": true
+      },
+      "http": {
+        "all": true,
+        "scope": ["https://**", "http://**"]
+      },
+      "clipboard": {
+        "all": true
+      },
+      "globalShortcut": {
+        "all": true
+      },
+      "process": {
+        "all": true
       }
     },
     "bundle": {
@@ -51,6 +67,10 @@
         "icons/128x128@2x.png",
         "icons/icon.icns",
         "icons/icon.ico"
+      ],
+      "resources": [
+        "resources/python.tar.gz",
+        "resources/wheels/*"
       ]
     },
     "security": {

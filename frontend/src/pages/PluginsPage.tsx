@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import Select from '../components/Select'
 
 interface PluginInfo {
@@ -84,7 +84,7 @@ export default function PluginsPage() {
       if (key === 'web_search_provider') setDefaultSearch(value)
       if (key === 'tts_provider') setDefaultTts(value)
       toast.success(t('plugins.setAsDefault'))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const saveApiKey = async () => {
@@ -95,7 +95,7 @@ export default function PluginsPage() {
       toast.success(t('plugins.keySaved'))
       setConfigModal(null)
       setConfigKeyInput('')
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const loadAgentStates = async () => {

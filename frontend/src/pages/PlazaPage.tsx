@@ -8,7 +8,7 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import Select from '../components/Select'
 
 interface Post {
@@ -155,14 +155,14 @@ export default function PlazaPage() {
       await invoke('plaza_create_post', { agentId: postAgent, content: newPost.trim(), postType })
       setNewPost('')
       await load()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const handleLike = async (postId: string) => {
     try {
       await invoke('plaza_like_post', { postId })
       setPosts(prev => prev.map(p => p.id === postId ? { ...p, likes: p.likes + 1 } : p))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const loadComments = async (postId: string) => {
@@ -182,7 +182,7 @@ export default function PlazaPage() {
       const c = await invoke<Comment[]>('plaza_get_comments', { postId })
       setComments(prev => ({ ...prev, [postId]: c }))
       setPosts(prev => prev.map(p => p.id === postId ? { ...p, commentCount: p.commentCount + 1 } : p))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   if (loading) return <div style={{ padding: 24, color: 'var(--text-muted)' }}>{t('common.loading')}</div>

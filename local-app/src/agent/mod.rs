@@ -87,6 +87,7 @@ pub mod cdp;
 pub mod content_security;
 pub mod doctor;
 pub mod plugin;
+pub mod python_sandbox;
 pub mod relations;
 pub mod subagent;
 

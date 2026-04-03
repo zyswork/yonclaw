@@ -170,23 +170,33 @@ impl ErrorClass {
     /// 从错误文本自动分类
     pub fn classify(error: &str) -> Self {
         let e = error.to_lowercase();
+        // 权限错误（不可重试）
         if e.contains("permission") || e.contains("denied") || e.contains("forbidden")
             || e.contains("安全拦截") || e.contains("安全限制") || e.contains("不允许") {
             ErrorClass::Permission
-        } else if e.contains("not found") || e.contains("no such file") || e.contains("不存在")
+        // Python 模块缺失 / npm 包缺失 → 外部依赖（区别于普通环境错误）
+        } else if e.contains("modulenotfounderror") || e.contains("no module named")
+            || e.contains("cannot find module") || e.contains("not installed")
+            || e.contains("pip install") || e.contains("npm install") {
+            ErrorClass::Dependency
+        // 文件/网络/系统环境问题
+        } else if e.contains("no such file") || e.contains("not found") || e.contains("不存在")
             || e.contains("timeout") || e.contains("超时") || e.contains("connection") {
             ErrorClass::Environment
+        // API/服务端错误
         } else if e.contains("api") || e.contains("500") || e.contains("502") || e.contains("503")
             || e.contains("rate limit") || e.contains("quota") {
             ErrorClass::Dependency
+        // 编译/语法错误
         } else if e.contains("compile") || e.contains("syntax") || e.contains("error[")
             || e.contains("lint") || e.contains("test fail") {
             ErrorClass::Semantic
+        // 参数验证
         } else if e.contains("validation") || e.contains("invalid") || e.contains("缺少")
             || e.contains("参数") || e.contains("格式") {
             ErrorClass::Parameter
         } else {
-            ErrorClass::Environment // 默认归为环境错误（可重试）
+            ErrorClass::Environment
         }
     }
 }

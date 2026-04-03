@@ -13,7 +13,7 @@ import mermaid from 'mermaid'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 import { useConfirm, showConfirm } from '../hooks/useConfirm'
 import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useVoiceOutput } from '../hooks/useVoiceOutput'
@@ -389,7 +389,7 @@ function SessionItem({ s, activeSession, onSelect, onDelete, onExport, renamingS
       {renamingSession === s.id ? (
         <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
           onBlur={() => onFinishRename(renameValue)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) onFinishRename(renameValue); if (e.key === 'Escape') onCancelRename() }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) onFinishRename(renameValue); if (e.key === 'Escape') onCancelRename() }}
           style={{ flex: 1, padding: '2px 4px', border: '1px solid var(--accent)', borderRadius: 3, fontSize: 13, outline: 'none' }}
         />
       ) : (
@@ -896,6 +896,33 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   // HUD 实时状态
   const [hud, setHud] = useState({ round: 0, tokens: 0, cost: 0, lastTool: '', lastToolOk: true })
 
+  // Python 沙箱状态检查（首次挂载时检查一次）
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      try {
+        const status = await invoke<{ status: string }>('get_python_sandbox_status')
+        if (cancelled) return
+        if (status.status === 'initializing') {
+          toast.info('Python 环境准备中，首次使用需要约 10 秒...')
+          // 轮询直到就绪
+          const poll = setInterval(async () => {
+            try {
+              const s = await invoke<{ status: string }>('get_python_sandbox_status')
+              if (s.status === 'ready') {
+                clearInterval(poll)
+                toast.success('Python 环境已就绪')
+              }
+            } catch {}
+          }, 5000)
+          setTimeout(() => clearInterval(poll), 120000) // 2 分钟后停止轮询
+        }
+      } catch {}
+    }
+    check()
+    return () => { cancelled = true }
+  }, [])
+
   // 切换 Agent 时重置状态，避免旧 Agent 的对话内容残留
   const prevAgentIdRef = useRef(agentId)
   useEffect(() => {
@@ -910,13 +937,24 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   // 对话模式：flash=快速回复(不使用工具), standard=标准, thinking=深度思考
   const [chatMode, setChatMode] = useState<'flash' | 'standard' | 'thinking'>('standard')
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTokenTimeRef = useRef<number>(0)
+  const staleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // 安全超时：streaming 超过 120 秒自动恢复
   useEffect(() => {
     if (streaming) {
       streamingTimerRef.current = setTimeout(() => setStreaming(false), 120_000)
+      lastTokenTimeRef.current = Date.now()
+      // 30 秒无 token 心跳检测
+      staleCheckRef.current = setInterval(() => {
+        if (lastTokenTimeRef.current && Date.now() - lastTokenTimeRef.current > 30_000) {
+          toast.info('AI 正在思考中，请稍候...')
+          lastTokenTimeRef.current = Date.now() // 重置，避免重复提示
+        }
+      }, 10_000)
     } else if (streamingTimerRef.current) {
       clearTimeout(streamingTimerRef.current)
       streamingTimerRef.current = null
+      if (staleCheckRef.current) { clearInterval(staleCheckRef.current); staleCheckRef.current = null }
     }
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current) }
   }, [streaming])
@@ -1113,7 +1151,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       await invoke('send_agent_message', { fromId: agentId, toId: agentMsgTarget, content: agentMsgContent.trim() })
       toast.success(t('agentDetailSub.messageSent'))
       setAgentMsgContent('')
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   // 发起 A2A 对话（通过在当前对话中发送指令消息）
@@ -1195,7 +1233,17 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     e.preventDefault()
     e.stopPropagation()
     if (e.dataTransfer.files.length > 0) {
-      addImageFiles(Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/')))
+      const files = Array.from(e.dataTransfer.files)
+      const images = files.filter(f => f.type.startsWith('image/'))
+      const others = files.filter(f => !f.type.startsWith('image/'))
+      // 图片：添加到图片附件
+      if (images.length > 0) addImageFiles(images)
+      // 非图片文件：将文件路径插入输入框，让 agent 用 doc_parse/file_read 处理
+      if (others.length > 0) {
+        const paths = others.map(f => (f as any).path || f.name).join('\n')
+        setInput(prev => prev ? `${prev}\n${paths}` : paths)
+        toast.info(`已添加 ${others.length} 个文件路径`)
+      }
     }
   }
   const streamBuf = useRef('')
@@ -1329,6 +1377,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   useEffect(() => {
     // 桌面对话的流式 token（携带 sessionId，过滤非当前会话）
     const unlisten1 = listen<any>('llm-token', (e) => {
+      lastTokenTimeRef.current = Date.now() // 心跳更新
       // 解析 payload：新格式 {sessionId, text}，兼容旧格式 string
       const payload = e.payload
       const tokenSessionId = typeof payload === 'object' ? payload?.sessionId : undefined
@@ -1385,6 +1434,17 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       setStreaming(false)
       streamBuf.current = ''
       thinkingBuf.current = ''
+      // 桌面通知：窗口不活跃时通知用户 AI 已回复
+      if (document.hidden) {
+        try {
+          import('@tauri-apps/api/notification').then(({ isPermissionGranted, requestPermission, sendNotification }) => {
+            isPermissionGranted().then(granted => {
+              if (!granted) { requestPermission(); return }
+              sendNotification({ title: '衔烛 Claw', body: 'AI 回复已完成' })
+            })
+          })
+        } catch {}
+      }
       // 语音朗读：自动朗读最后一条 AI 回复
       if (voiceEnabledRef.current) {
         setMessages(prev => {
@@ -1483,7 +1543,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       setSessions((prev) => [session, ...prev])
       setActiveSession(session.id)
       setMessages([])
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const renameSession = async (sessionId: string, newTitle: string) => {
@@ -1491,7 +1551,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     try {
       await invoke('rename_session', { sessionId, title: newTitle.trim() })
       setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, title: newTitle.trim() } : s))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     setRenamingSession('')
   }
 
@@ -1504,7 +1564,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         setActiveSession('')
         setMessages([])
       }
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const batchDeleteSessions = async () => {
@@ -1530,7 +1590,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       setSelectedSessions(new Set())
       setSelectMode(false)
       toast.success(t('agentDetail.batchDeleteDone', { count: selectedSessions.size }))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const exportSession = async (sessionId: string, _format: 'markdown' | 'json' = 'markdown') => {
@@ -1981,7 +2041,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         setMessages(prev => [...prev, { role: 'system', content: String(e), isError: true }])
       }
     } catch (e) {
-      toast.error(String(e))
+      toast.error(friendlyError(e))
     }
   }
 
@@ -2028,7 +2088,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         setMessages(prev => [...prev, { role: 'system', content: String(e), isError: true }])
       }
     } catch (e) {
-      toast.error(String(e))
+      toast.error(friendlyError(e))
     }
   }
 
@@ -2615,7 +2675,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                               fontFamily: 'inherit', lineHeight: 1.5,
                             }}
                             onKeyDown={e => {
-                              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                                 e.preventDefault()
                                 if (editingContent.trim()) handleEditMessage(oi, editingContent.trim())
                               }
@@ -2930,8 +2990,12 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onCompositionStart={() => { composingRef.current = true }}
-                  onCompositionEnd={() => { composingRef.current = false }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing) { e.preventDefault(); handleSend() } }}
+                  onCompositionEnd={() => {
+                    // Windows WebView2 事件顺序：compositionEnd → keyDown
+                    // 延迟重置，确保紧接的 keyDown 还能检测到组合状态
+                    setTimeout(() => { composingRef.current = false }, 50)
+                  }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); handleSend() } }}
                   onPaste={handlePaste}
                   placeholder={t('agentDetail.inputHint')}
                   disabled={streaming}
@@ -3107,7 +3171,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                 style={{ width: '100%', marginBottom: 4 }} />
               <div style={{ display: 'flex', gap: 4 }}>
                 <input value={agentMsgContent} onChange={e => setAgentMsgContent(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSendAgentMsg() }}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) handleSendAgentMsg() }}
                   placeholder={t('multiAgent.msgPlaceholder')}
                   style={{ flex: 1, padding: '6px 8px', borderRadius: 4, border: '1px solid var(--border-subtle)', fontSize: 12 }}
                 />
@@ -3129,7 +3193,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                 style={{ width: '100%', marginBottom: 4 }} />
               <div style={{ display: 'flex', gap: 4 }}>
                 <input value={a2aTopic} onChange={e => setA2aTopic(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleA2aChat() }}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) handleA2aChat() }}
                   placeholder={t('multiAgent.topicPlaceholder')}
                   style={{ flex: 1, padding: '6px 8px', borderRadius: 4, border: '1px solid var(--border-subtle)', fontSize: 12 }}
                 />

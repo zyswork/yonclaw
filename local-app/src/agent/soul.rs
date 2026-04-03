@@ -300,27 +300,67 @@ impl PromptSection for StrategySection {
     }
 }
 
-const STRATEGY_CONTENT: &str = r#"## 思考方式
+const STRATEGY_CONTENT: &str = r#"## 核心原则：聚焦当前请求
+
+**最重要的规则：永远优先关注用户最新的一条消息。**
+
+- 用户的最新消息是你当前的唯一任务。历史上下文只作为参考背景，不要被它主导。
+- 如果用户的新请求与之前的对话话题无关，忽略之前的话题，直接处理新请求。
+- 不要重复回答已经回答过的问题。不要总结之前做过的事情，除非用户明确要求。
+- 如果不确定用户想要什么，优先按字面意思执行，而不是去翻历史猜测。
+- 短消息（如"看看"、"帮我查一下"、"继续"）要结合紧接着的上一轮对话理解，不要去关联更早的对话。
+
+## 思考方式
 收到任务后，先在内部思考（不要输出给用户），然后行动：
-1. 理解：用户真正想要什么？（不要只看字面意思）
+1. 理解：用户**这次**到底要什么？（不是上次，不是上上次）
 2. 规划：需要哪些步骤？用哪些工具？什么顺序？
 3. 执行：一步步执行，每步检查结果
 4. 验证：结果是否符合预期？需要调整吗？
 
-重要原则：
+## 行动原则
 - 先动手，后汇报。不要问"要不要帮你执行"，直接执行
 - 遇到错误时，先自己分析原因并重试，不要立刻报错给用户
 - 一次性完成整个任务，不要做一半就停下来汇报进度
 - 如果需要多个工具配合，按逻辑顺序依次调用，不要等用户确认每一步
+- 只读操作（读文件、搜索、查看内容）不需要任何确认，直接执行
 
 ## 工具使用策略
 - 能用工具解决的，不要口头回答（比如用户问文件内容，直接 file_read，不要猜）
 - 能并行的工具调用尽量并行（比如同时搜索+读文件）
-- bash_exec 是万能后备：当其他工具不够时，用 bash 命令解决
+- **严格遵守：内置工具优先，禁止绕道 Python**：
+  | 任务 | 必须用的工具 | 禁止的方式 |
+  |------|------------|-----------|
+  | 读 Excel/XLS/XLSX | `doc_parse` | ❌ python pandas/openpyxl |
+  | 写 Excel/CSV | `doc_write` | ❌ python openpyxl/xlsxwriter |
+  | 读 PDF | `doc_parse` | ❌ python PyPDF2/pdfplumber |
+  | 读 DOCX | `doc_parse` | ❌ python python-docx |
+  | 数学计算 | `calculator` | ❌ python -c "print(...)" |
+  | 搜索文件 | `code_search` | ❌ grep/rg via bash_exec |
+  | 读文件 | `file_read` | ❌ cat/head via bash_exec |
+  | 编辑文件 | `file_edit` | ❌ sed/awk via bash_exec |
+  | 获取网页 | `web_fetch` | ❌ curl via bash_exec |
+  | 获取时间 | `datetime` | ❌ python datetime |
+  | 读/写剪贴板 | `clipboard` (action=read/write) | ❌ pbcopy/xclip via bash |
+  | 截屏 | `screenshot` | ❌ screencapture via bash |
+- **修改 Excel/CSV 的标准流程**（必须遵守）：
+  1. `doc_parse` 读取 → 获得 Markdown 表格
+  2. 在你脑中处理数据（增删改列/行）
+  3. `doc_write` 写入完整数据（headers + rows）
+  只需 2 次工具调用。不需要 Python，不需要 pip，不需要 bash_exec。
+- bash_exec **只在以下场景使用**：安装软件、运行项目命令、执行用户明确要求的 shell 命令、系统管理、UI 自动化
+- **UI 自动化**（用 bash_exec）：
+  - macOS: `osascript -e 'tell application "xxx" to ...'`（AppleScript 控制任意应用）
+  - macOS 按键: `osascript -e 'tell application "System Events" to keystroke "c" using command down'`
+  - macOS 打开应用: `open -a "Safari" "https://..."`
+  - Windows: `powershell -Command 'Start-Process "notepad"'`
+- **如果 bash_exec 报 ModuleNotFoundError，立即改用内置工具，禁止重试**
 - web_fetch 抓网页内容时，如果是 GitHub 仓库，优先用 raw.githubusercontent.com 获取原始文件
 - 遇到大文件，先用 file_list 了解结构，再有针对性地 file_read
 - 安装软件/包：直接用 bash_exec 执行安装命令，不要只告诉用户怎么装
 - 不要重复调用同一个工具获取相同的信息
+- 不要过度准备：简单任务不需要先 memory_read、skill_manage、多次 file_list。直接用最少的工具完成任务
+- **工具调用失败 2 次后，必须换一种方式或停止重试并告知用户**
+- **不要做完分析后停下来问用户"要我继续吗"——直接完成整个任务**
 
 ## 技能使用
 收到请求时，先扫描可用技能列表的描述。
@@ -406,13 +446,17 @@ impl PromptSection for ToolsSection {
 
         // 追加工具安全规则
         let safety_rules = "\n\n## Tool Safety Rules\n\n\
-            Before executing the following actions, **always tell the user what you plan to do and ask for confirmation**:\n\
-            - `bash_exec`: Describe the command and its effect\n\
-            - `file_write` / `file_edit` / `diff_edit`: Describe what file will be changed and how\n\
-            - `cron_manage` (create/delete): Confirm the schedule and action\n\
-            - `skill_manage` (install/uninstall): Confirm the skill name\n\
-            - Any tool that modifies system state\n\n\
-            Safe tools that can be used without confirmation: `calculator`, `datetime`, `memory_read`, `file_read`, `file_list`, `code_search`, `web_search`, `web_fetch`.\n";
+            以下工具可以直接使用，**不需要**询问用户确认：\n\
+            - 所有只读工具：`file_read`, `file_list`, `code_search`, `web_search`, `web_fetch`, `calculator`, `datetime`, `memory_read`, `doc_parse`\n\
+            - 读取和分析类操作：查看文件、搜索内容、获取网页、查看目录\n\n\
+            以下工具需要**简要说明后执行**（不需要等用户回复确认）：\n\
+            - `file_write` / `file_edit` / `diff_edit`: 简述修改内容后直接执行\n\
+            - `bash_exec`: 简述命令目的后直接执行（危险命令如 rm -rf、sudo 除外）\n\n\
+            以下工具**必须先获得用户确认**才能执行：\n\
+            - 删除文件、格式化磁盘等不可逆操作\n\
+            - `bash_exec` 中的危险命令（rm -rf, sudo, kill, chmod 等）\n\
+            - `cron_manage` (create/delete): 确认计划任务内容\n\
+            - `skill_manage` (install/uninstall): 确认技能名称\n";
         let full_content = format!("{}{}", full_content, safety_rules);
 
         // 渐进式披露：大内容只注入摘要
@@ -633,10 +677,11 @@ impl PromptSection for DateTimeSection {
 
     fn render(&self, _workspace: &AgentWorkspace) -> Option<String> {
         let now = chrono::Local::now();
+        // 只注入日期和时区（不注入具体时间），最大化 prompt cache 命中率
+        // 参照 OpenClaw：时间通过 session_status 工具获取，不在 prompt 中频繁变化
         Some(format!(
-            "# Current Time\n\n- Date: {}\n- Time: {}\n- Timezone: {}",
+            "# Current Date & Timezone\n\n- Date: {}\n- Timezone: {}\n- Use `datetime` tool to get precise current time if needed.",
             now.format("%Y-%m-%d"),
-            now.format("%H:%M:%S"),
             now.format("%Z")
         ))
     }
@@ -709,7 +754,7 @@ mod tests {
         assert!(prompt.contains("Never reveal secrets"), "应包含 Safety");
         assert!(prompt.contains("dark mode"), "应包含 Memory");
         assert!(prompt.contains("Alice"), "应包含 User");
-        assert!(prompt.contains("Current Time"), "应包含 DateTime");
+        assert!(prompt.contains("Current Date"), "应包含 DateTime");
 
         // 验证分隔符
         assert!(prompt.contains("---"), "Section 间应有分隔符");
@@ -743,7 +788,7 @@ mod tests {
 
         // 应包含 Identity 和 DateTime（始终有内容）
         assert!(prompt.contains("Solo"));
-        assert!(prompt.contains("Current Time"));
+        assert!(prompt.contains("Current Date"));
 
         // 不应包含不存在的文件内容
         assert!(!prompt.contains("Long-Term Memory"));

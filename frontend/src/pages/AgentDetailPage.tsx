@@ -10,7 +10,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { useI18n } from '../i18n'
-import { toast } from '../hooks/useToast'
+import { toast, friendlyError } from '../hooks/useToast'
 
 import ChatTab from '../components/ChatTab'
 import SoulFileTab from '../components/SoulFileTab'
@@ -602,7 +602,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
             a.href = url; a.download = `agent-${(agent?.name || 'export').replace(/\s+/g, '-')}.json`; a.click()
             URL.revokeObjectURL(url)
             toast.success('Agent exported')
-          } catch (e) { toast.error(String(e)) }
+          } catch (e) { toast.error(friendlyError(e)) }
         }} style={{
           flex: 1, padding: '10px 16px', backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
           border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer', fontSize: 13,
@@ -623,7 +623,7 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
               const result = await invoke<string>('import_agent_bundle', { bundleJson: text })
               toast.success('Agent imported: ' + result)
               window.location.reload()
-            } catch (e) { toast.error(String(e)) }
+            } catch (e) { toast.error(friendlyError(e)) }
           }
           input.click()
         }} style={{
@@ -717,14 +717,14 @@ function RelationsTab({ agentId }: { agentId: string }) {
       await invoke('create_agent_relation', { fromId: agentId, toId: targetId, relationType: relType })
       await load()
       setTargetId('')
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const handleDelete = async (id: string) => {
     try {
       await invoke('delete_agent_relation', { relationId: id })
       await load()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
   }
 
   const RELATION_TYPES = [
@@ -1078,7 +1078,7 @@ function AgentMessagesPanel({ agentId }: { agentId: string }) {
       setMessages(prev => [...prev, { from: agentId, to: targetId, content: content.trim(), timestamp: Date.now() }])
       setContent('')
       toast.success(t('agentDetailSub.messageSent'))
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(friendlyError(e)) }
     setSending(false)
   }
 

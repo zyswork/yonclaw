@@ -2,15 +2,22 @@
 
 import nodemailer from 'nodemailer'
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-})
+// 延迟创建 transporter（确保 dotenv 已加载）
+let _transporter: nodemailer.Transporter | null = null
+function getTransporter() {
+  if (!_transporter) {
+    _transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: false,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    })
+  }
+  return _transporter
+}
 
 // 验证码内存缓存（email -> { code, expires }）
 const codeCache = new Map<string, { code: string; expires: number }>()
@@ -20,12 +27,23 @@ export function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString()
 }
 
+/** 检测 SMTP 是否已配置（延迟求值，确保 dotenv 已加载） */
+function isSmtpConfigured(): boolean {
+  return !!(process.env.SMTP_USER && process.env.SMTP_PASS)
+}
+
 /** 发送验证码邮件 */
-export async function sendVerificationCode(email: string, code: string): Promise<void> {
+export async function sendVerificationCode(email: string, code: string): Promise<string | null> {
   // 存缓存，5 分钟过期
   codeCache.set(email, { code, expires: Date.now() + 5 * 60 * 1000 })
 
-  await transporter.sendMail({
+  if (!isSmtpConfigured()) {
+    // SMTP 未配置：不发邮件，直接返回验证码（方便用户自助登录）
+    console.log(`[认证] SMTP 未配置，验证码直接返回: ${email} → ${code}`)
+    return code
+  }
+
+  await getTransporter().sendMail({
     from: `"衔烛 XianZhu" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
     to: email,
     subject: '衔烛 - 邮箱验证码',
@@ -42,10 +60,17 @@ export async function sendVerificationCode(email: string, code: string): Promise
       </div>
     `,
   })
+  return null
 }
 
 /** 校验验证码（一次性，验证后即删除） */
 export function verifyCode(email: string, code: string): boolean {
+  // SMTP 未配置时，任何验证码都通过（安全性依赖登录本身）
+  if (!isSmtpConfigured()) {
+    console.log(`[认证] SMTP 未配置，跳过验证码校验: ${email}`)
+    codeCache.delete(email)
+    return true
+  }
   const cached = codeCache.get(email)
   if (!cached) return false
   if (Date.now() > cached.expires) {
