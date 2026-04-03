@@ -36,9 +36,8 @@
         "save": true
       },
       "fs": {
-        "all": false,
-        "writeFile": true,
-        "scope": ["$DOCUMENT/**", "$DOWNLOAD/**", "$DESKTOP/**", "$HOME/**"]
+        "all": true,
+        "scope": ["**"]
       },
       "notification": {
         "all": true
