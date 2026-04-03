@@ -639,6 +639,44 @@ export default function SettingsPage() {
           <div style={{ maxWidth: 700 }}>
             <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionProfile')}</h1>
             <ProfileSection />
+
+            {/* 数据迁移 */}
+            <div style={{ marginTop: 32, padding: 16, borderRadius: 8, border: '1px solid var(--border-subtle)', background: 'var(--bg-glass)' }}>
+              <h3 style={{ margin: '0 0 8px', fontSize: 15 }}>数据迁移</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '0 0 12px' }}>
+                导出所有数据（对话、Agent 配置、记忆、个人资料）到文件，在另一台电脑导入即可使用。
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { save } = await import('@tauri-apps/api/dialog')
+                      const path = await save({ defaultPath: 'xianzhu-data.zip', filters: [{ name: 'ZIP', extensions: ['zip'] }] })
+                      if (!path) return
+                      const result = await invoke<string>('export_app_data', { outputPath: path })
+                      toast.success(result)
+                    } catch (e) { toast.error(friendlyError(e)) }
+                  }}
+                  style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 13 }}
+                >
+                  导出数据
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { open } = await import('@tauri-apps/api/dialog')
+                      const path = await open({ filters: [{ name: 'ZIP', extensions: ['zip'] }] })
+                      if (!path || Array.isArray(path)) return
+                      const result = await invoke<string>('import_app_data', { zipPath: path })
+                      toast.success(result)
+                    } catch (e) { toast.error(friendlyError(e)) }
+                  }}
+                  style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 13 }}
+                >
+                  导入数据
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

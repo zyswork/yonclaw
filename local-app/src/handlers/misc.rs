@@ -797,3 +797,124 @@ pub async fn get_python_sandbox_status() -> Result<serde_json::Value, String> {
         "status": if initialized { "ready" } else if initializing { "initializing" } else { "not_started" }
     }))
 }
+
+/// 导出应用数据（数据库 + Agent 工作区 → 单个 .zip 文件）
+///
+/// 用于跨设备迁移。导出后在新设备导入即可。
+#[tauri::command]
+pub async fn export_app_data(
+    output_path: String,
+) -> Result<String, String> {
+    use std::io::Write;
+
+    let config = crate::config::AppConfig::default();
+    let db_path = config.data_dir.join("xianzhu.db");
+    let agents_dir = &config.agents_dir;
+
+    let file = std::fs::File::create(&output_path)
+        .map_err(|e| format!("创建导出文件失败: {}", e))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // 1. 导出数据库
+    if db_path.exists() {
+        let db_bytes = std::fs::read(&db_path)
+            .map_err(|e| format!("读取数据库失败: {}", e))?;
+        zip.start_file("xianzhu.db", options).map_err(|e| e.to_string())?;
+        zip.write_all(&db_bytes).map_err(|e| e.to_string())?;
+        log::info!("导出数据库: {:.1}MB", db_bytes.len() as f64 / 1024.0 / 1024.0);
+    }
+
+    // 2. 导出 Agent 工作区
+    if agents_dir.exists() {
+        for entry in walkdir::WalkDir::new(agents_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let path = entry.path();
+            // 跳过大文件和临时文件
+            if let Ok(meta) = std::fs::metadata(path) {
+                if meta.len() > 10 * 1024 * 1024 { continue; } // 跳过 > 10MB
+            }
+            let relative = path.strip_prefix(agents_dir.parent().unwrap_or(agents_dir))
+                .unwrap_or(path);
+            let zip_path = format!("agents/{}", relative.to_string_lossy().replace('\\', "/"));
+            if let Ok(content) = std::fs::read(path) {
+                let _ = zip.start_file(&zip_path, options);
+                let _ = zip.write_all(&content);
+            }
+        }
+    }
+
+    // 3. 导出 profile
+    let profile_dir = dirs::home_dir().unwrap_or_default().join(".xianzhu").join("profile");
+    if profile_dir.exists() {
+        for entry in std::fs::read_dir(&profile_dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(content) = std::fs::read(&path) {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let _ = zip.start_file(format!("profile/{}", name), options);
+                    let _ = zip.write_all(&content);
+                }
+            }
+        }
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
+
+    let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+    Ok(format!("数据已导出到 {} ({:.1}MB)", output_path, size as f64 / 1024.0 / 1024.0))
+}
+
+/// 导入应用数据（从 .zip 恢复数据库 + Agent 工作区）
+#[tauri::command]
+pub async fn import_app_data(
+    zip_path: String,
+) -> Result<String, String> {
+    let config = crate::config::AppConfig::default();
+    let data_dir = &config.data_dir;
+    let agents_parent = config.agents_dir.parent()
+        .unwrap_or(&config.agents_dir).to_path_buf();
+
+    let file = std::fs::File::open(&zip_path)
+        .map_err(|e| format!("打开导入文件失败: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("解析 zip 失败: {}", e))?;
+
+    let mut imported_count = 0;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+
+        if name == "xianzhu.db" {
+            // 导入数据库（备份旧的）
+            let db_path = data_dir.join("xianzhu.db");
+            if db_path.exists() {
+                let backup = data_dir.join("xianzhu.db.backup");
+                let _ = std::fs::copy(&db_path, &backup);
+                log::info!("旧数据库已备份: {}", backup.display());
+            }
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).map_err(|e| e.to_string())?;
+            std::fs::write(&db_path, &content).map_err(|e| format!("写入数据库失败: {}", e))?;
+            log::info!("导入数据库: {:.1}MB", content.len() as f64 / 1024.0 / 1024.0);
+            imported_count += 1;
+        } else if name.starts_with("agents/") || name.starts_with("profile/") {
+            // 导入工作区文件 / profile
+            let target = agents_parent.join(&name);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).map_err(|e| e.to_string())?;
+            std::fs::write(&target, &content).map_err(|e| format!("写入失败: {}", e))?;
+            imported_count += 1;
+        }
+    }
+
+    Ok(format!("导入完成：{} 个文件。请重启应用以加载新数据。", imported_count))
+}

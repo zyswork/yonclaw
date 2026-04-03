@@ -656,6 +656,8 @@ async fn main() {
             start_oauth_flow, exchange_oauth_code, refresh_oauth_token,
             // python sandbox
             get_python_sandbox_status,
+            // 数据迁移
+            export_app_data, import_app_data,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");
