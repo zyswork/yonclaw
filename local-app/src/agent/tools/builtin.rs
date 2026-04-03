@@ -2510,12 +2510,16 @@ impl Tool for TtsTool {
                     },
                     "mode": {
                         "type": "string",
-                        "description": "TTS 模式（可选）：local（系统 TTS，免费）/ api（OpenAI TTS，高质量）",
+                        "description": "TTS 模式（可选）：local（系统 TTS，免费）/ mimo（小米 MiMo-V2-TTS，高质量免费）/ api（OpenAI TTS）",
                         "default": "local"
                     },
                     "voice": {
                         "type": "string",
-                        "description": "声音（可选）。local 模式：系统语音名（如 Ting-Ting/Samantha）；api 模式：alloy/echo/fable/onyx/nova/shimmer"
+                        "description": "声音（可选）。local: 系统语音名（如 Ting-Ting/Samantha）；mimo: 自然人声；api: alloy/echo/fable/onyx/nova/shimmer"
+                    },
+                    "style": {
+                        "type": "string",
+                        "description": "语音风格描述（仅 mimo 模式）。如：'温柔的女声'、'东北口音'、'四川方言'、'开心的语气'、'唱歌'"
                     },
                     "speed": {
                         "type": "number",
@@ -2549,6 +2553,7 @@ impl Tool for TtsTool {
         }
 
         match mode {
+            "mimo" => self.tts_mimo(text, &arguments).await,
             "api" => self.tts_api(text, &arguments).await,
             _ => self.tts_local(text, &arguments).await,
         }
@@ -2588,6 +2593,12 @@ impl TtsTool {
         }
 
         // OpenAI 声音
+        voices.push("\n## 小米 MiMo-V2-TTS (mode=mimo)\n".to_string());
+        voices.push("- 支持自然语言风格控制（通过 style 参数）".to_string());
+        voices.push("- 示例风格：'温柔的女声'、'东北口音'、'四川方言'、'开心的'、'悲伤的'、'唱歌'".to_string());
+        voices.push("- 支持方言：东北话、四川话、河南话、粤语、台湾腔".to_string());
+        voices.push("- 当前免费".to_string());
+
         voices.push("\n## OpenAI TTS (mode=api)\n".to_string());
         voices.push("- **alloy** — 中性、平衡\n- **echo** — 低沉、稳重\n- **fable** — 温暖、叙事\n- **onyx** — 深沉、权威\n- **nova** — 明亮、活力\n- **shimmer** — 柔和、友好".to_string());
 
@@ -2722,6 +2733,82 @@ impl TtsTool {
         {
             Err("当前系统不支持本地 TTS，请使用 mode=api".to_string())
         }
+    }
+
+    /// 小米 MiMo-V2-TTS — OpenAI 兼容格式，支持风格控制
+    async fn tts_mimo(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
+        let style = args.get("style").and_then(|s| s.as_str()).unwrap_or("");
+        let speed = args.get("speed").and_then(|s| s.as_f64()).unwrap_or(1.0);
+
+        // 拼接风格指令到文本（MiMo-V2-TTS 支持自然语言控制风格）
+        let input_text = if style.is_empty() {
+            text.to_string()
+        } else {
+            format!("[{}]{}", style, text)
+        };
+
+        log::info!("MiMo TTS: {} 字符, style={}, speed={}", text.len(), style, speed);
+
+        // 查找小米 provider 配置
+        let (api_key, base_url) = self.find_mimo_provider().await?;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("创建客户端失败: {}", e))?;
+
+        let url = format!("{}/audio/speech", base_url.trim_end_matches('/'));
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&serde_json::json!({
+                "model": "mimo-v2-tts",
+                "input": input_text,
+                "speed": speed,
+            }))
+            .send().await
+            .map_err(|e| format!("MiMo TTS 请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("MiMo TTS 失败 (HTTP {}): {}", status, &body[..body.len().min(200)]));
+        }
+
+        let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败: {}", e))?;
+        let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".xianzhu/tts");
+        let _ = std::fs::create_dir_all(&output_dir);
+        let filename = format!("mimo_tts_{}.mp3", chrono::Utc::now().timestamp_millis());
+        let output_path = output_dir.join(&filename);
+        std::fs::write(&output_path, &bytes).map_err(|e| format!("保存失败: {}", e))?;
+
+        let style_info = if style.is_empty() { String::new() } else { format!(", 风格: {}", style) };
+        Ok(format!("语音已生成（MiMo-V2-TTS{}）: {} ({} 字节)\n文件: {}",
+            style_info, filename, bytes.len(), output_path.display()))
+    }
+
+    /// 查找小米 MiMo provider（从 providers 配置中找 xiaomimimo 的 base_url 和 api_key）
+    async fn find_mimo_provider(&self) -> Result<(String, String), String> {
+        let json_str: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'providers'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+
+        let providers: Vec<serde_json::Value> = json_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        // 查找含 xiaomimimo 或 mimo 的 provider
+        for p in &providers {
+            let base = p["base_url"].as_str().unwrap_or("");
+            let id = p["id"].as_str().unwrap_or("");
+            if base.contains("xiaomimimo") || base.contains("mimo") || id.contains("mimo") {
+                let key = p["api_key"].as_str().unwrap_or("").to_string();
+                if !key.is_empty() && !base.is_empty() {
+                    return Ok((key, base.to_string()));
+                }
+            }
+        }
+
+        Err("未找到小米 MiMo provider 配置。请在设置 → 供应商中添加小米 MiMo（base_url: https://token-plan-cn.xiaomimimo.com/v1）".into())
     }
 
     /// OpenAI TTS API
