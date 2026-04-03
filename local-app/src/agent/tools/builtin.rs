@@ -2480,7 +2480,17 @@ impl ImageGenerateTool {
     }
 }
 
-/// TTS 语音合成工具 — 支持本地系统 TTS + OpenAI API 双模式
+/// TTS 配置（从 settings 表读取 tts.* 键）
+struct TtsConfig {
+    provider: String,      // "local" | "mimo" | "openai"
+    api_key: String,
+    base_url: String,
+    model: String,
+    default_voice: String,
+    default_style: String,
+}
+
+/// TTS 语音合成工具 — 支持本地/小米 MiMo/OpenAI 三模式
 pub struct TtsTool {
     pool: sqlx::SqlitePool,
 }
@@ -2546,7 +2556,10 @@ impl Tool for TtsTool {
         let text = arguments.get("text")
             .and_then(|t| t.as_str())
             .ok_or("缺少 text 参数")?;
-        let mode = arguments.get("mode").and_then(|m| m.as_str()).unwrap_or("local");
+        // mode 优先用参数指定，否则读 tts.provider 配置，默认 local
+        let config = self.load_tts_config().await;
+        let mode = arguments.get("mode").and_then(|m| m.as_str())
+            .unwrap_or(if config.provider.is_empty() { "local" } else { &config.provider });
 
         if text.len() > 4096 {
             return Err("文本过长（最多 4096 字符）".to_string());
@@ -2554,7 +2567,7 @@ impl Tool for TtsTool {
 
         match mode {
             "mimo" => self.tts_mimo(text, &arguments).await,
-            "api" => self.tts_api(text, &arguments).await,
+            "api" | "openai" => self.tts_api(text, &arguments).await,
             _ => self.tts_local(text, &arguments).await,
         }
     }
@@ -2786,8 +2799,44 @@ impl TtsTool {
             style_info, filename, bytes.len(), output_path.display()))
     }
 
-    /// 查找小米 MiMo provider（从 providers 配置中找 xiaomimimo 的 base_url 和 api_key）
+    /// 读取 TTS 专用配置（settings 表中的 tts.* 键）
+    async fn load_tts_config(&self) -> TtsConfig {
+        let get = |key: &str| -> Option<String> {
+            let full_key = format!("tts.{}", key);
+            let rt = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                rt.block_on(async {
+                    // 这里不能 async，用同步方式
+                    None::<String>
+                })
+            }).join().ok().flatten()
+        };
+        // 用简单的同步查询
+        let provider = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.provider'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_else(|| "local".into());
+        let api_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.api_key'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_default();
+        let base_url = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.base_url'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_default();
+        let model = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.model'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_default();
+        let default_voice = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.default_voice'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_default();
+        let default_style = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.default_style'")
+            .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_default();
+
+        TtsConfig { provider, api_key, base_url, model, default_voice, default_style }
+    }
+
+    /// 从 TTS 配置或 providers 列表查找 MiMo 凭据
     async fn find_mimo_provider(&self) -> Result<(String, String), String> {
+        // 优先从 TTS 专用配置读取
+        let config = self.load_tts_config().await;
+        if config.provider == "mimo" && !config.api_key.is_empty() && !config.base_url.is_empty() {
+            return Ok((config.api_key, config.base_url));
+        }
+
+        // fallback: 从 providers 列表查找
         let json_str: Option<String> = sqlx::query_scalar(
             "SELECT value FROM settings WHERE key = 'providers'"
         ).fetch_optional(&self.pool).await.ok().flatten();
@@ -2796,7 +2845,6 @@ impl TtsTool {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
-        // 查找含 xiaomimimo 或 mimo 的 provider
         for p in &providers {
             let base = p["base_url"].as_str().unwrap_or("");
             let id = p["id"].as_str().unwrap_or("");
@@ -2808,7 +2856,7 @@ impl TtsTool {
             }
         }
 
-        Err("未找到小米 MiMo provider 配置。请在设置 → 供应商中添加小米 MiMo（base_url: https://token-plan-cn.xiaomimimo.com/v1）".into())
+        Err("未配置 TTS 语音合成。请在设置 → 语音合成中配置 API Key 和服务地址。".into())
     }
 
     /// OpenAI TTS API

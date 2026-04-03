@@ -283,7 +283,7 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
 ]
 
 /** 分类导航项定义 */
-type SectionId = 'profile' | 'providers' | 'appearance' | 'search' | 'heartbeat' | 'backup' | 'gateway' | 'embedding' | 'background'
+type SectionId = 'profile' | 'providers' | 'tts' | 'appearance' | 'search' | 'heartbeat' | 'backup' | 'gateway' | 'embedding' | 'background'
 
 interface NavItem {
   id: SectionId
@@ -383,6 +383,18 @@ const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    id: 'tts' as SectionId,
+    labelKey: 'settings.sectionTts',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </svg>
+    ),
+  },
+  {
     id: 'background',
     labelKey: 'settings.sectionBackground',
     icon: (
@@ -448,7 +460,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const section = params.get('section')
-    const validSections: SectionId[] = ['profile', 'providers', 'appearance', 'search', 'heartbeat', 'backup', 'gateway', 'embedding', 'background']
+    const validSections: SectionId[] = ['profile', 'providers', 'tts', 'appearance', 'search', 'heartbeat', 'backup', 'gateway', 'embedding', 'background']
     if (section && validSections.includes(section as SectionId)) {
       setActiveSection(section as SectionId)
     }
@@ -575,6 +587,7 @@ export default function SettingsPage() {
     backup: t('settings.sectionBackup') || 'Backup',
     gateway: t('settings.sectionCloud'),
     embedding: t('settings.sectionEmbedding'),
+    tts: '语音合成',
     background: t('settings.sectionBackground'),
   }
 
@@ -1087,6 +1100,14 @@ export DEEPSEEK_API_KEY="sk-..."`}
           <div style={{ maxWidth: 700 }}>
             <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionEmbedding')}</h1>
             <AdvancedSettings initialSection="embedding" />
+          </div>
+        )}
+
+        {/* ---- 语音合成 ---- */}
+        {activeSection === 'tts' && (
+          <div style={{ maxWidth: 700 }}>
+            <h1 style={{ marginTop: 0, marginBottom: 16 }}>语音合成 (TTS)</h1>
+            <TtsSection />
           </div>
         )}
 
@@ -1884,6 +1905,125 @@ function ThemeSettings() {
 }
 
 /** 后台模型配置 — 经验提取、上下文压缩、定时任务等使用的模型 */
+function TtsSection() {
+  const [provider, setProvider] = useState('local')
+  const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
+  const [defaultVoice, setDefaultVoice] = useState('')
+  const [defaultStyle, setDefaultStyle] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const keys = ['tts.provider', 'tts.api_key', 'tts.base_url', 'tts.model', 'tts.default_voice', 'tts.default_style']
+        for (const key of keys) {
+          const val = await invoke<string | null>('get_setting', { key })
+          if (!val) continue
+          if (key === 'tts.provider') setProvider(val)
+          if (key === 'tts.api_key') setApiKey(val)
+          if (key === 'tts.base_url') setBaseUrl(val)
+          if (key === 'tts.model') setModel(val)
+          if (key === 'tts.default_voice') setDefaultVoice(val)
+          if (key === 'tts.default_style') setDefaultStyle(val)
+        }
+      } catch {}
+    })()
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await invoke('set_setting', { key: 'tts.provider', value: provider })
+      await invoke('set_setting', { key: 'tts.api_key', value: apiKey })
+      await invoke('set_setting', { key: 'tts.base_url', value: baseUrl })
+      await invoke('set_setting', { key: 'tts.model', value: model })
+      await invoke('set_setting', { key: 'tts.default_voice', value: defaultVoice })
+      await invoke('set_setting', { key: 'tts.default_style', value: defaultStyle })
+      toast.success('TTS 配置已保存')
+    } catch (e) { toast.error(friendlyError(e)) }
+    setSaving(false)
+  }
+
+  const inputStyle: React.CSSProperties = { width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border-subtle)', fontSize: 14, background: 'var(--bg-secondary)' }
+  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4, color: 'var(--text-secondary)' }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <label style={labelStyle}>TTS 引擎</label>
+        <select value={provider} onChange={e => setProvider(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+          <option value="local">本地系统 TTS（免费，无需配置）</option>
+          <option value="mimo">小米 MiMo-V2-TTS（高质量，免费）</option>
+          <option value="openai">OpenAI TTS（需 API Key）</option>
+        </select>
+      </div>
+
+      {provider !== 'local' && (
+        <>
+          <div>
+            <label style={labelStyle}>API Key</label>
+            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+              placeholder={provider === 'mimo' ? '小米 MiMo API Key' : 'OpenAI API Key'}
+              style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>API 地址</label>
+            <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+              placeholder={provider === 'mimo' ? 'https://token-plan-cn.xiaomimimo.com/v1' : 'https://api.openai.com/v1'}
+              style={inputStyle} />
+            {provider === 'mimo' && !baseUrl && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}
+                onClick={() => setBaseUrl('https://token-plan-cn.xiaomimimo.com/v1')}>
+                点击填入默认地址
+              </span>
+            )}
+          </div>
+          <div>
+            <label style={labelStyle}>模型名称</label>
+            <input value={model} onChange={e => setModel(e.target.value)}
+              placeholder={provider === 'mimo' ? 'mimo-v2-tts' : 'tts-1'}
+              style={inputStyle} />
+          </div>
+        </>
+      )}
+
+      {provider === 'mimo' && (
+        <div>
+          <label style={labelStyle}>默认语音风格</label>
+          <input value={defaultStyle} onChange={e => setDefaultStyle(e.target.value)}
+            placeholder="如：温柔的女声、东北口音、播音员、唱歌"
+            style={inputStyle} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            MiMo-V2-TTS 支持自然语言风格控制，留空使用默认声音
+          </span>
+        </div>
+      )}
+
+      {provider === 'openai' && (
+        <div>
+          <label style={labelStyle}>默认声音</label>
+          <select value={defaultVoice} onChange={e => setDefaultVoice(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+            <option value="">默认 (alloy)</option>
+            <option value="alloy">Alloy</option>
+            <option value="echo">Echo</option>
+            <option value="fable">Fable</option>
+            <option value="onyx">Onyx</option>
+            <option value="nova">Nova</option>
+            <option value="shimmer">Shimmer</option>
+          </select>
+        </div>
+      )}
+
+      <button onClick={save} disabled={saving}
+        style={{ alignSelf: 'flex-start', padding: '8px 24px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 14 }}>
+        {saving ? '保存中...' : '保存'}
+      </button>
+    </div>
+  )
+}
+
 function BackgroundModelSection() {
   const { t } = useI18n()
   const [bgModel, setBgModel] = useState('')
