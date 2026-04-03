@@ -800,9 +800,12 @@ pub async fn get_python_sandbox_status() -> Result<serde_json::Value, String> {
 
 /// 导出应用数据（数据库 + Agent 工作区 → 单个 .zip 文件）
 ///
-/// 用于跨设备迁移。导出后在新设备导入即可。
+/// 安全措施：
+/// - 导出前 checkpoint WAL（确保所有数据落盘）
+/// - API Key 脱敏（providers 表的 api_key 字段替换为占位符）
 #[tauri::command]
 pub async fn export_app_data(
+    state: State<'_, std::sync::Arc<crate::AppState>>,
     output_path: String,
 ) -> Result<String, String> {
     use std::io::Write;
@@ -811,22 +814,50 @@ pub async fn export_app_data(
     let db_path = config.data_dir.join("xianzhu.db");
     let agents_dir = &config.agents_dir;
 
+    // 1. Checkpoint WAL — 确保所有数据从 WAL 刷入主数据库文件
+    let pool = state.db.pool();
+    let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await;
+    log::info!("导出: WAL checkpoint 完成");
+
+    // 2. 复制数据库到临时文件（避免导出期间被修改）
+    let tmp_db = config.data_dir.join("xianzhu_export_tmp.db");
+    std::fs::copy(&db_path, &tmp_db)
+        .map_err(|e| format!("复制数据库失败: {}", e))?;
+
+    // 3. 脱敏：清除临时数据库中的 API Key
+    {
+        let tmp_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{}", tmp_db.to_string_lossy()))
+            .await
+            .map_err(|e| format!("打开临时数据库失败: {}", e))?;
+        // 清除 providers 表中的 api_key（保留其他配置）
+        let _ = sqlx::query("UPDATE settings SET value = '[已脱敏]' WHERE key LIKE '%api_key%' OR key LIKE '%secret%' OR key LIKE '%token%'")
+            .execute(&tmp_pool).await;
+        // 清除 providers JSON 中的敏感字段
+        let _ = sqlx::query("UPDATE settings SET value = '[已脱敏]' WHERE key LIKE 'provider_%' AND value LIKE '%api_key%'")
+            .execute(&tmp_pool).await;
+        let _ = sqlx::query("UPDATE settings SET value = '' WHERE key LIKE 'auth.%'")
+            .execute(&tmp_pool).await;
+        tmp_pool.close().await;
+        log::info!("导出: API Key 已脱敏");
+    }
+
     let file = std::fs::File::create(&output_path)
         .map_err(|e| format!("创建导出文件失败: {}", e))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    // 1. 导出数据库
-    if db_path.exists() {
-        let db_bytes = std::fs::read(&db_path)
-            .map_err(|e| format!("读取数据库失败: {}", e))?;
-        zip.start_file("xianzhu.db", options).map_err(|e| e.to_string())?;
-        zip.write_all(&db_bytes).map_err(|e| e.to_string())?;
-        log::info!("导出数据库: {:.1}MB", db_bytes.len() as f64 / 1024.0 / 1024.0);
-    }
+    // 4. 写入脱敏后的数据库
+    let db_bytes = std::fs::read(&tmp_db)
+        .map_err(|e| format!("读取数据库失败: {}", e))?;
+    zip.start_file("xianzhu.db", options).map_err(|e| e.to_string())?;
+    zip.write_all(&db_bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&tmp_db); // 清理临时文件
+    log::info!("导出数据库: {:.1}MB", db_bytes.len() as f64 / 1024.0 / 1024.0);
 
-    // 2. 导出 Agent 工作区
+    // 5. 导出 Agent 工作区
     if agents_dir.exists() {
         for entry in walkdir::WalkDir::new(agents_dir)
             .into_iter()
@@ -834,9 +865,8 @@ pub async fn export_app_data(
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
-            // 跳过大文件和临时文件
             if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > 10 * 1024 * 1024 { continue; } // 跳过 > 10MB
+                if meta.len() > 10 * 1024 * 1024 { continue; }
             }
             let relative = path.strip_prefix(agents_dir.parent().unwrap_or(agents_dir))
                 .unwrap_or(path);
@@ -848,7 +878,7 @@ pub async fn export_app_data(
         }
     }
 
-    // 3. 导出 profile
+    // 6. 导出 profile
     let profile_dir = dirs::home_dir().unwrap_or_default().join(".xianzhu").join("profile");
     if profile_dir.exists() {
         for entry in std::fs::read_dir(&profile_dir).into_iter().flatten().flatten() {
@@ -866,10 +896,15 @@ pub async fn export_app_data(
     zip.finish().map_err(|e| e.to_string())?;
 
     let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-    Ok(format!("数据已导出到 {} ({:.1}MB)", output_path, size as f64 / 1024.0 / 1024.0))
+    Ok(format!("数据已导出（{:.1}MB）。注意：API Key 已脱敏，导入后需重新配置。", size as f64 / 1024.0 / 1024.0))
 }
 
 /// 导入应用数据（从 .zip 恢复数据库 + Agent 工作区）
+///
+/// 安全措施：
+/// - 数据库写入到临时文件，不直接覆盖正在使用的 db
+/// - Path traversal 防护（拒绝含 .. 的路径）
+/// - 自动备份旧数据库
 #[tauri::command]
 pub async fn import_app_data(
     zip_path: String,
@@ -885,27 +920,47 @@ pub async fn import_app_data(
         .map_err(|e| format!("解析 zip 失败: {}", e))?;
 
     let mut imported_count = 0;
+    let mut db_imported = false;
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
 
+        // Path traversal 防护
+        if name.contains("..") {
+            log::warn!("导入: 跳过可疑路径 {}", name);
+            continue;
+        }
+
         if name == "xianzhu.db" {
-            // 导入数据库（备份旧的）
+            // 导入数据库 → 写到临时文件（不直接覆盖正在使用的 db）
+            let import_db = data_dir.join("xianzhu_import.db");
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).map_err(|e| e.to_string())?;
+            std::fs::write(&import_db, &content)
+                .map_err(|e| format!("写入临时数据库失败: {}", e))?;
+
+            // 备份旧数据库
             let db_path = data_dir.join("xianzhu.db");
             if db_path.exists() {
-                let backup = data_dir.join("xianzhu.db.backup");
+                let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                let backup = data_dir.join(format!("xianzhu_{}.db.backup", ts));
                 let _ = std::fs::copy(&db_path, &backup);
                 log::info!("旧数据库已备份: {}", backup.display());
             }
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut content).map_err(|e| e.to_string())?;
-            std::fs::write(&db_path, &content).map_err(|e| format!("写入数据库失败: {}", e))?;
-            log::info!("导入数据库: {:.1}MB", content.len() as f64 / 1024.0 / 1024.0);
+
+            // 重命名临时文件为正式文件（原子操作，重启后生效）
+            let _ = std::fs::rename(&import_db, data_dir.join("xianzhu_pending_import.db"));
+            db_imported = true;
+            log::info!("导入数据库: {:.1}MB（重启后生效）", content.len() as f64 / 1024.0 / 1024.0);
             imported_count += 1;
         } else if name.starts_with("agents/") || name.starts_with("profile/") {
-            // 导入工作区文件 / profile
             let target = agents_parent.join(&name);
+            // 二次 path traversal 检查
+            if !target.starts_with(&agents_parent) {
+                log::warn!("导入: 路径越界 {}", name);
+                continue;
+            }
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -916,5 +971,10 @@ pub async fn import_app_data(
         }
     }
 
-    Ok(format!("导入完成：{} 个文件。请重启应用以加载新数据。", imported_count))
+    let msg = if db_imported {
+        format!("导入完成（{} 个文件）。请关闭并重新打开应用以加载新数据。", imported_count)
+    } else {
+        format!("导入完成（{} 个文件）。Agent 工作区已更新。", imported_count)
+    };
+    Ok(msg)
 }

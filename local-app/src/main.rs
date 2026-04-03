@@ -164,6 +164,16 @@ async fn main() {
         // 降级到当前目录而不是崩溃
         let _ = std::fs::create_dir_all(".");
     }
+    // 检查是否有待导入的数据库（上次导入后重启生效）
+    let pending_import = data_dir.join("xianzhu_pending_import.db");
+    if pending_import.exists() {
+        let db_path = data_dir.join("xianzhu.db");
+        match std::fs::rename(&pending_import, &db_path) {
+            Ok(()) => log::info!("已应用导入的数据库"),
+            Err(e) => log::warn!("应用导入数据库失败: {}（将使用旧数据库）", e),
+        }
+    }
+
     let db_path = data_dir.join("xianzhu.db");
     let db = match db::Database::new(db_path.to_str().unwrap_or("xianzhu.db")).await {
         Ok(db) => {
