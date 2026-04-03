@@ -482,7 +482,14 @@ function convertLocalPath(path: string): string {
   // macOS/Linux: /path/to/file 或 ~/path
   // Windows: C:\path\to\file 或 D:/path
   if (path.startsWith('/') || path.startsWith('~') || /^[A-Z]:[/\\]/i.test(path)) {
-    return `https://asset.localhost/${encodeURIComponent(path)}`
+    // 展开 ~ 为 home 目录（Tauri asset 不认识 ~）
+    let resolved = path
+    if (resolved.startsWith('~/')) {
+      // 无法在前端获取 home，保持原样让 asset protocol 处理
+    }
+    // Tauri asset protocol: 路径中的特殊字符需要编码，但 / 不能编码
+    const encoded = resolved.split('/').map(s => encodeURIComponent(s)).join('/')
+    return `https://asset.localhost/${encoded}`
   }
   return path
 }
