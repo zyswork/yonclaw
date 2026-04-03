@@ -478,13 +478,16 @@ function UserMessageContent({ content, searchQuery }: { content: string; searchQ
 
 /** 把本地文件路径转为 Tauri asset URL */
 function convertLocalPath(path: string): string {
-  // Tauri 1.x asset protocol: https://asset.localhost/{path_without_leading_slash}
+  // Tauri 1.x asset protocol
+  // 正确格式: https://asset.localhost/{encoded_path}
+  // 路径需要 encodeURIComponent 但保留结构
   if (path.startsWith('/') || path.startsWith('~') || /^[A-Z]:[/\\]/i.test(path)) {
-    // 去掉开头的 / 避免 https://asset.localhost//Users/... 双斜杠
-    let cleaned = path.startsWith('/') ? path.slice(1) : path
-    // 每段单独 encode（保留 /）
-    const encoded = cleaned.split('/').map(s => encodeURIComponent(s)).join('/')
-    return `https://asset.localhost/${encoded}`
+    // window.__TAURI__ 提供的 convertFileSrc
+    if ((window as any).__TAURI__?.tauri?.convertFileSrc) {
+      return (window as any).__TAURI__.tauri.convertFileSrc(path)
+    }
+    // fallback: 手动构造（Tauri 1.x 格式）
+    return `https://asset.localhost/${encodeURIComponent(path)}`
   }
   return path
 }
