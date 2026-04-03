@@ -2748,35 +2748,43 @@ impl TtsTool {
         }
     }
 
-    /// 小米 MiMo-V2-TTS — OpenAI 兼容格式，支持风格控制
+    /// 小米 MiMo-V2-TTS — 通过 chat/completions 端点，返回 base64 WAV 音频
+    ///
+    /// 调用方式：POST /v1/chat/completions
+    ///   model: "mimo-v2-tts"
+    ///   messages: [{"role": "assistant", "content": "要朗读的文本"}]
+    /// 响应：choices[0].message.audio.data → base64 编码的 WAV 音频
     async fn tts_mimo(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
         let style = args.get("style").and_then(|s| s.as_str()).unwrap_or("");
-        let speed = args.get("speed").and_then(|s| s.as_f64()).unwrap_or(1.0);
 
-        // 拼接风格指令到文本（MiMo-V2-TTS 支持自然语言控制风格）
-        let input_text = if style.is_empty() {
+        // 风格控制：拼接到文本前面
+        let content = if style.is_empty() {
             text.to_string()
         } else {
             format!("[{}]{}", style, text)
         };
 
-        log::info!("MiMo TTS: {} 字符, style={}, speed={}", text.len(), style, speed);
+        log::info!("MiMo TTS: {} 字符, style={}", text.len(), style);
 
-        // 查找小米 provider 配置
         let (api_key, base_url) = self.find_mimo_provider().await?;
+        let tts_config = self.load_tts_config().await;
+        let model = if tts_config.model.is_empty() { "mimo-v2-tts".to_string() } else { tts_config.model };
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .map_err(|e| format!("创建客户端失败: {}", e))?;
 
-        let url = format!("{}/audio/speech", base_url.trim_end_matches('/'));
+        // MiMo TTS 使用 chat/completions 端点，要求 assistant 角色
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let resp = client.post(&url)
+            .header("api-key", &api_key)
             .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
             .json(&serde_json::json!({
-                "model": "mimo-v2-tts",
-                "input": input_text,
-                "speed": speed,
+                "model": model,
+                "messages": [{"role": "assistant", "content": content}],
+                "max_completion_tokens": 8192,
             }))
             .send().await
             .map_err(|e| format!("MiMo TTS 请求失败: {}", e))?;
@@ -2787,16 +2795,28 @@ impl TtsTool {
             return Err(format!("MiMo TTS 失败 (HTTP {}): {}", status, &body[..body.len().min(200)]));
         }
 
-        let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败: {}", e))?;
+        // 解析 JSON 响应，提取 audio.data (base64)
+        let json: serde_json::Value = resp.json().await
+            .map_err(|e| format!("解析响应失败: {}", e))?;
+
+        let audio_b64 = json["choices"][0]["message"]["audio"]["data"]
+            .as_str()
+            .ok_or("响应中没有音频数据（choices[0].message.audio.data）")?;
+
+        // base64 解码
+        let audio_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio_b64)
+            .map_err(|e| format!("音频 base64 解码失败: {}", e))?;
+
+        // 保存为 WAV 文件
         let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".xianzhu/tts");
         let _ = std::fs::create_dir_all(&output_dir);
-        let filename = format!("mimo_tts_{}.mp3", chrono::Utc::now().timestamp_millis());
+        let filename = format!("mimo_tts_{}.wav", chrono::Utc::now().timestamp_millis());
         let output_path = output_dir.join(&filename);
-        std::fs::write(&output_path, &bytes).map_err(|e| format!("保存失败: {}", e))?;
+        std::fs::write(&output_path, &audio_bytes).map_err(|e| format!("保存失败: {}", e))?;
 
         let style_info = if style.is_empty() { String::new() } else { format!(", 风格: {}", style) };
-        Ok(format!("语音已生成（MiMo-V2-TTS{}）: {} ({} 字节)\n文件: {}",
-            style_info, filename, bytes.len(), output_path.display()))
+        Ok(format!("语音已生成（MiMo-V2-TTS{}）: {} ({:.1}KB)\n文件: {}",
+            style_info, filename, audio_bytes.len() as f64 / 1024.0, output_path.display()))
     }
 
     /// 读取 TTS 专用配置（settings 表中的 tts.* 键）
