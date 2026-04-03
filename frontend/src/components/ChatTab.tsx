@@ -302,22 +302,7 @@ function extractMediaFromText(text: string): React.ReactNode[] {
     audioMatches.forEach((path, i) => {
       if (seen.has(path)) return
       seen.add(path)
-      const src = convertLocalPath(path.trim())
-      elements.push(
-        <div key={`audio-${i}`} style={{
-          marginTop: 8, padding: '10px 14px', borderRadius: 10,
-          backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-          display: 'flex', alignItems: 'center', gap: 10,
-        }}>
-          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Audio</span>
-          <audio controls preload="metadata" style={{ flex: 1, height: 36 }}>
-            <source src={src} />
-          </audio>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {path.split('/').pop()}
-          </span>
-        </div>
-      )
+      elements.push(<AudioPlayer key={`audio-${i}`} filePath={path.trim()} />)
     })
   }
 
@@ -477,6 +462,70 @@ function UserMessageContent({ content, searchQuery }: { content: string; searchQ
 }
 
 /** 把本地文件路径转为 Tauri asset URL */
+/** 音频播放组件 — 通过 Tauri 读取本地文件，用 blob URL 播放 */
+function AudioPlayer({ filePath }: { filePath: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const loadAudio = async () => {
+    if (blobUrl) return // 已加载
+    setLoading(true)
+    setError('')
+    try {
+      // 通过 Tauri 读取本地文件为 base64
+      const { readBinaryFile } = await import('@tauri-apps/api/fs')
+      const bytes = await readBinaryFile(filePath)
+      // 检测 MIME 类型
+      const ext = filePath.split('.').pop()?.toLowerCase() || ''
+      const mimeMap: Record<string, string> = {
+        mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+        ogg: 'audio/ogg', aiff: 'audio/aiff', aac: 'audio/aac',
+      }
+      const mime = mimeMap[ext] || 'audio/mpeg'
+      const blob = new Blob([bytes], { type: mime })
+      const url = URL.createObjectURL(blob)
+      setBlobUrl(url)
+      // 自动播放
+      setTimeout(() => audioRef.current?.play(), 100)
+    } catch (e) {
+      setError(String(e))
+      // fallback: 用系统打开
+      try {
+        const { open } = await import('@tauri-apps/api/shell')
+        await open(filePath)
+      } catch {}
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) } }, [blobUrl])
+
+  return (
+    <div style={{
+      marginTop: 8, padding: '10px 14px', borderRadius: 10,
+      backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Audio</span>
+      {blobUrl ? (
+        <audio ref={audioRef} controls style={{ flex: 1, height: 36 }} src={blobUrl} />
+      ) : (
+        <button onClick={loadAudio} disabled={loading} style={{
+          flex: 1, padding: '8px 16px', borderRadius: 6, border: '1px solid var(--accent)',
+          background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 13,
+        }}>
+          {loading ? '加载中...' : error ? '播放失败，点击重试' : '点击播放'}
+        </button>
+      )}
+      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        {filePath.split('/').pop()}
+      </span>
+    </div>
+  )
+}
+
 function convertLocalPath(path: string): string {
   // Tauri 1.x asset protocol
   // 正确格式: https://asset.localhost/{encoded_path}
