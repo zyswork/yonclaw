@@ -54,6 +54,9 @@ pub async fn run_diagnostics(pool: &SqlitePool) -> Vec<DiagnosticResult> {
     // 6. 渠道配置
     results.extend(check_channels(pool).await);
 
+    // 7. Python 沙箱
+    results.push(check_python_sandbox());
+
     results
 }
 
@@ -418,4 +421,36 @@ async fn check_channels(pool: &SqlitePool) -> Vec<DiagnosticResult> {
     }
 
     results
+}
+
+/// 检查 Python 沙箱状态
+fn check_python_sandbox() -> DiagnosticResult {
+    let initialized = super::python_sandbox::is_initialized();
+    let python_path = super::python_sandbox::python_path();
+
+    if initialized {
+        DiagnosticResult {
+            category: "Python".into(),
+            check: "Python 沙箱".into(),
+            status: DiagStatus::Ok,
+            message: format!("已就绪: {}", python_path.display()),
+            auto_fix: None,
+        }
+    } else if super::python_sandbox::is_initializing() {
+        DiagnosticResult {
+            category: "Python".into(),
+            check: "Python 沙箱".into(),
+            status: DiagStatus::Warning,
+            message: "正在初始化中...".into(),
+            auto_fix: None,
+        }
+    } else {
+        DiagnosticResult {
+            category: "Python".into(),
+            check: "Python 沙箱".into(),
+            status: DiagStatus::Error,
+            message: "未初始化。Python 相关功能不可用。".into(),
+            auto_fix: Some("重启应用自动初始化".into()),
+        }
+    }
 }

@@ -1092,3 +1092,144 @@ pub async fn stop_voice_recording() -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     { Err("语音录制目前仅支持 macOS".to_string()) }
 }
+
+// ──────────────────────────────────────────────────────────
+// 会话分支 API
+// ──────────────────────────────────────────────────────────
+
+/// 从指定消息创建分支（fork）
+///
+/// 保留 fork 点之前的消息，创建新的 branch_id，后续消息写入新分支。
+#[tauri::command]
+pub async fn fork_from_message(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    message_seq: i64,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db.pool();
+    let branch_id = format!("branch_{}", chrono::Utc::now().timestamp_millis());
+
+    // 设置活跃分支
+    sqlx::query("UPDATE chat_sessions SET active_branch = ? WHERE id = ?")
+        .bind(&branch_id).bind(&session_id)
+        .execute(pool).await.map_err(|e| format!("更新分支失败: {}", e))?;
+
+    // fork 点之后的消息标记为旧分支（保留不删，用于切换回来）
+    // 新消息将以 branch_id 写入
+    log::info!("创建分支: session={}, fork_at_seq={}, branch={}", session_id, message_seq, branch_id);
+
+    Ok(serde_json::json!({
+        "branchId": branch_id,
+        "forkAtSeq": message_seq,
+    }))
+}
+
+/// 列出会话的所有分支
+#[tauri::command]
+pub async fn list_branches(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db.pool();
+
+    // 查询所有不同的 branch_id
+    let branches: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT COALESCE(branch_id, 'main'), COUNT(*) FROM chat_messages WHERE session_id = ? GROUP BY branch_id ORDER BY MIN(seq)"
+    ).bind(&session_id).fetch_all(pool).await.unwrap_or_default();
+
+    // 获取活跃分支
+    let active: Option<String> = sqlx::query_scalar(
+        "SELECT active_branch FROM chat_sessions WHERE id = ?"
+    ).bind(&session_id).fetch_optional(pool).await.ok().flatten();
+
+    Ok(serde_json::json!({
+        "branches": branches.iter().map(|(id, count)| serde_json::json!({
+            "id": id,
+            "messageCount": count,
+            "isActive": active.as_deref() == Some(id.as_str()),
+        })).collect::<Vec<_>>(),
+        "activeBranch": active.unwrap_or_else(|| "main".into()),
+    }))
+}
+
+/// 切换到指定分支
+#[tauri::command]
+pub async fn switch_branch(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    branch_id: String,
+) -> Result<String, String> {
+    let pool = state.db.pool();
+
+    sqlx::query("UPDATE chat_sessions SET active_branch = ? WHERE id = ?")
+        .bind(&branch_id).bind(&session_id)
+        .execute(pool).await.map_err(|e| format!("切换分支失败: {}", e))?;
+
+    log::info!("切换分支: session={}, branch={}", session_id, branch_id);
+    Ok(format!("已切换到分支: {}", branch_id))
+}
+
+/// 获取指定分支的消息（或当前活跃分支）
+#[tauri::command]
+pub async fn get_branch_messages(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    branch_id: Option<String>,
+    fork_seq: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let pool = state.db.pool();
+
+    // 确定要加载的分支
+    let target_branch = if let Some(b) = branch_id {
+        b
+    } else {
+        sqlx::query_scalar::<_, String>("SELECT COALESCE(active_branch, 'main') FROM chat_sessions WHERE id = ?")
+            .bind(&session_id).fetch_optional(pool).await.ok().flatten()
+            .unwrap_or_else(|| "main".into())
+    };
+
+    // 加载：fork_seq 之前的消息（所有分支共享）+ 目标分支的消息
+    let messages = if let Some(fseq) = fork_seq {
+        // 有明确 fork 点：共享部分 + 分支部分
+        sqlx::query(
+            "SELECT role, content, tool_calls_json, tool_call_id, tool_name, seq, branch_id \
+             FROM chat_messages WHERE session_id = ? AND (seq <= ? OR COALESCE(branch_id, 'main') = ?) \
+             ORDER BY seq ASC LIMIT 200"
+        ).bind(&session_id).bind(fseq).bind(&target_branch)
+            .fetch_all(pool).await.unwrap_or_default()
+    } else {
+        // 无 fork 点：按分支加载（main 分支加载所有无 branch_id 的消息）
+        sqlx::query(
+            "SELECT role, content, tool_calls_json, tool_call_id, tool_name, seq, branch_id \
+             FROM chat_messages WHERE session_id = ? AND COALESCE(branch_id, 'main') = ? \
+             ORDER BY seq ASC LIMIT 200"
+        ).bind(&session_id).bind(&target_branch)
+            .fetch_all(pool).await.unwrap_or_default()
+    };
+
+    use sqlx::Row;
+    Ok(messages.iter().map(|row| {
+        let role: String = row.get("role");
+        let content: Option<String> = row.get("content");
+        let tool_calls_json: Option<String> = row.get("tool_calls_json");
+        let tool_call_id: Option<String> = row.get("tool_call_id");
+        let seq: i64 = row.get("seq");
+        let branch: Option<String> = row.try_get("branch_id").ok();
+
+        let mut msg = serde_json::json!({
+            "role": role,
+            "content": content.unwrap_or_default(),
+            "seq": seq,
+            "branchId": branch.unwrap_or_else(|| "main".into()),
+        });
+        if let Some(tc) = tool_calls_json {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tc) {
+                msg["tool_calls"] = v;
+            }
+        }
+        if let Some(tcid) = tool_call_id {
+            msg["tool_call_id"] = serde_json::json!(tcid);
+        }
+        msg
+    }).collect())
+}

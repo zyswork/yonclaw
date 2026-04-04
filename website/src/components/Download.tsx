@@ -1,35 +1,44 @@
 import { motion } from 'framer-motion';
 import { useEffect, useState } from 'react';
 
-type Platform = 'macos' | 'windows' | 'linux';
+type Platform = 'macos-arm' | 'macos-intel' | 'windows' | 'linux';
 
 const BASE = 'https://zys-openclaw.com/downloads';
 const VER = '1.0.0';
 
 const downloadUrls: Record<Platform, string> = {
-  macos: `${BASE}/XianZhuClaw_${VER}_aarch64.dmg`,
+  'macos-arm': `${BASE}/XianZhuClaw_${VER}_aarch64.dmg`,
+  'macos-intel': `${BASE}/XianZhuClaw_${VER}_x64.dmg`,
   windows: `${BASE}/XianZhuClaw_${VER}_x64_en-US.msi`,
   linux: `${BASE}/xian-zhu-claw_${VER}_amd64.AppImage`,
 };
 
 function detectPlatform(): Platform {
-  if (typeof navigator === 'undefined') return 'macos';
+  if (typeof navigator === 'undefined') return 'macos-arm';
   const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes('mac')) return 'macos';
+  if (ua.includes('mac')) return 'macos-arm'; // 默认推荐 Apple Silicon
   if (ua.includes('win')) return 'windows';
   return 'linux';
 }
 
+const appleIcon = (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+  </svg>
+);
+
 const platforms: { key: Platform; label: string; desc: string; icon: React.ReactNode }[] = [
   {
-    key: 'macos',
+    key: 'macos-arm',
     label: 'macOS',
-    desc: 'Apple Silicon & Intel',
-    icon: (
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
-      </svg>
-    ),
+    desc: 'Apple Silicon (M1/M2/M3/M4)',
+    icon: appleIcon,
+  },
+  {
+    key: 'macos-intel',
+    label: 'macOS',
+    desc: 'Intel 芯片',
+    icon: appleIcon,
   },
   {
     key: 'windows',
@@ -94,7 +103,11 @@ export default function Download() {
           className="flex flex-col sm:flex-row gap-4 justify-center"
         >
           {platforms.map((p) => {
-            const isCurrent = p.key === currentPlatform;
+            const isMacUser = currentPlatform === 'macos-arm' || currentPlatform === 'macos-intel';
+            const isMacOption = p.key === 'macos-arm' || p.key === 'macos-intel';
+            const isHighlighted = p.key === currentPlatform || (isMacUser && isMacOption);
+            const isRecommended = p.key === currentPlatform;
+            const isCurrent = isHighlighted;
             return (
               <a
                 key={p.key}
@@ -119,7 +132,7 @@ export default function Download() {
                   </div>
                   <div className="text-xs text-white/30">{p.desc}</div>
                 </div>
-                {isCurrent && (
+                {isRecommended && (
                   <span className="ml-auto text-xs text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full">
                     推荐
                   </span>

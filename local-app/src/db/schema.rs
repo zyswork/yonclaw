@@ -301,6 +301,15 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE cron_jobs ADD COLUMN poll_json_path TEXT")
         .execute(pool).await;
 
+    // 会话分支：chat_messages 加 parent_id 和 branch_id
+    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN parent_id TEXT")
+        .execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN branch_id TEXT DEFAULT 'main'")
+        .execute(pool).await;
+    // chat_sessions 加 active_branch
+    let _ = sqlx::query("ALTER TABLE chat_sessions ADD COLUMN active_branch TEXT DEFAULT 'main'")
+        .execute(pool).await;
+
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_due ON cron_jobs(enabled, next_run_at)")
         .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, started_at DESC)")

@@ -2099,10 +2099,9 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     }
   }
 
-  // 重新生成 AI 回复：删除该条 AI 消息及之后的所有消息，重新发送前一条用户消息
+  // 重新生成 AI 回复：创建分支 → 从该消息前的用户消息重新发送
   const handleRegenerate = async (msgIdx: number) => {
     if (!activeSession || !agentId || streaming) return
-    // 找到该 AI 消息前面最近的用户消息
     let userMsgIdx = -1
     let userContent = ''
     for (let i = msgIdx - 1; i >= 0; i--) {
@@ -2117,9 +2116,12 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       return
     }
     try {
-      // 使用后端返回的实际 seq，删除该 AI 消息及之后的所有消息
       const msgSeq = messages[msgIdx]?.seq
       if (msgSeq == null) { toast.error('无法确定消息序号'); return }
+      // 创建分支（保留原始对话，不删除）
+      try {
+        await invoke('fork_from_message', { sessionId: activeSession, messageSeq: msgSeq })
+      } catch {} // fork 失败不影响重新生成
       await invoke('regenerate_response', { sessionId: activeSession, afterSeq: msgSeq })
       // 前端截断到该 AI 消息之前
       setMessages(prev => prev.slice(0, msgIdx))

@@ -660,6 +660,8 @@ async fn main() {
             check_runtime, setup_runtime, health_check, get_token_stats, get_token_daily_stats,
             run_memory_hygiene, get_cache_stats, get_setting, set_setting, get_settings_by_prefix,
             export_memory_snapshot, extract_memories_from_history, run_learner, cloud_api_proxy,
+            // 会话分支
+            fork_from_message, list_branches, switch_branch, get_branch_messages,
             // profile
             get_user_profile, save_user_profile, save_user_avatar, get_user_avatar,
             // oauth
