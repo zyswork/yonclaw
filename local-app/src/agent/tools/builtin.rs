@@ -1610,9 +1610,24 @@ impl Tool for WebFetchTool {
 
         log::info!("获取网页: {} (timeout={}s)", url, timeout_secs);
 
+        // DNS rebind 防护：解析域名，检查实际 IP 是否为内网
+        if let Ok(parsed) = url::Url::parse(url) {
+            if let Some(host) = parsed.host_str() {
+                if let Ok(addrs) = tokio::net::lookup_host(format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(443))).await {
+                    for addr in addrs {
+                        let ip = addr.ip();
+                        if ip.is_loopback() || ip.is_unspecified() || is_private_ip(&ip) {
+                            return Err(format!("安全限制：DNS 解析到内网地址 {}（可能是 DNS rebind 攻击）", ip));
+                        }
+                    }
+                }
+            }
+        }
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .user_agent("XianZhu-Agent/0.1")
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
@@ -1641,7 +1656,16 @@ impl Tool for WebFetchTool {
             body
         };
 
-        Ok(format!("[Content-Type: {}]\n\n{}", content_type, truncated))
+        // 如果 URL 指向图片/音频，加 media_tag 让前端自动渲染
+        let media_suffix = if content_type.starts_with("image/") {
+            format!("\n{}", media_tag("image", url, &content_type))
+        } else if content_type.starts_with("audio/") {
+            format!("\n{}", media_tag("audio", url, &content_type))
+        } else {
+            String::new()
+        };
+
+        Ok(format!("[Content-Type: {}]\n\n{}{}", content_type, truncated, media_suffix))
     }
 }
 
@@ -2099,7 +2123,7 @@ impl Tool for SkillManageTool {
                     "action": {
                         "type": "string",
                         "description": "操作类型",
-                        "enum": ["list_installed", "list_marketplace", "install", "uninstall", "search_online"]
+                        "enum": ["list_installed", "list_marketplace", "install", "install_minimax", "uninstall", "search_online"]
                     },
                     "agent_id": { "type": "string", "description": "Agent ID" },
                     "skill_name": { "type": "string", "description": "技能名称（install/uninstall 时必填）" },
@@ -2149,6 +2173,40 @@ impl Tool for SkillManageTool {
                 }
                 if skills.is_empty() { Ok("本地市场为空。".into()) }
                 else { Ok(format!("可安装技能 ({} 个): {}\n\n用 action=install, skill_name=<名称> 安装。", skills.len(), skills.join(", "))) }
+            }
+            "install_minimax" => {
+                // 一键安装 MiniMax 多模态技能包（图片/视频/音乐/语音）
+                let skills_dir = home.join(".xianzhu").join("agents").join(agent_id).join("skills");
+                let _ = std::fs::create_dir_all(&skills_dir);
+                let minimax_dir = skills_dir.join("minimax-multimodal-toolkit");
+                if minimax_dir.exists() {
+                    return Ok("MiniMax 多模态技能包已安装。".into());
+                }
+                // 从 GitHub 克隆
+                log::info!("安装 MiniMax Skills...");
+                let output = std::process::Command::new("git")
+                    .args(&["clone", "--depth=1", "https://github.com/MiniMax-AI/skills.git", &minimax_dir.parent().unwrap().join("_minimax_tmp").to_string_lossy()])
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        // 只拷需要的技能
+                        let tmp = skills_dir.join("_minimax_tmp").join("skills");
+                        for skill in &["minimax-multimodal-toolkit", "gif-sticker-maker", "vision-analysis"] {
+                            let src = tmp.join(skill);
+                            let dst = skills_dir.join(skill);
+                            if src.exists() && !dst.exists() {
+                                let _ = copy_dir_recursive(&src, &dst);
+                            }
+                        }
+                        let _ = std::fs::remove_dir_all(skills_dir.join("_minimax_tmp"));
+                        Ok("✅ MiniMax 技能已安装：multimodal-toolkit（图片/视频/音乐/语音）、gif-sticker-maker、vision-analysis\n\n使用前请设置环境变量 MINIMAX_API_KEY 或在 .env 文件中配置。".into())
+                    } else {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        Err(format!("克隆失败: {}", &stderr[..stderr.len().min(200)]))
+                    }
+                } else {
+                    Err("git 命令不可用，请手动安装 git".into())
+                }
             }
             "install" => {
                 let skill_name = args["skill_name"].as_str().ok_or("缺少 skill_name")?;
@@ -5133,4 +5191,24 @@ async fn take_screenshot(output_path: &str, region: &str) -> Result<(), String> 
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     Err("当前平台不支持截图".into())
+}
+
+/// 检查 IP 是否为私有/内网地址（SSRF DNS rebind 防护）
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()          // 10.x, 172.16-31.x, 192.168.x
+            || v4.is_loopback()      // 127.x
+            || v4.is_link_local()    // 169.254.x
+            || v4.is_broadcast()     // 255.255.255.255
+            || v4.is_unspecified()   // 0.0.0.0
+            || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64  // 100.64-127.x (CGNAT)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()         // ::1
+            || v6.is_unspecified()   // ::
+            || (v6.segments()[0] & 0xfe00) == 0xfc00  // fc00::/7 (ULA)
+            || (v6.segments()[0] & 0xffc0) == 0xfe80  // fe80::/10 (link-local)
+        }
+    }
 }
