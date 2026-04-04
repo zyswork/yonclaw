@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// 媒体输出标记 — 嵌入到 tool result 中，前端解析后 inline 渲染
+///
+/// 格式: `<!--media:{"type":"image","path":"/path","mime":"image/png"}-->`
+/// LLM 会忽略 HTML 注释，前端 parse 出来渲染为图片/音频/视频/下载
+fn media_tag(media_type: &str, path: &str, mime: &str) -> String {
+    format!(
+        "<!--media:{{\"type\":\"{}\",\"path\":\"{}\",\"mime\":\"{}\"}}-->",
+        media_type,
+        path.replace('\\', "/").replace('"', "\\\""),
+        mime
+    )
+}
+
+/// 带 base64 内嵌数据的媒体标记（用于小文件 < 1MB）
+fn media_tag_inline(media_type: &str, path: &str, mime: &str, base64_data: &str) -> String {
+    if base64_data.len() > 1_400_000 {
+        // 超过 ~1MB 不内嵌，只传路径
+        return media_tag(media_type, path, mime);
+    }
+    format!(
+        "<!--media:{{\"type\":\"{}\",\"path\":\"{}\",\"mime\":\"{}\",\"data\":\"{}\"}}-->",
+        media_type,
+        path.replace('\\', "/").replace('"', "\\\""),
+        mime,
+        base64_data
+    )
+}
+
 /// 计算工具 — 支持基本四则运算
 pub struct CalculatorTool;
 
@@ -2679,7 +2707,8 @@ impl TtsTool {
             }
 
             let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-            Ok(format!("语音已生成（本地 TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+            let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/mp4");
+            Ok(format!("语音已生成（本地 TTS）: {} ({} 字节)\n文件: {}\n{}", filename, size, output_path.display(), tag))
         }
 
         #[cfg(target_os = "linux")]
@@ -2722,7 +2751,8 @@ impl TtsTool {
                 }
             }
             let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
-            Ok(format!("语音已生成（Linux TTS）: {} ({} 字节)\n文件: {}", filename, size, output_path.display()))
+            let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/wav");
+            Ok(format!("语音已生成（Linux TTS）: {} ({} 字节)\n文件: {}\n{}", filename, size, output_path.display(), tag))
         }
 
         #[cfg(target_os = "windows")]
@@ -2748,7 +2778,8 @@ impl TtsTool {
                 return Err(format!("Windows TTS 失败: {}\n\n建议使用 mode=api 调用 OpenAI TTS", stderr));
             }
             let size = std::fs::metadata(&output_wav).map(|m| m.len()).unwrap_or(0);
-            Ok(format!("语音已生成（Windows TTS）: {} ({} 字节)\n文件: {}", output_wav.file_name().unwrap_or_default().to_string_lossy(), size, output_wav.display()))
+            let tag = media_tag("audio", &output_wav.to_string_lossy(), "audio/wav");
+            Ok(format!("语音已生成（Windows TTS）: {} ({} 字节)\n文件: {}\n{}", output_wav.file_name().unwrap_or_default().to_string_lossy(), size, output_wav.display(), tag))
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -2824,8 +2855,9 @@ impl TtsTool {
         std::fs::write(&output_path, &audio_bytes).map_err(|e| format!("保存失败: {}", e))?;
 
         let style_info = if style.is_empty() { String::new() } else { format!(", 风格: {}", style) };
-        Ok(format!("语音已生成（MiMo-V2-TTS{}）: {} ({:.1}KB)\n文件: {}",
-            style_info, filename, audio_bytes.len() as f64 / 1024.0, output_path.display()))
+        let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/wav");
+        Ok(format!("语音已生成（MiMo-V2-TTS{}）: {} ({:.1}KB)\n文件: {}\n{}",
+            style_info, filename, audio_bytes.len() as f64 / 1024.0, output_path.display(), tag))
     }
 
     /// 读取 TTS 专用配置（settings 表中的 tts.* 键）
@@ -2927,7 +2959,8 @@ impl TtsTool {
         let output_path = output_dir.join(&filename);
         std::fs::write(&output_path, &bytes).map_err(|e| format!("保存失败: {}", e))?;
 
-        Ok(format!("语音已生成（OpenAI TTS）: {} ({} 字节)\n文件: {}", filename, bytes.len(), output_path.display()))
+        let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/mpeg");
+        Ok(format!("语音已生成（OpenAI TTS）: {} ({} 字节)\n文件: {}\n{}", filename, bytes.len(), output_path.display(), tag))
     }
 
     async fn find_openai_provider(&self) -> Result<(String, String), String> {
@@ -5039,7 +5072,8 @@ impl Tool for ScreenshotTool {
         if tokio::fs::metadata(&output_path).await.is_ok() {
             let size = tokio::fs::metadata(&output_path).await
                 .map(|m| m.len()).unwrap_or(0);
-            Ok(format!("截图已保存: {} ({:.1}KB)", output_path, size as f64 / 1024.0))
+            let tag = media_tag("image", &output_path, "image/png");
+            Ok(format!("截图已保存: {} ({:.1}KB)\n{}", output_path, size as f64 / 1024.0, tag))
         } else {
             Err("截图文件未生成".into())
         }

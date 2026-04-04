@@ -290,18 +290,53 @@ function renderMd(text: string) {
   )
 }
 
-/** 从文本中检测音频/图片文件路径，返回内嵌播放器/图片 */
+/** 从文本中检测媒体标记和文件路径，返回内嵌播放器/图片/下载按钮 */
 function extractMediaFromText(text: string): React.ReactNode[] {
   const elements: React.ReactNode[] = []
+  const handledPaths = new Set<string>()
 
-  // 检测音频文件路径：~/.xianzhu/tts/tts_xxx.mp3 或 .aiff 或 .wav
+  // 优先解析结构化 media_tag: <!--media:{"type":"audio","path":"...","mime":"..."}-->
+  const mediaTagRegex = /<!--media:(.*?)-->/g
+  let match
+  while ((match = mediaTagRegex.exec(text)) !== null) {
+    try {
+      const media = JSON.parse(match[1])
+      const { type, path, mime, data } = media
+      if (!path) continue
+      handledPaths.add(path)
+
+      if (type === 'audio') {
+        elements.push(<AudioPlayer key={`media-audio-${path}`} filePath={path} />)
+      } else if (type === 'image') {
+        elements.push(
+          <div key={`media-img-${path}`} style={{ marginTop: 8 }}>
+            <ImagePreview filePath={path} />
+          </div>
+        )
+      } else if (type === 'video') {
+        elements.push(
+          <div key={`media-video-${path}`} style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', fontSize: 13 }}>
+            🎬 视频: {path.split('/').pop()} <a href="#" onClick={async (e) => { e.preventDefault(); try { const { open } = await import('@tauri-apps/api/shell'); await open(path) } catch {} }} style={{ color: 'var(--accent)' }}>打开播放</a>
+          </div>
+        )
+      } else {
+        // file / document
+        elements.push(
+          <div key={`media-file-${path}`} style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', fontSize: 13 }}>
+            📄 {path.split('/').pop()} <a href="#" onClick={async (e) => { e.preventDefault(); try { const { open } = await import('@tauri-apps/api/shell'); await open(path) } catch {} }} style={{ color: 'var(--accent)' }}>打开</a>
+          </div>
+        )
+      }
+    } catch {}
+  }
+
+  // fallback: 检测音频文件路径（兼容旧消息，不重复）
   const audioRegex = /(\/[^\s]+\.(mp3|aiff|wav|ogg|m4a))/gi
   const audioMatches = text.match(audioRegex)
   if (audioMatches) {
-    const seen = new Set<string>()
     audioMatches.forEach((path, i) => {
-      if (seen.has(path)) return
-      seen.add(path)
+      if (handledPaths.has(path.trim())) return
+      handledPaths.add(path.trim())
       elements.push(<AudioPlayer key={`audio-${i}`} filePath={path.trim()} />)
     })
   }
@@ -519,6 +554,36 @@ function AudioPlayer({ filePath }: { filePath: string }) {
         {filePath.split('/').pop()}
       </span>
     </div>
+  )
+}
+
+/** 图片预览组件 — 通过 Tauri 读取本地图片 */
+function ImagePreview({ filePath }: { filePath: string }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      try {
+        const b64 = await invoke<string>('read_file_base64', { path: filePath })
+        if (cancelled) return
+        const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
+        const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
+        setSrc(`data:${mimeMap[ext] || 'image/png'};base64,${b64}`)
+      } catch {}
+      setLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [filePath])
+
+  if (loading) return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>加载图片...</span>
+  if (!src) return null
+  return (
+    <img src={src} alt={filePath.split('/').pop() || ''} style={{ maxWidth: '100%', maxHeight: 400, borderRadius: 8, cursor: 'pointer' }}
+      onClick={async () => { try { const { open } = await import('@tauri-apps/api/shell'); await open(filePath) } catch {} }}
+    />
   )
 }
 
