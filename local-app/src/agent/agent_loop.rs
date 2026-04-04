@@ -431,6 +431,17 @@ pub async fn run_agent_loop(
                 continue;
             }
 
+            // BeforeOutbound Hook — 插件可在回复发出前拦截/修改
+            deps.lifecycle.notify(super::lifecycle::HookPoint::BeforeOutbound, &super::lifecycle::HookEvent {
+                point: "BeforeOutbound".to_string(),
+                agent_id: agent_id.to_string(), session_id: session_id.to_string(),
+                payload: serde_json::json!({
+                    "content": &llm_response.content,
+                    "model": &config.model,
+                    "round": round,
+                }),
+            }).await;
+
             let final_msg = serde_json::json!({
                 "role": "assistant", "content": &llm_response.content,
                 "provider": config.provider, "model": config.model,

@@ -1004,8 +1004,11 @@ impl Orchestrator {
                     "自动压缩触发: 上下文 {:.1}% ({}/{} tokens), 消息 {} 条, 已有边界={}",
                     usage_percent, current_tokens, budget, msg_count, compact_boundary
                 );
+                // 通知用户正在压缩（参照 OpenClaw compaction.notifyUser）
+                let _ = tx.send("\n⚙️ 对话历史较长，正在智能压缩...\n".to_string());
                 match self.compact_session(agent_id, session_id, api_key, provider, base_url).await {
                     Ok(result) => {
+                        let _ = tx.send("✅ 压缩完成，继续对话。\n".to_string());
                         log::info!("自动压缩完成: {}", result.chars().take(200).collect::<String>());
                         // 压缩后重新加载消息
                         let new_boundary: i64 = {

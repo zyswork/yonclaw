@@ -394,10 +394,18 @@ impl Memory for SqliteMemory {
                     if importance > e.4 { e.4 = importance; }
                 }
 
-                // 应用 importance 置信度因子到最终分数
+                // 应用 importance 置信度 + 时间衰减因子（参照 OpenClaw temporalDecay）
+                // 衰减公式: decay = 0.5 ^ (days_old / half_life)，half_life = 30 天
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                const HALF_LIFE_DAYS: f64 = 30.0;
+                const HALF_LIFE_MS: f64 = HALF_LIFE_DAYS * 24.0 * 3600.0 * 1000.0;
+
                 let mut results: Vec<_> = score_map.into_iter()
                     .map(|(content, (rrf_score, id, cat, ts, importance))| {
-                        let boosted = rrf_score * (1.0 + importance as f64 * 0.1);
+                        let age_ms = (now_ms - ts).max(0) as f64;
+                        let temporal_decay = (0.5_f64).powf(age_ms / HALF_LIFE_MS);
+                        // 最终分数 = RRF × importance × temporal_decay
+                        let boosted = rrf_score * (1.0 + importance as f64 * 0.1) * (0.3 + 0.7 * temporal_decay);
                         (content, (boosted, id, cat, ts, importance))
                     })
                     .collect();
@@ -429,12 +437,21 @@ impl Memory for SqliteMemory {
         .fetch_all(&self.pool).await
         .map_err(|e| format!("语义检索失败: {}", e))?;
 
-        Ok(rows.into_iter().enumerate().map(|(i, (id, memory_type, content, created_at))| MemoryEntry {
-            id, key: String::new(), content,
-            category: MemoryCategory::from_str(&memory_type),
-            timestamp: created_at,
-            priority: MemoryPriority::Normal,
-            score: Some(1.0 - (i as f64 * 0.1).min(0.9)),
+        // 纯 FTS 也加时间衰减
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        const HALF_LIFE_MS: f64 = 30.0 * 24.0 * 3600.0 * 1000.0;
+        Ok(rows.into_iter().enumerate().map(|(i, (id, memory_type, content, created_at))| {
+            let base_score = 1.0 - (i as f64 * 0.1).min(0.9);
+            let age_ms = (now_ms - created_at).max(0) as f64;
+            let decay = (0.5_f64).powf(age_ms / HALF_LIFE_MS);
+            let final_score = base_score * (0.3 + 0.7 * decay);
+            MemoryEntry {
+                id, key: String::new(), content,
+                category: MemoryCategory::from_str(&memory_type),
+                timestamp: created_at,
+                priority: MemoryPriority::Normal,
+                score: Some(final_score),
+            }
         }).collect())
     }
 
