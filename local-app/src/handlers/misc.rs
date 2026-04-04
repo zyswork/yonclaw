@@ -783,6 +783,14 @@ pub async fn cloud_api_proxy(
     resp.json::<serde_json::Value>().await.map_err(|e| format!("解析响应失败: {}", e))
 }
 
+/// 读取本地文件为 base64（用于前端播放音频/显示图片等）
+#[tauri::command]
+pub async fn read_file_base64(path: String) -> Result<String, String> {
+    let bytes = tokio::fs::read(&path).await
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
+}
+
 /// Python 沙箱状态查询
 #[tauri::command]
 pub async fn get_python_sandbox_status() -> Result<serde_json::Value, String> {

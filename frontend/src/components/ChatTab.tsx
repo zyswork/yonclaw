@@ -474,28 +474,24 @@ function AudioPlayer({ filePath }: { filePath: string }) {
     setLoading(true)
     setError('')
     try {
-      // 通过 Tauri 读取本地文件为 base64
-      const { readBinaryFile } = await import('@tauri-apps/api/fs')
-      const bytes = await readBinaryFile(filePath)
-      // 检测 MIME 类型
+      // 通过 Rust 后端读取文件为 base64（绕过 Tauri FS scope 限制）
+      const b64 = await invoke<string>('read_file_base64', { path: filePath })
       const ext = filePath.split('.').pop()?.toLowerCase() || ''
       const mimeMap: Record<string, string> = {
         mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
         ogg: 'audio/ogg', aiff: 'audio/aiff', aac: 'audio/aac',
       }
       const mime = mimeMap[ext] || 'audio/mpeg'
+      // base64 → binary → blob
+      const binary = atob(b64)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
       const blob = new Blob([bytes], { type: mime })
       const url = URL.createObjectURL(blob)
       setBlobUrl(url)
-      // 自动播放
       setTimeout(() => audioRef.current?.play(), 100)
     } catch (e) {
       setError(String(e))
-      // fallback: 用系统打开
-      try {
-        const { open } = await import('@tauri-apps/api/shell')
-        await open(filePath)
-      } catch {}
     }
     setLoading(false)
   }

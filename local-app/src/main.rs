@@ -682,6 +682,8 @@ async fn main() {
             start_oauth_flow, exchange_oauth_code, refresh_oauth_token,
             // python sandbox
             get_python_sandbox_status,
+            // 文件读取
+            read_file_base64,
             // 数据迁移
             export_app_data, import_app_data,
         ])
