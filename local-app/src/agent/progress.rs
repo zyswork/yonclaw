@@ -90,6 +90,10 @@ impl ProgressTracker {
             ));
         }
 
+        // 确保父目录存在
+        if let Some(parent) = self.file_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Err(e) = std::fs::write(&self.file_path, &md) {
             log::warn!("progress: 写入失败: {}", e);
         }

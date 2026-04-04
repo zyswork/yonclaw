@@ -524,6 +524,20 @@ async fn main() {
     // 首次运行时从 Gemini CLI 提取 OAuth credentials 并缓存
     tokio::spawn(async { handlers::oauth::seed_oauth_credentials().await });
 
+    // 数据迁移：.yonclaw → .xianzhu（旧名兼容）
+    {
+        let pool_m = pool_clone.clone();
+        tokio::spawn(async move {
+            let updated = sqlx::query("UPDATE agents SET workspace_path = REPLACE(workspace_path, '.yonclaw', '.xianzhu') WHERE workspace_path LIKE '%.yonclaw%'")
+                .execute(&pool_m).await;
+            if let Ok(r) = updated {
+                if r.rows_affected() > 0 {
+                    log::info!("迁移: {} 个 agent 工作区路径 .yonclaw → .xianzhu", r.rows_affected());
+                }
+            }
+        });
+    }
+
     // Python 沙箱后台初始化（检测系统 Python → 创建 venv → 预装基础库）
     agent::python_sandbox::spawn_background_init();
     log::info!("Python 沙箱后台初始化已启动");
