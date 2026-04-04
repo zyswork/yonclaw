@@ -334,7 +334,37 @@ const DANGEROUS_COMMANDS: &[&str] = &[
 /// Shell 命令安全守卫
 pub struct ShellGuard;
 
+/// Safe-bin 白名单（参照 OpenClaw exec-safe-bin-semantics）
+/// 这些命令仅读取/查看数据，不修改系统状态，无需用户审批
+const SAFE_BINS: &[&str] = &[
+    "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg",
+    "find", "which", "whoami", "date", "echo", "printf", "env", "printenv",
+    "pwd", "basename", "dirname", "realpath", "file", "stat", "du", "df",
+    "uname", "hostname", "id", "uptime", "ps", "top",
+    "jq", "xargs", "tr", "cut", "awk", "sed",  // sed 只读不写时是安全的
+    "diff", "md5", "shasum", "sha256sum",
+    "python3 --version", "python --version", "node --version", "npm --version",
+    "cargo --version", "rustc --version", "git status", "git log", "git diff", "git branch",
+];
+
 impl ShellGuard {
+    /// 判断命令是否为低风险 safe-bin（无需审批）
+    pub fn is_safe_command(command: &str) -> bool {
+        let trimmed = command.trim();
+        let first_cmd = trimmed.split_whitespace().next().unwrap_or("");
+        let first_cmd_base = first_cmd.rsplit('/').next().unwrap_or(first_cmd);
+
+        // 检查完整命令前缀匹配
+        for safe in SAFE_BINS {
+            if trimmed.starts_with(safe) { return true; }
+        }
+        // 检查命令名匹配（忽略路径前缀）
+        for safe in &SAFE_BINS[..29] { // 前 29 个是单命令名
+            if first_cmd_base == *safe { return true; }
+        }
+        false
+    }
+
     /// 检查命令是否安全
     ///
     /// 返回 Ok(()) 如果安全，Err(reason) 如果危险

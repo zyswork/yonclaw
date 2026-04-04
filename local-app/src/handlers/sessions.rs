@@ -107,9 +107,10 @@ pub async fn send_message(
     } else {
         Some(base_url.as_str())
     };
-    let result = state
-        .orchestrator
-        .send_message_stream(
+    // 全局超时保护：单次对话最长 10 分钟
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        state.orchestrator.send_message_stream(
             &agent_id,
             &session_id,
             &message,
@@ -117,9 +118,13 @@ pub async fn send_message(
             &api_type,
             base_url_opt,
             tx,
-            None, // cancel_token（未来可从前端传入）
+            None,
         )
-        .await;
+    ).await
+        .unwrap_or_else(|_| {
+            log::warn!("send_message_stream 全局超时（10分钟）: session={}", session_id);
+            Err("对话处理超时（10分钟），请重试或简化请求".into())
+        });
 
     // 对话后自动处理（后台异步，不阻塞返回）
     if result.is_ok() {

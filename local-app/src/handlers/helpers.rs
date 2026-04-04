@@ -144,8 +144,8 @@ pub fn find_provider_for_model(
                     let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                     let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
                     let api_key = rotate_api_key(pid, &raw_key);
-                    log::info!("find_provider_for_model: matched pid={}, api_type={}, base_url={}, key_len={}, key_prefix={}",
-                        pid, api_type, base_url, api_key.len(), &api_key[..api_key.len().min(15)]);
+                    log::info!("find_provider_for_model: matched pid={}, api_type={}, base_url={}, key_len={}",
+                        pid, api_type, base_url, api_key.len());
                     return Some((api_type, api_key, base_url));
                 }
             }

@@ -15,10 +15,41 @@ const router = Router()
 // 默认企业 ID（验证码注册的用户归入此企业）
 const DEFAULT_ENTERPRISE_ID = '001'
 
+// ========== 速率限制（per-IP，固定窗口） ==========
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+const RATE_LIMIT_WINDOW_MS = 60_000 // 1 分钟窗口
+const RATE_LIMIT_MAX_SEND_CODE = 3  // 发送验证码：每分钟最多 3 次
+const RATE_LIMIT_MAX_LOGIN = 10     // 登录：每分钟最多 10 次
+
+function checkRateLimit(ip: string, limit: number): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(ip)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+    return true
+  }
+  if (entry.count >= limit) return false
+  entry.count++
+  return true
+}
+
+// 定期清理过期条目（防内存泄漏）
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(ip)
+  }
+}, 300_000)
+
 // ========== 验证码流程 ==========
 
 // 发送验证码
 router.post('/send-code', async (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown'
+  if (!checkRateLimit(`send-code:${clientIp}`, RATE_LIMIT_MAX_SEND_CODE)) {
+    res.status(429).json({ error: '请求过于频繁，请 1 分钟后重试' })
+    return
+  }
   try {
     const { email } = req.body
 
@@ -53,6 +84,11 @@ router.post('/send-code', async (req: Request, res: Response) => {
 
 // 验证码验证（统一注册/登录入口）
 router.post('/verify-code', (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown'
+  if (!checkRateLimit(`verify:${clientIp}`, RATE_LIMIT_MAX_LOGIN)) {
+    res.status(429).json({ error: '请求过于频繁，请 1 分钟后重试' })
+    return
+  }
   try {
     const { email, code } = req.body
 
@@ -165,6 +201,11 @@ router.post('/set-password', (req: Request, res: Response) => {
 
 // 登录
 router.post('/login', validateRequest(authSchemas.login), (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown'
+  if (!checkRateLimit(`login:${clientIp}`, RATE_LIMIT_MAX_LOGIN)) {
+    res.status(429).json({ error: '登录请求过于频繁，请 1 分钟后重试' })
+    return
+  }
   try {
     const { email, password, enterpriseId } = req.body
 

@@ -484,11 +484,19 @@ pub async fn run_agent_loop(
                 continue;
             }
 
-            let safety = if tc.name.contains('.') {
+            let mut safety = if tc.name.contains('.') {
                 ToolSafetyLevel::Approval
             } else {
                 deps.tool_manager.get_safety_level(&tc.name).unwrap_or(ToolSafetyLevel::Safe)
             };
+            // Safe-bin 降级：bash_exec 中的低风险命令（ls/grep/cat 等）跳过审批
+            if tc.name == "bash_exec" && matches!(safety, ToolSafetyLevel::Sandboxed) {
+                if let Some(cmd) = tc.arguments.get("command").and_then(|c| c.as_str()) {
+                    if crate::agent::sandbox::ShellGuard::is_safe_command(cmd) {
+                        safety = ToolSafetyLevel::Guarded;
+                    }
+                }
+            }
             let decision = match deps.policy_engine.lock() {
                 Ok(engine) => engine.evaluate(agent_id, Some(session_id), &tc.name, &safety),
                 Err(p) => p.into_inner().evaluate(agent_id, Some(session_id), &tc.name, &safety),
@@ -976,9 +984,9 @@ async fn execute_builtin_tool(
 
                 let rx = mgr.request(&req_id);
 
-                // 等待审批（最多 60 秒）
+                // 等待审批（最多 30 秒，超时自动拒绝）
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(60),
+                    std::time::Duration::from_secs(30),
                     rx,
                 ).await {
                     Ok(Ok(super::approval::ApprovalResult::Approved)) => {
