@@ -24,6 +24,7 @@ mod plugin_system;
 mod routing;
 mod runtime;
 mod scheduler;
+pub(crate) mod crypto;
 mod sop;
 mod telemetry;
 
