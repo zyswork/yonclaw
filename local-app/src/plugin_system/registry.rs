@@ -98,6 +98,62 @@ impl PluginRegistry {
                 placeholder: Some("http://localhost:8000/v1".into()), options: None },
         ]));
 
+        // ─── 国产/热门模型快捷入口 ───
+        self.register(PluginManifest::builtin(
+            "deepseek", "DeepSeek",
+            "DeepSeek-V3/R1 系列模型，性价比极高",
+            PluginType::ModelProvider, "\u{1F52D}",
+        ).with_config(vec![
+            cf("api_key", "API Key", "password", true, "sk-..."),
+            ConfigField { key: "base_url".into(), label: "Base URL".into(), field_type: "text".into(),
+                required: false, default: Some("https://api.deepseek.com/v1".into()),
+                placeholder: Some("https://api.deepseek.com/v1".into()), options: None },
+        ]));
+
+        self.register(PluginManifest::builtin(
+            "stepfun", "StepFun \u{9636}\u{8DC3}\u{661F}\u{8FB0}",
+            "Step-2/Step-1 系列模型",
+            PluginType::ModelProvider, "\u{2B50}",
+        ).with_config(vec![
+            cf("api_key", "API Key", "password", true, ""),
+            ConfigField { key: "base_url".into(), label: "Base URL".into(), field_type: "text".into(),
+                required: false, default: Some("https://api.stepfun.com/v1".into()),
+                placeholder: Some("https://api.stepfun.com/v1".into()), options: None },
+        ]));
+
+        self.register(PluginManifest::builtin(
+            "minimax", "MiniMax",
+            "MiniMax-M2.7/Omni \u{7CFB}\u{5217}\u{6A21}\u{578B}",
+            PluginType::ModelProvider, "\u{1F4AB}",
+        ).with_config(vec![
+            cf("api_key", "API Key", "password", true, ""),
+            ConfigField { key: "base_url".into(), label: "Base URL".into(), field_type: "text".into(),
+                required: false, default: Some("https://api.minimaxi.com/v1".into()),
+                placeholder: Some("https://api.minimaxi.com/v1".into()), options: None },
+        ]));
+
+        self.register(PluginManifest::builtin(
+            "xiaomi-mimo", "\u{5C0F}\u{7C73} MiMo",
+            "MiMo-V2-Pro/Flash/Omni/TTS \u{7CFB}\u{5217}",
+            PluginType::ModelProvider, "\u{1F4F1}",
+        ).with_config(vec![
+            cf("api_key", "API Key", "password", true, "tp-..."),
+            ConfigField { key: "base_url".into(), label: "Base URL".into(), field_type: "text".into(),
+                required: false, default: Some("https://token-plan-cn.xiaomimimo.com/v1".into()),
+                placeholder: Some("https://token-plan-cn.xiaomimimo.com/v1".into()), options: None },
+        ]));
+
+        self.register(PluginManifest::builtin(
+            "siliconflow", "SiliconFlow \u{7845}\u{57FA}\u{6D41}\u{52A8}",
+            "\u{805A}\u{5408}\u{591A}\u{79CD}\u{5F00}\u{6E90}\u{6A21}\u{578B}\u{FF08}Qwen/DeepSeek/Llama\u{FF09}",
+            PluginType::ModelProvider, "\u{1F30A}",
+        ).with_config(vec![
+            cf("api_key", "API Key", "password", true, "sk-..."),
+            ConfigField { key: "base_url".into(), label: "Base URL".into(), field_type: "text".into(),
+                required: false, default: Some("https://api.siliconflow.cn/v1".into()),
+                placeholder: Some("https://api.siliconflow.cn/v1".into()), options: None },
+        ]));
+
         // ═══════════════════════════════════════════
         // 渠道（仅已实现的）
         // ═══════════════════════════════════════════

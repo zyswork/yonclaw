@@ -1071,7 +1071,10 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       streamingTimerRef.current = null
       if (staleCheckRef.current) { clearInterval(staleCheckRef.current); staleCheckRef.current = null }
     }
-    return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current) }
+    return () => {
+      if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current)
+      if (staleCheckRef.current) { clearInterval(staleCheckRef.current); staleCheckRef.current = null }
+    }
   }, [streaming])
   const [renamingSession, setRenamingSession] = useState('')
   const [renameValue, setRenameValue] = useState('')
