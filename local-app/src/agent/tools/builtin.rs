@@ -2558,8 +2558,17 @@ impl Tool for TtsTool {
             .ok_or("缺少 text 参数")?;
         // mode 优先用参数指定，否则读 tts.provider 配置，默认 local
         let config = self.load_tts_config().await;
-        let mode = arguments.get("mode").and_then(|m| m.as_str())
-            .unwrap_or(if config.provider.is_empty() { "local" } else { &config.provider });
+        // 配置的 provider 优先（用户在设置中选的），LLM 参数次之，默认 local
+        let arg_mode = arguments.get("mode").and_then(|m| m.as_str()).unwrap_or("");
+        let mode_str = if !config.provider.is_empty() {
+            config.provider.clone()
+        } else if !arg_mode.is_empty() {
+            arg_mode.to_string()
+        } else {
+            "local".to_string()
+        };
+        let mode = mode_str.as_str();
+        log::info!("TTS mode={} (config.provider={}, arg_mode={})", mode, config.provider, arg_mode);
 
         if text.len() > 4096 {
             return Err("文本过长（最多 4096 字符）".to_string());
