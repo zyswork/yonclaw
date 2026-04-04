@@ -2862,17 +2862,6 @@ impl TtsTool {
 
     /// 读取 TTS 专用配置（settings 表中的 tts.* 键）
     async fn load_tts_config(&self) -> TtsConfig {
-        let get = |key: &str| -> Option<String> {
-            let full_key = format!("tts.{}", key);
-            let rt = tokio::runtime::Handle::current();
-            std::thread::spawn(move || {
-                rt.block_on(async {
-                    // 这里不能 async，用同步方式
-                    None::<String>
-                })
-            }).join().ok().flatten()
-        };
-        // 用简单的同步查询
         let provider = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.provider'")
             .fetch_optional(&self.pool).await.ok().flatten().unwrap_or_else(|| "local".into());
         let api_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'tts.api_key'")

@@ -84,7 +84,7 @@ pub async fn build_compact_llm_config(agent_config: &super::llm::LlmConfig, pool
                                     model: format!("{}/{}", pid, pure_model),
                                     base_url: Some(base_url.to_string()),
                                     temperature: Some(0.3),
-                                    max_tokens: Some(512),
+                                    max_tokens: Some(1024),
                                     thinking_level: None,
                                 };
                             }
@@ -102,7 +102,7 @@ pub async fn build_compact_llm_config(agent_config: &super::llm::LlmConfig, pool
         model: compact_model,
         base_url: agent_config.base_url.clone(),
         temperature: Some(0.3),
-        max_tokens: Some(512),
+        max_tokens: Some(1024),
         thinking_level: None,
     }
 }
