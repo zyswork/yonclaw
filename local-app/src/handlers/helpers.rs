@@ -112,12 +112,32 @@ pub async fn load_providers(db: &db::Database) -> Result<Vec<serde_json::Value>,
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "[]".to_string());
-    serde_json::from_str(&json_str).map_err(|e| format!("解析 providers 配置失败: {}", e))
+    let mut providers: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+        .map_err(|e| format!("解析 providers 配置失败: {}", e))?;
+    // 解密 apiKey（兼容未加密的旧数据）
+    for p in &mut providers {
+        if let Some(key) = p["apiKey"].as_str() {
+            let decrypted = crate::crypto::decrypt_field(key);
+            if decrypted != key {
+                p["apiKey"] = serde_json::Value::String(decrypted);
+            }
+        }
+    }
+    Ok(providers)
 }
 
-/// 保存所有 provider 配置到数据库
+/// 保存所有 provider 配置到数据库（apiKey 加密存储）
 pub async fn save_providers(db: &db::Database, providers: &[serde_json::Value]) -> Result<(), String> {
-    let json_str = serde_json::to_string(providers).map_err(|e| e.to_string())?;
+    // 加密 apiKey 后再存
+    let mut encrypted: Vec<serde_json::Value> = providers.to_vec();
+    for p in &mut encrypted {
+        if let Some(key) = p["apiKey"].as_str() {
+            if !key.is_empty() && !key.starts_with("XZ1:") {
+                p["apiKey"] = serde_json::Value::String(crate::crypto::encrypt_field(key));
+            }
+        }
+    }
+    let json_str = serde_json::to_string(&encrypted).map_err(|e| e.to_string())?;
     db.set_setting("providers", &json_str)
         .await
         .map_err(|e| format!("保存 providers 失败: {}", e))

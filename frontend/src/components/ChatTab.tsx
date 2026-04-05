@@ -2886,11 +2886,18 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                       )}
                       {/* AI 消息：重新生成 + 分支导航 + 反馈 */}
                       {!isUser && !isSystem && msg.content && !streaming && (<>
-                        <button onClick={() => handleRegenerate(oi)} title="Regenerate (创建新分支)" style={actionBtnStyle}>
+                        <button onClick={() => handleRegenerate(oi)} title="重新生成（创建新分支）" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                           </svg>
                         </button>
+                        {/* 分支导航（有分支数据时显示） */}
+                        {(msg as any).branchId && (msg as any).branchId !== 'main' && (
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)', padding: '0 4px', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 3v12"/><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M18 9c0 6-6 9-12 9"/></svg>
+                            分支
+                          </span>
+                        )}
                         <button onClick={() => msg.seq != null && invoke('submit_message_feedback', { sessionId: activeSession, messageSeq: msg.seq, feedback: 'up' }).then(() => toast.success('Thanks!')).catch((e) => console.warn('feedback submit failed:', e))}
                           title="Good" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

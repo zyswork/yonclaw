@@ -1066,7 +1066,11 @@ export DEEPSEEK_API_KEY="sk-..."`}
         {/* ---- 搜索引擎 ---- */}
         {activeSection === 'search' && (
           <div style={{ maxWidth: 700 }}>
-            <h1 style={{ marginTop: 0, marginBottom: 16 }}>{t('settings.sectionSearch')}</h1>
+            <h1 style={{ marginTop: 0, marginBottom: 8 }}>{t('settings.sectionSearch')}</h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '0 0 16px' }}>
+              配置 AI 联网搜索能力。支持 Brave Search、Serper (Google)、Tavily、Exa 等搜索引擎。
+              <a href="https://serper.dev/" target="_blank" rel="noopener" style={{ color: 'var(--accent)', marginLeft: 4 }}>获取免费 Serper Key →</a>
+            </p>
             <SearchSettings />
           </div>
         )}
@@ -1106,7 +1110,10 @@ export DEEPSEEK_API_KEY="sk-..."`}
         {/* ---- 语音合成 ---- */}
         {activeSection === 'tts' && (
           <div style={{ maxWidth: 700 }}>
-            <h1 style={{ marginTop: 0, marginBottom: 16 }}>语音合成 (TTS)</h1>
+            <h1 style={{ marginTop: 0, marginBottom: 8 }}>语音合成 (TTS)</h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '0 0 16px' }}>
+              配置 AI 语音合成引擎。支持本地系统 TTS（免费）、小米 MiMo-V2-TTS（高质量免费）、OpenAI TTS。
+            </p>
             <TtsSection />
           </div>
         )}
