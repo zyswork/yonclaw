@@ -676,7 +676,7 @@ async fn main() {
             run_memory_hygiene, get_cache_stats, get_setting, set_setting, get_settings_by_prefix,
             export_memory_snapshot, extract_memories_from_history, run_learner, cloud_api_proxy,
             // 会话分支
-            fork_from_message, list_branches, switch_branch, get_branch_messages,
+            fork_from_message, list_branches, switch_branch, get_branch_messages, get_regeneration_info,
             // profile
             get_user_profile, save_user_profile, save_user_avatar, get_user_avatar,
             // oauth
@@ -685,8 +685,8 @@ async fn main() {
             get_python_sandbox_status,
             // 文件读取
             read_file_base64,
-            // 数据迁移
-            export_app_data, import_app_data,
+            // 数据迁移 + 审计
+            export_app_data, import_app_data, get_audit_log,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");

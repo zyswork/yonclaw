@@ -310,6 +310,19 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE chat_sessions ADD COLUMN active_branch TEXT DEFAULT 'main'")
         .execute(pool).await;
 
+    // 审计日志表
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            category TEXT NOT NULL,
+            detail TEXT,
+            ip TEXT,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+        )"#
+    )
+        .execute(pool).await;
+
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_jobs_due ON cron_jobs(enabled, next_run_at)")
         .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, started_at DESC)")

@@ -1238,3 +1238,55 @@ pub async fn get_branch_messages(
         msg
     }).collect())
 }
+
+/// 查询会话中每个 regenerate 点的分支数
+///
+/// 返回 [{seq, branches: ["main", "branch_xxx"], activeIndex}]
+/// 前端用于渲染 < 1/2 > 导航
+#[tauri::command]
+pub async fn get_regeneration_info(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db.pool();
+
+    // 查找所有 assistant 消息及其 branch_id
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT seq, role, branch_id FROM chat_messages WHERE session_id = ? AND role = 'assistant' ORDER BY seq ASC"
+    ).bind(&session_id).fetch_all(pool).await.unwrap_or_default();
+
+    // 获取活跃分支
+    let active_branch: String = sqlx::query_scalar(
+        "SELECT COALESCE(active_branch, 'main') FROM chat_sessions WHERE id = ?"
+    ).bind(&session_id).fetch_optional(pool).await.ok().flatten()
+        .unwrap_or_else(|| "main".into());
+
+    // 按 seq 分组统计分支
+    let mut seq_branches: std::collections::BTreeMap<i64, Vec<String>> = std::collections::BTreeMap::new();
+    for (seq, _role, branch) in &rows {
+        let b = branch.as_deref().unwrap_or("main").to_string();
+        let entry = seq_branches.entry(*seq).or_default();
+        if !entry.contains(&b) {
+            entry.push(b);
+        }
+    }
+
+    // 只返回有多个分支的 seq（fork 点）
+    let fork_points: Vec<serde_json::Value> = seq_branches.iter()
+        .filter(|(_, branches)| branches.len() > 1)
+        .map(|(seq, branches)| {
+            let active_idx = branches.iter().position(|b| b == &active_branch).unwrap_or(0);
+            serde_json::json!({
+                "seq": seq,
+                "branches": branches,
+                "activeIndex": active_idx,
+                "total": branches.len(),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "forkPoints": fork_points,
+        "activeBranch": active_branch,
+    }))
+}

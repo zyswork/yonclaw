@@ -783,6 +783,13 @@ pub async fn cloud_api_proxy(
     resp.json::<serde_json::Value>().await.map_err(|e| format!("解析响应失败: {}", e))
 }
 
+/// 审计日志 — 记录敏感操作
+pub async fn write_audit_log(pool: &sqlx::SqlitePool, action: &str, category: &str, detail: &str) {
+    let _ = sqlx::query("INSERT INTO audit_log (action, category, detail) VALUES (?, ?, ?)")
+        .bind(action).bind(category).bind(detail)
+        .execute(pool).await;
+}
+
 /// 读取本地文件为 base64（用于前端播放音频/显示图片等）
 #[tauri::command]
 pub async fn read_file_base64(path: String) -> Result<String, String> {
@@ -904,6 +911,7 @@ pub async fn export_app_data(
     zip.finish().map_err(|e| e.to_string())?;
 
     let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+    write_audit_log(pool, "data_export", "security", &format!("导出 {:.1}MB", size as f64 / 1024.0 / 1024.0)).await;
     Ok(format!("数据已导出（{:.1}MB）。注意：API Key 已脱敏，导入后需重新配置。", size as f64 / 1024.0 / 1024.0))
 }
 
