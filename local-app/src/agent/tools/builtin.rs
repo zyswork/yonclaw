@@ -3170,9 +3170,15 @@ impl Tool for VideoGenerateTool {
             body["first_frame_image"] = serde_json::json!(img);
         }
 
-        log::info!("视频生成: prompt={}, model={}", &prompt[..prompt.len().min(50)], model);
+        log::info!("视频生成: prompt={}, model={}, url={}", &prompt[..prompt.len().min(50)], model, url);
 
-        let client = reqwest::Client::new();
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180));
+        if let Ok(true) = tokio::net::TcpStream::connect("127.0.0.1:7890").await.map(|_| true) {
+            builder = builder.proxy(reqwest::Proxy::all("http://127.0.0.1:7890").unwrap());
+        }
+        let client = builder.build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&body).send().await.map_err(|e| format!("请求失败: {}", e))?;
@@ -3227,14 +3233,31 @@ impl Tool for MusicGenerateTool {
             body["refer_voice"] = serde_json::json!(voice);
         }
 
-        log::info!("音乐生成: prompt={}", &prompt[..prompt.len().min(50)]);
+        log::info!("音乐生成: prompt={}, url={}", &prompt[..prompt.len().min(50)], url);
 
-        let client = reqwest::Client::new();
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180)); // 音乐生成可能需要 3 分钟
+        // 检测本地代理
+        if let Ok(true) = tokio::net::TcpStream::connect("127.0.0.1:7890").await.map(|_| true) {
+            builder = builder.proxy(reqwest::Proxy::all("http://127.0.0.1:7890").unwrap());
+        }
+        let client = builder.build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+        log::info!("音乐生成: 发送请求...");
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&body).send().await.map_err(|e| format!("请求失败: {}", e))?;
 
-        let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+        log::info!("音乐生成: status={}, body_len={}", status, text.len());
+
+        if !status.is_success() {
+            return Err(format!("音乐生成 API 错误 ({}): {}", status, &text[..text.len().min(300)]));
+        }
+
+        let data: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("解析响应失败: {}", e))?;
 
         if let Some(audio_url) = data["data"]["audio"].as_str() {
             let tag = media_tag("audio", audio_url, "audio/mpeg");
