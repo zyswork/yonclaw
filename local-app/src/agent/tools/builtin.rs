@@ -3250,17 +3250,22 @@ impl Tool for MusicGenerateTool {
 }
 
 /// 查找 MiniMax provider 配置（api_key, base_url）
+/// 注意：MiniMax 对话 API 在 api.minimax.chat，但多模态 API（视频/音乐/图片）在 api.minimaxi.com
 async fn find_minimax_config(pool: &sqlx::SqlitePool) -> Option<(String, String)> {
     let json_str = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'providers'")
         .fetch_optional(pool).await.ok()??;
     let providers: Vec<serde_json::Value> = serde_json::from_str(&json_str).ok()?;
     for p in &providers {
         let base = p["baseUrl"].as_str().unwrap_or("");
-        if base.contains("minimaxi.com") || p["id"].as_str().map_or(false, |id| id.contains("minimax")) {
+        let id = p["id"].as_str().unwrap_or("");
+        if base.contains("minimax") || id.contains("minimax") {
             let key = p["apiKey"].as_str().unwrap_or("");
             let decrypted = crate::crypto::decrypt_field(key);
             if !decrypted.is_empty() {
-                return Some((decrypted, base.to_string()));
+                // 多模态 API 固定用 api.minimaxi.com（不是 api.minimax.chat）
+                let media_base = "https://api.minimaxi.com/v1".to_string();
+                log::info!("find_minimax_config: id={}, chat_base={}, media_base={}", id, base, media_base);
+                return Some((decrypted, media_base));
             }
         }
     }
