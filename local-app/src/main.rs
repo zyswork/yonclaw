@@ -676,7 +676,9 @@ async fn main() {
             run_memory_hygiene, get_cache_stats, get_setting, set_setting, get_settings_by_prefix,
             export_memory_snapshot, extract_memories_from_history, run_learner, cloud_api_proxy,
             // 会话分支
-            fork_from_message, list_branches, switch_branch, get_branch_messages, get_regeneration_info,
+            fork_from_message, list_branches, switch_branch, get_branch_messages, get_regeneration_info, search_all_messages,
+            // agent 克隆/快照
+            clone_agent, snapshot_agent, list_agent_snapshots,
             // profile
             get_user_profile, save_user_profile, save_user_avatar, get_user_avatar,
             // oauth

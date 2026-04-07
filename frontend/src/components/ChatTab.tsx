@@ -1785,10 +1785,25 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         const { writeTextFile } = await import('@tauri-apps/api/fs')
         const filePath = await save({
           defaultPath: fileName,
-          filters: [{ name: 'Markdown', extensions: ['md'] }]
+          filters: [
+            { name: 'Markdown', extensions: ['md'] },
+            { name: 'HTML (可打印为 PDF)', extensions: ['html'] },
+          ]
         })
         if (filePath) {
-          await writeTextFile(filePath, md)
+          if (filePath.endsWith('.html')) {
+            // HTML 导出（可用浏览器打印为 PDF）
+            const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;max-width:800px;margin:0 auto;padding:40px;line-height:1.6;color:#333}
+h1{border-bottom:2px solid #333;padding-bottom:8px}h2{margin-top:24px;color:#555}
+blockquote{border-left:3px solid #ddd;margin:8px 0;padding:4px 12px;color:#666}
+pre{background:#f5f5f5;padding:12px;border-radius:6px;overflow-x:auto}
+hr{border:none;border-top:1px solid #eee;margin:16px 0}
+@media print{body{padding:20px}}</style></head><body>${marked(md)}</body></html>`
+            await writeTextFile(filePath, html)
+          } else {
+            await writeTextFile(filePath, md)
+          }
           saved = true
         } else {
           // 用户取消了保存对话框

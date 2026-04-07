@@ -795,3 +795,113 @@ pub async fn import_agent_bundle(
 pub fn list_agent_templates() -> Vec<serde_json::Value> {
     agent::tools::builtin::agent_templates()
 }
+
+/// 克隆 Agent — 复制配置到新 Agent
+#[tauri::command]
+pub async fn clone_agent(
+    state: State<'_, std::sync::Arc<crate::AppState>>,
+    agent_id: String,
+    new_name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let pool = state.db.pool();
+
+    // 读取原 agent
+    let row: Option<(String, String, String, Option<f64>, Option<i64>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT name, model, system_prompt, temperature, max_tokens, config, workspace_path FROM agents WHERE id = ?")
+            .bind(&agent_id).fetch_optional(pool).await.map_err(|e| e.to_string())?;
+
+    let (name, model, prompt, temp, max_tok, config, _wp) = row.ok_or("Agent 不存在")?;
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let clone_name = new_name.unwrap_or_else(|| format!("{} (副本)", name));
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // 创建 workspace
+    let home = dirs::home_dir().unwrap_or_default();
+    let workspace = home.join(".xianzhu").join("agents").join(&new_id);
+    let _ = std::fs::create_dir_all(&workspace);
+
+    // 复制原 workspace 的文件（SOUL.md 等）
+    if let Some(ref wp) = Some(home.join(".xianzhu").join("agents").join(&agent_id)) {
+        if wp.exists() {
+            for entry in std::fs::read_dir(wp).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let _ = std::fs::copy(&path, workspace.join(entry.file_name()));
+                }
+            }
+        }
+    }
+
+    sqlx::query("INSERT INTO agents (id, name, model, system_prompt, temperature, max_tokens, config, workspace_path, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .bind(&new_id).bind(&clone_name).bind(&model).bind(&prompt)
+        .bind(temp).bind(max_tok).bind(&config)
+        .bind(workspace.to_string_lossy().as_ref())
+        .bind(now).bind(now)
+        .execute(pool).await.map_err(|e| format!("克隆失败: {}", e))?;
+
+    log::info!("克隆 Agent: {} → {} ({})", agent_id, new_id, clone_name);
+    Ok(serde_json::json!({ "id": new_id, "name": clone_name }))
+}
+
+/// Agent 配置快照 — 保存当前配置到 snapshots 目录
+#[tauri::command]
+pub async fn snapshot_agent(
+    state: State<'_, std::sync::Arc<crate::AppState>>,
+    agent_id: String,
+) -> Result<String, String> {
+    let pool = state.db.pool();
+
+    let row: Option<(String, String, String, Option<String>)> =
+        sqlx::query_as("SELECT name, model, system_prompt, config FROM agents WHERE id = ?")
+            .bind(&agent_id).fetch_optional(pool).await.map_err(|e| e.to_string())?;
+
+    let (name, model, prompt, config) = row.ok_or("Agent 不存在")?;
+
+    let home = dirs::home_dir().unwrap_or_default();
+    let snapshots_dir = home.join(".xianzhu").join("agents").join(&agent_id).join("snapshots");
+    let _ = std::fs::create_dir_all(&snapshots_dir);
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let snapshot = serde_json::json!({
+        "name": name, "model": model, "system_prompt": prompt,
+        "config": config, "timestamp": &timestamp,
+    });
+
+    let filename = format!("snapshot_{}.json", timestamp);
+    let path = snapshots_dir.join(&filename);
+    std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap_or_default())
+        .map_err(|e| format!("保存快照失败: {}", e))?;
+
+    log::info!("Agent 快照: {} → {}", agent_id, filename);
+    Ok(format!("快照已保存: {}", filename))
+}
+
+/// 列出 Agent 快照
+#[tauri::command]
+pub async fn list_agent_snapshots(
+    agent_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let dir = home.join(".xianzhu").join("agents").join(&agent_id).join("snapshots");
+    if !dir.exists() { return Ok(vec![]); }
+
+    let mut snapshots = Vec::new();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "json") {
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                    snapshots.push(serde_json::json!({
+                        "filename": path.file_name().unwrap_or_default().to_string_lossy(),
+                        "timestamp": v["timestamp"],
+                        "name": v["name"],
+                        "model": v["model"],
+                    }));
+                }
+            }
+        }
+    }
+    snapshots.sort_by(|a, b| b["timestamp"].as_str().cmp(&a["timestamp"].as_str()));
+    Ok(snapshots)
+}

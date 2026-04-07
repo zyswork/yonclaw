@@ -4198,6 +4198,43 @@ pub fn agent_templates() -> Vec<serde_json::Value> {
             "model": "gpt-4o",
             "icon": "💡"
         }),
+        // ─── 团队模板（多 Agent 协作） ───
+        serde_json::json!({
+            "id": "team-code-review",
+            "name": "代码审查团队",
+            "type": "team",
+            "description": "3 人协作：开发者写代码 → 审查者找问题 → 架构师给建议",
+            "agents": [
+                { "role": "developer", "name": "开发者", "prompt": "你是一位高级开发者。编写高质量、可维护的代码。" },
+                { "role": "reviewer", "name": "审查者", "prompt": "你是一位严格的代码审查者。检查 bug、安全问题、性能隐患、代码规范。" },
+                { "role": "architect", "name": "架构师", "prompt": "你是一位软件架构师。从系统设计角度给出改进建议，关注可扩展性和可维护性。" }
+            ],
+            "icon": "👥"
+        }),
+        serde_json::json!({
+            "id": "team-research",
+            "name": "研究团队",
+            "type": "team",
+            "description": "搜索者收集资料 → 分析者整理论证 → 写作者输出报告",
+            "agents": [
+                { "role": "searcher", "name": "搜索专员", "prompt": "你负责搜索和收集相关资料。使用 web_search 和 web_fetch 获取最新信息。" },
+                { "role": "analyst", "name": "分析师", "prompt": "你负责分析收集到的资料，提炼关键观点，构建论证框架。" },
+                { "role": "writer", "name": "报告撰写", "prompt": "你负责将分析结果整理成结构清晰的研究报告。" }
+            ],
+            "icon": "🔬"
+        }),
+        serde_json::json!({
+            "id": "team-content",
+            "name": "内容创作团队",
+            "type": "team",
+            "description": "策划者定方向 → 创作者写内容 → 编辑者润色优化",
+            "agents": [
+                { "role": "planner", "name": "内容策划", "prompt": "你负责内容选题、大纲设计、受众分析。" },
+                { "role": "creator", "name": "内容创作者", "prompt": "你负责根据大纲创作高质量内容，风格生动有吸引力。" },
+                { "role": "editor", "name": "编辑", "prompt": "你负责润色、校对、优化内容质量，确保逻辑通顺、表达精准。" }
+            ],
+            "icon": "📝"
+        }),
     ]
 }
 

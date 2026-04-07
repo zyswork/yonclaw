@@ -1290,3 +1290,54 @@ pub async fn get_regeneration_info(
         "activeBranch": active_branch,
     }))
 }
+
+/// 跨会话全文搜索 — 搜索所有历史对话
+#[tauri::command]
+pub async fn search_all_messages(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    agent_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let pool = state.db.pool();
+    let limit = limit.unwrap_or(50);
+    let pattern = format!("%{}%", query);
+
+    let rows: Vec<(String, String, String, String, i64, Option<String>)> = if let Some(aid) = &agent_id {
+        sqlx::query_as(
+            "SELECT m.id, m.session_id, m.role, m.content, m.created_at, s.title \
+             FROM chat_messages m JOIN chat_sessions s ON m.session_id = s.id \
+             WHERE m.agent_id = ? AND m.content LIKE ? AND m.role IN ('user','assistant') \
+             ORDER BY m.created_at DESC LIMIT ?"
+        ).bind(aid).bind(&pattern).bind(limit)
+            .fetch_all(pool).await.unwrap_or_default()
+    } else {
+        sqlx::query_as(
+            "SELECT m.id, m.session_id, m.role, m.content, m.created_at, s.title \
+             FROM chat_messages m JOIN chat_sessions s ON m.session_id = s.id \
+             WHERE m.content LIKE ? AND m.role IN ('user','assistant') \
+             ORDER BY m.created_at DESC LIMIT ?"
+        ).bind(&pattern).bind(limit)
+            .fetch_all(pool).await.unwrap_or_default()
+    };
+
+    Ok(rows.iter().map(|(id, sid, role, content, ts, title)| {
+        // 截取匹配上下文（前后 50 字符）
+        let lower_content = content.to_lowercase();
+        let lower_query = query.to_lowercase();
+        let snippet = if let Some(pos) = lower_content.find(&lower_query) {
+            let start = pos.saturating_sub(50);
+            let end = (pos + lower_query.len() + 50).min(content.len());
+            let s: String = content.chars().skip(start).take(end - start).collect();
+            if start > 0 { format!("...{}", s) } else { s }
+        } else {
+            content.chars().take(100).collect()
+        };
+
+        serde_json::json!({
+            "id": id, "sessionId": sid, "role": role,
+            "snippet": snippet, "createdAt": ts,
+            "sessionTitle": title.as_deref().unwrap_or("未命名"),
+        })
+    }).collect())
+}
