@@ -851,10 +851,14 @@ impl Orchestrator {
         };
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
-        log::info!("Provider: '{}', 添加 system message: {}", provider, provider == "openai");
+        // MiniMax 模型不支持 system role，转为 user 消息注入
+        let model_lower = agent.model.to_lowercase();
+        let no_system_role = model_lower.contains("minimax");
+        log::info!("Provider: '{}', 添加 system message: {}, no_system_role: {}", provider, provider == "openai", no_system_role);
         if provider == "openai" {
-            log::info!("注入 system message, 长度: {} 字节", system_prompt.len());
-            messages.push(serde_json::json!({"role": "system", "content": &system_prompt}));
+            let role = if no_system_role { "user" } else { "system" };
+            log::info!("注入 {} message, 长度: {} 字节", role, system_prompt.len());
+            messages.push(serde_json::json!({"role": role, "content": &system_prompt}));
         }
 
         // 参照 OpenClaw：摘要作为 assistant 消息注入对话流（不是系统提示）
