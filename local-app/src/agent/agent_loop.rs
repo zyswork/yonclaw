@@ -97,6 +97,15 @@ pub async fn run_agent_loop(
     let client = LlmClient::new(config.clone());
     let tools_opt = if tool_defs.is_empty() { None } else { Some(tool_defs) };
 
+    // MiniMax 等不支持 system role 的模型：全部转为 user
+    if config.model.to_lowercase().contains("minimax") {
+        for msg in &mut messages {
+            if msg["role"].as_str() == Some("system") {
+                msg["role"] = serde_json::json!("user");
+            }
+        }
+    }
+
     // 响应缓存
     let response_cache = super::response_cache::ResponseCache::new(deps.pool.clone());
     let sys_prompt_str = system_prompt.unwrap_or("");
