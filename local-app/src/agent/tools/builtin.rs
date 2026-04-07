@@ -3225,10 +3225,15 @@ impl Tool for MusicGenerateTool {
             .ok_or("未配置 MiniMax Provider（需要 api.minimaxi.com）")?;
 
         let url = format!("{}/music_generation", base_url.trim_end_matches('/'));
-        let mut body = serde_json::json!({ "model": "music-01", "prompt": prompt });
-        if let Some(lyrics) = arguments["lyrics"].as_str() {
-            body["lyrics"] = serde_json::json!(lyrics);
-        }
+        // MiniMax music-2.5: 必须带 lyrics + output_format
+        let lyrics = arguments["lyrics"].as_str().unwrap_or("[intro] [outro]");
+        let mut body = serde_json::json!({
+            "model": "music-2.5",
+            "prompt": prompt,
+            "lyrics": lyrics,
+            "output_format": "url",
+            "stream": false,
+        });
         if let Some(voice) = arguments["refer_voice"].as_str() {
             body["refer_voice"] = serde_json::json!(voice);
         }
@@ -3259,11 +3264,35 @@ impl Tool for MusicGenerateTool {
         let data: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| format!("解析响应失败: {}", e))?;
 
-        if let Some(audio_url) = data["data"]["audio"].as_str() {
-            let tag = media_tag("audio", audio_url, "audio/mpeg");
-            Ok(format!("音乐已生成！\n{}\n{}", audio_url, tag))
-        } else if let Some(task_id) = data["task_id"].as_str() {
-            Ok(format!("音乐生成任务已提交！任务 ID: {}", task_id))
+        // 解析响应：audio_url 或 audio hex
+        let audio_url = data["data"]["audio_url"].as_str()
+            .or_else(|| data["data"]["audio"].as_str());
+
+        if let Some(url) = audio_url {
+            // 下载音频到本地
+            let home = dirs::home_dir().unwrap_or_default();
+            let output_dir = home.join(".xianzhu").join("music");
+            let _ = std::fs::create_dir_all(&output_dir);
+            let filename = format!("music_{}.mp3", chrono::Utc::now().timestamp_millis());
+            let output_path = output_dir.join(&filename);
+
+            log::info!("音乐生成成功，下载: {}", url);
+            match client.get(url).send().await {
+                Ok(resp) => {
+                    if let Ok(bytes) = resp.bytes().await {
+                        let _ = std::fs::write(&output_path, &bytes);
+                        let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/mpeg");
+                        Ok(format!("音乐已生成！({:.1}KB)\n文件: {}\n{}", bytes.len() as f64 / 1024.0, output_path.display(), tag))
+                    } else {
+                        let tag = media_tag("audio", url, "audio/mpeg");
+                        Ok(format!("音乐已生成！\n在线播放: {}\n{}", url, tag))
+                    }
+                }
+                Err(_) => {
+                    let tag = media_tag("audio", url, "audio/mpeg");
+                    Ok(format!("音乐已生成！\n在线播放: {}\n{}", url, tag))
+                }
+            }
         } else if let Some(err) = data["base_resp"]["status_msg"].as_str() {
             Err(format!("音乐生成失败: {}", err))
         } else {
