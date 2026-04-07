@@ -34,6 +34,7 @@ interface Provider {
   apiKeyMasked?: string
   models: ProviderModel[]
   enabled: boolean
+  systemPrompt?: string
 }
 
 /** OAuth 供应商模板（特殊处理，不走 API Key 流程） */
@@ -265,6 +266,30 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
     models: [
       { id: 'meta/llama-3.3-70b-instruct', name: 'Llama 3.3 70B' },
       { id: 'nvidia/llama-3.1-nemotron-70b-instruct', name: 'Nemotron 70B' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'siliconflow',
+    name: 'SiliconFlow 硅基流动',
+    apiType: 'openai',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    models: [
+      { id: 'Qwen/Qwen3-235B-A22B', name: 'Qwen3 235B' },
+      { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek V3' },
+      { id: 'deepseek-ai/DeepSeek-R1', name: 'DeepSeek R1' },
+    ],
+    enabled: true,
+  },
+  {
+    id: 'xiaomi-mimo',
+    name: '小米 MiMo',
+    apiType: 'openai',
+    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+    models: [
+      { id: 'mimo-v2-pro', name: 'MiMo V2 Pro' },
+      { id: 'mimo-v2-flash', name: 'MiMo V2 Flash' },
+      { id: 'mimo-v2-omni', name: 'MiMo V2 Omni' },
     ],
     enabled: true,
   },
@@ -943,6 +968,20 @@ export default function SettingsPage() {
                         <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
                           {t('settings.multiKeyHint')}
                         </div>
+                      </div>
+
+                      {/* Provider 自定义 System Prompt */}
+                      <div>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
+                          自定义指令 <span style={{ color: 'var(--text-muted)' }}>（可选，注入到该 Provider 所有请求的 system prompt 中）</span>
+                        </label>
+                        <textarea
+                          value={editForm.systemPrompt || ''}
+                          onChange={(e) => setEditForm({ ...editForm, systemPrompt: e.target.value })}
+                          placeholder="例如：请始终用中文回复。输出格式为 Markdown。"
+                          rows={2}
+                          style={{ width: '100%', padding: '6px 10px', border: '1px solid var(--border-subtle)', borderRadius: '4px', fontSize: '13px', boxSizing: 'border-box', resize: 'vertical' }}
+                        />
                       </div>
 
                       {/* 模型列表编辑 */}
