@@ -2845,7 +2845,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                                 padding: '3px 10px', fontSize: 12, borderRadius: 4, cursor: 'pointer',
                                 border: 'none', backgroundColor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600,
                               }}
-                            >Send</button>
+                            aria-label="发送消息">Send</button>
                           </div>
                         </div>
                       ) : isErrorMsg ? (
@@ -2915,7 +2915,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
                       )}
                       {/* AI 消息：重新生成 + 分支导航 + 反馈 */}
                       {!isUser && !isSystem && msg.content && !streaming && (<>
-                        <button onClick={() => handleRegenerate(oi)} title="重新生成（创建新分支）" style={actionBtnStyle}>
+                        <button onClick={() => handleRegenerate(oi)} title="重新生成（创建新分支）" aria-label="重新生成回复" style={actionBtnStyle}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                           </svg>
