@@ -330,6 +330,35 @@ function extractMediaFromText(text: string): React.ReactNode[] {
     } catch {}
   }
 
+  // 解析执行进度标记: <!--exec:{"tool":"xxx","index":1,"total":3,"status":"running"}-->
+  const execTagRegex = /<!--exec:(.*?)-->/g
+  const execSteps: { tool: string; index: number; total: number; status: string }[] = []
+  let execMatch
+  while ((execMatch = execTagRegex.exec(text)) !== null) {
+    try {
+      const data = JSON.parse(execMatch[1])
+      // 去重（同一个 tool+index 只保留最后一个状态）
+      const existing = execSteps.findIndex(s => s.tool === data.tool && s.index === data.index)
+      if (existing >= 0) execSteps[existing] = data
+      else execSteps.push(data)
+    } catch {}
+  }
+  if (execSteps.length > 0) {
+    elements.push(
+      <div key="exec-progress" style={{
+        marginTop: 6, padding: '6px 10px', borderRadius: 8,
+        background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+        fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 6, flexWrap: 'wrap',
+      }}>
+        {execSteps.map((s, i) => (
+          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+            {s.status === 'running' ? '⚙️' : '✅'} {s.tool}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
   // fallback: 检测音频文件路径（兼容旧消息，不重复）
   const audioRegex = /(\/[^\s]+\.(mp3|aiff|wav|ogg|m4a))/gi
   const audioMatches = text.match(audioRegex)

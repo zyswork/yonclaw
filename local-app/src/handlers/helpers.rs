@@ -106,6 +106,21 @@ pub fn resolve_model_context_window(model: &str) -> usize {
 }
 
 /// 从数据库加载所有 provider 配置
+/// 直接从 pool 加载 providers（无需 Database 包装）
+pub async fn load_providers_from_pool(pool: &sqlx::SqlitePool) -> Result<Vec<serde_json::Value>, String> {
+    let json_str: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'providers'")
+        .fetch_optional(pool).await.map_err(|e| e.to_string())?.or_else(|| Some("[]".into()));
+    let mut providers: Vec<serde_json::Value> = serde_json::from_str(json_str.as_deref().unwrap_or("[]"))
+        .map_err(|e| format!("解析 providers 失败: {}", e))?;
+    for p in &mut providers {
+        if let Some(key) = p["apiKey"].as_str() {
+            let decrypted = crate::crypto::decrypt_field(key);
+            if decrypted != key { p["apiKey"] = serde_json::Value::String(decrypted); }
+        }
+    }
+    Ok(providers)
+}
+
 pub async fn load_providers(db: &db::Database) -> Result<Vec<serde_json::Value>, String> {
     let json_str = db
         .get_setting("providers")

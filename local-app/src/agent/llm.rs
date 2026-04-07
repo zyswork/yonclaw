@@ -1601,7 +1601,12 @@ impl LlmClient {
                         *in_think = true;
                         i += 7;
                         continue;
-                    } else if "<think>".starts_with(remaining) {
+                    } else if remaining.starts_with("<commentary>") {
+                        // 参照 OpenClaw: suppress commentary-phase output leaks
+                        *in_think = true;
+                        i += 12;
+                        continue;
+                    } else if "<think>".starts_with(remaining) || "<commentary>".starts_with(remaining) {
                         // 部分匹配，保留在 buffer 等下次
                         break;
                     } else {
@@ -1622,7 +1627,11 @@ impl LlmClient {
                         *in_think = false;
                         i += 8;
                         continue;
-                    } else if "</think>".starts_with(remaining) {
+                    } else if remaining.starts_with("</commentary>") {
+                        *in_think = false;
+                        i += 13;
+                        continue;
+                    } else if "</think>".starts_with(remaining) || "</commentary>".starts_with(remaining) {
                         break;
                     }
                 }

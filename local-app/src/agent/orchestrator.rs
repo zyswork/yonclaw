@@ -8,7 +8,7 @@ use super::skill_tool::SkillTool;
 use super::media::MediaProvider; // 导入 trait 使 describe_image 可用
 use super::skills::SkillManager;
 use super::soul::{SoulEngine, SectionBudget};
-use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, TtsTool, SttTool, DocParseTool, DocWriteTool, ClipboardTool, ScreenshotTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
+use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, VideoGenerateTool, MusicGenerateTool, TtsTool, SttTool, DocParseTool, DocWriteTool, ClipboardTool, ScreenshotTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
 use super::tools::{parse_tools_config, is_tool_enabled};
 use super::workspace::AgentWorkspace;
 use super::subagent::SubagentRegistry;
@@ -241,6 +241,8 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(WebFetchTool));
         tool_manager.register_tool(Box::new(WebSearchTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(ImageGenerateTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(VideoGenerateTool::new(pool.clone())));
+        tool_manager.register_tool(Box::new(MusicGenerateTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(TtsTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(MemoryReadTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(MemoryWriteTool::new(pool.clone())));
@@ -1159,6 +1161,21 @@ impl Orchestrator {
             temperature: agent.temperature.or(intent_temperature), max_tokens: agent.max_tokens,
             thinking_level,
         };
+        // Provider 自定义 system prompt 注入（参照 OpenClaw provider-owned system prompt contributions）
+        {
+            let (qpid, _) = crate::channels::parse_qualified_model(&config.model);
+            if let Some(pid) = qpid {
+                if let Ok(providers) = crate::handlers::helpers::load_providers_from_pool(&self.pool).await {
+                    if let Some(p) = providers.iter().find(|p| p["id"].as_str() == Some(pid)) {
+                        if let Some(sp) = p["systemPrompt"].as_str() {
+                            if !sp.is_empty() {
+                                system_prompt.push_str(&format!("\n\n# Provider Instructions\n{}", sp));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let system_prompt_opt = if provider == "anthropic" { Some(system_prompt.as_str()) } else { None };
 
         // 7. 先保存用户消息（去除 base64，用磁盘路径引用替代）

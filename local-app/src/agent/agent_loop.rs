@@ -448,6 +448,17 @@ pub async fn run_agent_loop(
                 "stop_reason": &llm_response.stop_reason,
             });
             let _ = memory::conversation::save_chat_message(deps.pool, session_id, agent_id, &final_msg).await;
+
+            // AfterOutbound Hook — 回复已发出，插件可路由到其他渠道
+            deps.lifecycle.notify(super::lifecycle::HookPoint::AfterOutbound, &super::lifecycle::HookEvent {
+                point: "AfterOutbound".to_string(),
+                agent_id: agent_id.to_string(), session_id: session_id.to_string(),
+                payload: serde_json::json!({
+                    "content": &llm_response.content,
+                    "model": &config.model,
+                }),
+            }).await;
+
             break;
         }
 
@@ -546,6 +557,8 @@ pub async fn run_agent_loop(
                 let idx = *i;
 
                 log::info!("执行工具 {}/{}: {} (id={}) [并行]", idx + 1, total_tools, tc_name, tc_id);
+                // 结构化执行进度（参照 OpenClaw structured execution item events）
+                let _ = tx.send(format!("<!--exec:{{\"tool\":\"{}\",\"index\":{},\"total\":{},\"status\":\"running\"}}-->", tc_name, idx + 1, total_tools));
 
                 futures.push(async move {
                     let (result_text, success, source, duration_ms) = if is_skill {
@@ -577,6 +590,7 @@ pub async fn run_agent_loop(
             // 串行执行
             for (i, tc) in &parallel_tasks {
                 log::info!("执行工具 {}/{}: {} (id={})", i + 1, total_tools, tc.name, tc.id);
+                let _ = tx.send(format!("<!--exec:{{\"tool\":\"{}\",\"index\":{},\"total\":{},\"status\":\"running\"}}-->", tc.name, i + 1, total_tools));
 
                 // Hook: BeforeToolCall
                 let before_tool_event = super::lifecycle::HookEvent {

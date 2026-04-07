@@ -3132,6 +3132,141 @@ impl Tool for ApplyPatchTool {
 ///
 /// CDP 模式需要系统安装 Chrome/Brave/Edge/Chromium。
 /// 首次调用 CDP 操作时自动启动隔离 Chrome 实例（端口 9222）。
+// ─── 视频生成工具 ─────────────────────────────────────────
+
+pub struct VideoGenerateTool { pool: sqlx::SqlitePool }
+impl VideoGenerateTool { pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } } }
+
+#[async_trait]
+impl Tool for VideoGenerateTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "video_generate".to_string(),
+            description: "视频生成工具。通过 AI 生成短视频（文生视频/图生视频）。需要配置 MiniMax 或其他视频生成 API。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": "视频内容描述" },
+                    "image_url": { "type": "string", "description": "参考图片 URL（图生视频模式，可选）" },
+                    "duration": { "type": "integer", "description": "视频时长秒数（默认 5）" }
+                },
+                "required": ["prompt"]
+            }),
+        }
+    }
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let prompt = arguments["prompt"].as_str().ok_or("缺少 prompt")?;
+        // 查找 MiniMax provider
+        let (api_key, base_url) = find_minimax_config(&self.pool).await
+            .ok_or("未配置 MiniMax Provider（需要 api.minimaxi.com）")?;
+
+        let model = "T2V-01"; // MiniMax 视频模型
+        let url = format!("{}/video_generation", base_url.trim_end_matches('/'));
+
+        let mut body = serde_json::json!({ "model": model, "prompt": prompt });
+        if let Some(img) = arguments["image_url"].as_str() {
+            body["first_frame_image"] = serde_json::json!(img);
+        }
+
+        log::info!("视频生成: prompt={}, model={}", &prompt[..prompt.len().min(50)], model);
+
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&body).send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+
+        if let Some(task_id) = data["task_id"].as_str() {
+            Ok(format!("视频生成任务已提交！\n任务 ID: {}\n状态: 处理中...\n\n视频生成通常需要 1-3 分钟，请稍后查询状态。", task_id))
+        } else if let Some(err) = data["base_resp"]["status_msg"].as_str() {
+            Err(format!("视频生成失败: {}", err))
+        } else {
+            Ok(format!("响应: {}", serde_json::to_string_pretty(&data).unwrap_or_default()))
+        }
+    }
+}
+
+// ─── 音乐生成工具 ─────────────────────────────────────────
+
+pub struct MusicGenerateTool { pool: sqlx::SqlitePool }
+impl MusicGenerateTool { pub fn new(pool: sqlx::SqlitePool) -> Self { Self { pool } } }
+
+#[async_trait]
+impl Tool for MusicGenerateTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "music_generate".to_string(),
+            description: "音乐生成工具。通过 AI 生成音乐（歌曲/纯音乐/伴奏）。需要配置 MiniMax API。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": "音乐风格/内容描述（如 '轻快的钢琴曲'）" },
+                    "lyrics": { "type": "string", "description": "歌词（生成歌曲时提供）" },
+                    "refer_voice": { "type": "string", "description": "参考音色 ID（可选）" }
+                },
+                "required": ["prompt"]
+            }),
+        }
+    }
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Guarded }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let prompt = arguments["prompt"].as_str().ok_or("缺少 prompt")?;
+        let (api_key, base_url) = find_minimax_config(&self.pool).await
+            .ok_or("未配置 MiniMax Provider（需要 api.minimaxi.com）")?;
+
+        let url = format!("{}/music_generation", base_url.trim_end_matches('/'));
+        let mut body = serde_json::json!({ "model": "music-01", "prompt": prompt });
+        if let Some(lyrics) = arguments["lyrics"].as_str() {
+            body["lyrics"] = serde_json::json!(lyrics);
+        }
+        if let Some(voice) = arguments["refer_voice"].as_str() {
+            body["refer_voice"] = serde_json::json!(voice);
+        }
+
+        log::info!("音乐生成: prompt={}", &prompt[..prompt.len().min(50)]);
+
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&body).send().await.map_err(|e| format!("请求失败: {}", e))?;
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+
+        if let Some(audio_url) = data["data"]["audio"].as_str() {
+            let tag = media_tag("audio", audio_url, "audio/mpeg");
+            Ok(format!("音乐已生成！\n{}\n{}", audio_url, tag))
+        } else if let Some(task_id) = data["task_id"].as_str() {
+            Ok(format!("音乐生成任务已提交！任务 ID: {}", task_id))
+        } else if let Some(err) = data["base_resp"]["status_msg"].as_str() {
+            Err(format!("音乐生成失败: {}", err))
+        } else {
+            Ok(format!("响应: {}", serde_json::to_string_pretty(&data).unwrap_or_default()))
+        }
+    }
+}
+
+/// 查找 MiniMax provider 配置（api_key, base_url）
+async fn find_minimax_config(pool: &sqlx::SqlitePool) -> Option<(String, String)> {
+    let json_str = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'providers'")
+        .fetch_optional(pool).await.ok()??;
+    let providers: Vec<serde_json::Value> = serde_json::from_str(&json_str).ok()?;
+    for p in &providers {
+        let base = p["baseUrl"].as_str().unwrap_or("");
+        if base.contains("minimaxi.com") || p["id"].as_str().map_or(false, |id| id.contains("minimax")) {
+            let key = p["apiKey"].as_str().unwrap_or("");
+            let decrypted = crate::crypto::decrypt_field(key);
+            if !decrypted.is_empty() {
+                return Some((decrypted, base.to_string()));
+            }
+        }
+    }
+    None
+}
+
 pub struct BrowserTool;
 
 /// CDP 默认端口

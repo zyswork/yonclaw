@@ -14,6 +14,8 @@ pub enum HookPoint {
     BeforeInbound,
     /// 回复发出前（可修改内容）
     BeforeOutbound,
+    /// 回复已发出后（插件可路由到其他渠道，参照 OpenClaw reply dispatch hook）
+    AfterOutbound,
 
     // ─── Prompt 构建 ───
     /// System prompt 构建前（可注入额外上下文）
