@@ -241,6 +241,13 @@ export const zhCN: TranslationMap = {
     catDev: '开发',
     catCreative: '创作',
     catWork: '工作',
+    catTeam: '团队协作',
+    tplTeamCodeReview: '代码审查团队',
+    tplTeamCodeReviewDesc: '开发→审查→架构三角色协作',
+    tplTeamResearch: '研究团队',
+    tplTeamResearchDesc: '搜索→分析→撰写三阶段研究',
+    tplTeamContent: '内容创作团队',
+    tplTeamContentDesc: '策划→创作→编辑一站式内容',
     // 新模板
     tplCodeName: '代码助手',
     tplCodeDesc: '编程专家，代码审查与调试',

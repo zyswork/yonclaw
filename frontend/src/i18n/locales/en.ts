@@ -239,6 +239,13 @@ export const en: TranslationMap = {
     catDev: 'Development',
     catCreative: 'Creative',
     catWork: 'Work',
+    catTeam: 'Team',
+    tplTeamCodeReview: 'Code Review Team',
+    tplTeamCodeReviewDesc: 'Developer → Reviewer → Architect collaboration',
+    tplTeamResearch: 'Research Team',
+    tplTeamResearchDesc: 'Search → Analyze → Write pipeline',
+    tplTeamContent: 'Content Team',
+    tplTeamContentDesc: 'Plan → Create → Edit workflow',
     // New templates
     tplCodeName: 'Code Assistant',
     tplCodeDesc: 'Programming expert, code review & debugging',

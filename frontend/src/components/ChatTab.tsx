@@ -1113,6 +1113,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set())
   const [selectMode, setSelectMode] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
+  const [globalSearchResults, setGlobalSearchResults] = useState<any[]>([])
   // 对话内搜索状态
   const [chatSearchOpen, setChatSearchOpen] = useState(false)
   const [chatSearchQuery, setChatSearchQuery] = useState('')
@@ -2279,17 +2280,43 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
               </button>
             )}
           </div>
-          {/* 搜索框 */}
-          <input
-            value={sessionSearch}
-            onChange={e => setSessionSearch(e.target.value)}
-            placeholder={t('agentDetail.searchPlaceholder') || 'Search sessions...'}
-            style={{
-              width: '100%', padding: '5px 8px', border: '1px solid var(--border-subtle)',
-              borderRadius: 4, fontSize: 11, boxSizing: 'border-box',
-              backgroundColor: 'var(--bg-glass)', outline: 'none',
-            }}
-          />
+          {/* 搜索框（会话标题 + 全局消息搜索） */}
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input
+              value={sessionSearch}
+              onChange={e => {
+                setSessionSearch(e.target.value)
+                // 输入 2+ 字符时自动触发全局搜索
+                if (e.target.value.length >= 2) {
+                  invoke<any[]>('search_all_messages', { query: e.target.value, agentId: agentId, limit: 10 })
+                    .then(r => setGlobalSearchResults(r || []))
+                    .catch(() => setGlobalSearchResults([]))
+                } else {
+                  setGlobalSearchResults([])
+                }
+              }}
+              placeholder="搜索会话和消息..."
+              style={{
+                flex: 1, padding: '5px 8px', border: '1px solid var(--border-subtle)',
+                borderRadius: 4, fontSize: 11, boxSizing: 'border-box',
+                backgroundColor: 'var(--bg-glass)', outline: 'none',
+              }}
+            />
+          </div>
+          {/* 全局搜索结果 */}
+          {globalSearchResults.length > 0 && (
+            <div style={{ maxHeight: 150, overflowY: 'auto', marginTop: 4, borderRadius: 4, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+              {globalSearchResults.map((r: any, i: number) => (
+                <div key={i} onClick={() => { setActiveSession(r.sessionId); setGlobalSearchResults([]) }}
+                  style={{ padding: '4px 8px', fontSize: 11, cursor: 'pointer', borderBottom: '1px solid var(--border-subtle)' }}
+                  onMouseEnter={e => { (e.target as HTMLElement).style.background = 'var(--bg-glass)' }}
+                  onMouseLeave={e => { (e.target as HTMLElement).style.background = '' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{r.sessionTitle} · {r.role}</div>
+                  <div style={{ color: 'var(--text-primary)' }}>{r.snippet}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {/* 用户对话 */}

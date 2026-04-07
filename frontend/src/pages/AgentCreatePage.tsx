@@ -42,7 +42,7 @@ interface Agent {
 }
 
 /** 模板分类 */
-type TemplateCategory = 'general' | 'dev' | 'creative' | 'work'
+type TemplateCategory = 'general' | 'dev' | 'creative' | 'work' | 'team'
 
 interface Template {
   nameKey: string
@@ -55,7 +55,7 @@ interface Template {
 }
 
 /** 分类顺序 */
-const CATEGORY_ORDER: TemplateCategory[] = ['general', 'dev', 'creative', 'work']
+const CATEGORY_ORDER: TemplateCategory[] = ['general', 'dev', 'creative', 'work', 'team']
 
 /** 分类 i18n key 映射 */
 const CATEGORY_KEYS: Record<TemplateCategory, string> = {
@@ -63,6 +63,7 @@ const CATEGORY_KEYS: Record<TemplateCategory, string> = {
   dev: 'agentCreate.catDev',
   creative: 'agentCreate.catCreative',
   work: 'agentCreate.catWork',
+  team: 'agentCreate.catTeam',
 }
 
 /** 预置 Agent 模板 */
@@ -84,6 +85,11 @@ const TEMPLATES: Template[] = [
   // ── 工作 ──
   { nameKey: 'agentCreate.tplProductManagerName', descKey: 'agentCreate.tplProductManagerDesc', icon: 'PM', category: 'work', model: 'gpt-4o', temperature: 0.5, prompt: '你是一位经验丰富的产品经理，擅长从用户需求到产品落地的全流程。\n\n核心能力：\n- 需求分析：用户调研、痛点挖掘、需求优先级排序\n- PRD 撰写：功能描述、用户故事、验收标准\n- 竞品分析：市场定位、差异化、SWOT 分析\n- 用户体验：信息架构、交互流程、可用性评估\n- 项目管理：里程碑规划、风险识别\n\n回答规范：\n1. 从用户视角出发分析问题\n2. 给出结构化的文档或分析\n3. 用数据和案例支撑观点\n4. 平衡用户需求、技术可行性和商业价值' },
   { nameKey: 'agentCreate.tplDailyReportName', descKey: 'agentCreate.tplDailyReportDesc', icon: 'DR', category: 'work', model: 'gpt-4o-mini', temperature: 0.3, prompt: '你是一位专业的工作汇报助手，帮助整理和撰写工作日报、周报、月报。\n\n核心能力：\n- 信息整理：将零散的工作内容结构化\n- 亮点提炼：突出关键成果和数据\n- 问题总结：归纳遇到的困难和解决方案\n- 计划梳理：整理下一步工作计划\n\n回答规范：\n1. 采用简洁清晰的要点式格式\n2. 按「已完成 / 进行中 / 计划中」分类\n3. 用量化数据体现工作成果\n4. 突出重点，避免流水账\n\n请将你的工作内容告诉我，我来帮你整理成规范的报告。' },
+
+  // ── 团队（多 Agent 协作模板） ──
+  { nameKey: 'agentCreate.tplTeamCodeReview', descKey: 'agentCreate.tplTeamCodeReviewDesc', icon: 'CR', category: 'team' as TemplateCategory, model: 'gpt-4o', prompt: '你是一个代码审查团队的协调者。你会扮演三个角色协作：\n1. 开发者：编写高质量代码\n2. 审查者：检查 bug、安全、性能\n3. 架构师：从系统设计角度给建议\n\n每次回复先以「开发者」角色实现，再以「审查者」角色审查，最后以「架构师」角色给出改进建议。用 --- 分隔三个角色的输出。' },
+  { nameKey: 'agentCreate.tplTeamResearch', descKey: 'agentCreate.tplTeamResearchDesc', icon: 'RS', category: 'team' as TemplateCategory, model: 'gpt-4o', prompt: '你是一个研究团队的协调者。你会按三个阶段工作：\n1. 搜索阶段：使用 web_search 收集资料\n2. 分析阶段：提炼关键观点、构建论证\n3. 撰写阶段：输出结构清晰的研究报告\n\n每次研究任务都经过这三个阶段，确保结论有据可查。' },
+  { nameKey: 'agentCreate.tplTeamContent', descKey: 'agentCreate.tplTeamContentDesc', icon: 'CT', category: 'team' as TemplateCategory, model: 'gpt-4o', temperature: 0.8, prompt: '你是一个内容创作团队的协调者。工作流程：\n1. 策划：分析受众、确定主题、设计大纲\n2. 创作：根据大纲写出高质量内容\n3. 编辑：润色、校对、优化表达\n\n输出时标注每个阶段的思考过程和最终成果。' },
 ]
 
 /** 温度预设 */

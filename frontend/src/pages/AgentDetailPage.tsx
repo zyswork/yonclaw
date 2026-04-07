@@ -646,6 +646,31 @@ function SettingsTab({ agentId, agent, onUpdate, onDelete }: {
           </svg>
           {t('agentDetailSub.dangerZone')}
         </div>
+        {/* 克隆 & 快照 */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <button onClick={async () => {
+            try {
+              const result = await invoke<any>('clone_agent', { agentId: id })
+              toast.success(`已克隆为 "${result.name}"`)
+            } catch (e) { toast.error(String(e)) }
+          }} style={{
+            padding: '6px 14px', backgroundColor: 'transparent', color: 'var(--accent)',
+            border: '1px solid var(--accent)', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+          }}>
+            克隆 Agent
+          </button>
+          <button onClick={async () => {
+            try {
+              const msg = await invoke<string>('snapshot_agent', { agentId: id })
+              toast.success(msg)
+            } catch (e) { toast.error(String(e)) }
+          }} style={{
+            padding: '6px 14px', backgroundColor: 'transparent', color: 'var(--text-secondary)',
+            border: '1px solid var(--border-subtle)', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+          }}>
+            保存快照
+          </button>
+        </div>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14, marginTop: 0 }}>{t('agentDetailSub.dangerDesc')}</p>
         {!deleteConfirm ? (
           <button onClick={() => setDeleteConfirm(true)} style={{
