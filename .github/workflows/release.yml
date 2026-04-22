@@ -58,6 +58,18 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli --version "^1" --locked || true
 
+      - name: Create stub Python resources (CI builds without embedded Python sandbox)
+        shell: bash
+        run: |
+          mkdir -p local-app/resources/wheels
+          if [ ! -f local-app/resources/python.tar.gz ]; then
+            # CI 不打包 Python 沙箱（15MB tar 不在 git 里）。生成合法但最小的 tar.gz 占位
+            # 内容只有一个 .stub 文件，运行时 Python 沙箱会检测并降级，不会 crash。
+            mkdir -p /tmp/xianzhu-stub && echo "stub" > /tmp/xianzhu-stub/.stub
+            tar -czf local-app/resources/python.tar.gz -C /tmp/xianzhu-stub .stub
+            touch local-app/resources/wheels/.gitkeep
+          fi
+
       - name: Install frontend deps
         working-directory: frontend
         run: npm ci || npm install

@@ -20,6 +20,15 @@ jobs:
             ~/.cargo/git
             local-app/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('local-app/Cargo.lock') }}
+      - name: Create stub Python resources (CI tests without embedded Python sandbox)
+        shell: bash
+        run: |
+          mkdir -p local-app/resources/wheels
+          if [ ! -f local-app/resources/python.tar.gz ]; then
+            mkdir -p /tmp/xianzhu-stub && echo "stub" > /tmp/xianzhu-stub/.stub
+            tar -czf local-app/resources/python.tar.gz -C /tmp/xianzhu-stub .stub
+            touch local-app/resources/wheels/.gitkeep
+          fi
       - name: Rust tests
         working-directory: local-app
         run: cargo test --release --no-fail-fast
