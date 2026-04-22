@@ -37,7 +37,7 @@ jobs:
           node-version: 20
       - name: Build frontend (for tauri::generate_context!)
         working-directory: frontend
-        run: npm ci && npx vite build
+        run: (npm ci || npm install) && npx vite build
       - name: Rust tests
         working-directory: local-app
         run: cargo test --release --no-fail-fast
