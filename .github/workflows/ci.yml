@@ -29,6 +29,15 @@ jobs:
             tar -czf local-app/resources/python.tar.gz -C /tmp/xianzhu-stub .stub
             touch local-app/resources/wheels/.gitkeep
           fi
+      # tauri::generate_context! 在编译时校验 devPath 指向的 frontend/dist 存在。
+      # test-rust job 需要先 vite build 产出 dist，否则 proc macro 会 panic。
+      - name: Setup Node (for frontend build prerequisite)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build frontend (for tauri::generate_context!)
+        working-directory: frontend
+        run: npm ci && npx vite build
       - name: Rust tests
         working-directory: local-app
         run: cargo test --release --no-fail-fast
