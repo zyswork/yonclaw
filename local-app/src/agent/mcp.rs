@@ -402,7 +402,13 @@ impl McpClient {
         match &mut self.transport {
             McpTransport::Stdio { child, .. } => {
                 let _ = child.kill().await;
-                log::info!("MCP Server '{}' 子进程已终止", self.name);
+                // kill 仅发送信号；必须 wait() 回收 zombie
+                // 超时 2 秒兜底，避免卡死退出流程
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    child.wait()
+                ).await;
+                log::info!("MCP Server '{}' 子进程已终止并回收", self.name);
             }
             McpTransport::Http { .. } => {
                 log::info!("MCP Server '{}' (HTTP) 连接已关闭", self.name);

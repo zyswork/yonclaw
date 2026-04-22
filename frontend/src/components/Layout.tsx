@@ -9,19 +9,19 @@ import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import { useSidebarStore } from '../store/sidebarStore'
 
 /**
- * 侧边栏导航项路径，按显示顺序排列
- * Cmd+1~9 映射到对应的导航项
+ * 侧边栏导航项路径 — Cmd+1~9 快捷键映射
+ * 顺序与聚合后的侧栏分组对齐
  */
 const NAV_PATHS = [
-  '/agents',      // 1: 聊天
-  '/group-chat',  // 2: 群聊
-  '/skills',      // 3: 技能
-  '/cron',        // 4: 定时任务
-  '/channels',    // 5: 频道
-  '/dashboard',   // 6: 仪表板
-  '/memory',      // 7: 记忆
-  '/plugins',     // 8: 插件
-  '/plaza',       // 9: 广场
+  '/agents',      // 1: 对话 → 聊天
+  '/group-chat',  // 2: 对话 → 群聊
+  '/skills',      // 3: 智能扩展 → 技能
+  '/plugins',     // 4: 智能扩展 → 插件
+  '/memory',      // 5: 智能扩展 → 记忆
+  '/cron',        // 6: 自动化 → 定时任务
+  '/channels',    // 7: 自动化 → 频道
+  '/dashboard',   // 8: 数据洞察 → 仪表板
+  '/plaza',       // 9: 数据洞察 → 广场
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -60,7 +60,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <Sidebar />
       {/* macOS 标题栏拖拽区域 — 覆盖整个顶部，支持双击最大化 */}
       <div data-tauri-drag-region style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 34, zIndex: 50, WebkitAppRegion: 'drag' } as any} />
-      <main style={{ flex: 1, minWidth: 0, overflow: 'auto', backgroundColor: 'var(--bg-base)', position: 'relative', paddingTop: 34, WebkitAppRegion: 'no-drag' } as any}>
+      <main style={{ flex: 1, minWidth: 0, overflow: 'auto', backgroundColor: 'transparent', position: 'relative', paddingTop: 34, WebkitAppRegion: 'no-drag' } as any}>
         {children}
       </main>
     </div>

@@ -258,7 +258,10 @@ impl PromptSection for IdentitySection {
     }
 
     fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
-        workspace.read("IDENTITY.md")
+        let raw = workspace.read("IDENTITY.md")?;
+        // Hermes: 注入前威胁扫描
+        let scan = super::threat_scan::scan("IDENTITY.md", &raw);
+        Some(scan.cleaned)
     }
 }
 
@@ -273,14 +276,16 @@ impl PromptSection for SoulSection {
     }
 
     fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
-        let content = workspace.read("SOUL.md")?;
-        if content.trim().is_empty() {
+        let raw = workspace.read("SOUL.md")?;
+        if raw.trim().is_empty() {
             return None;
         }
+        // Hermes: 注入前威胁扫描
+        let scan = super::threat_scan::scan("SOUL.md", &raw);
         let directive = "## 人格体现\n\n\
             以下 SOUL.md 定义了你的核心人格、语气和行为方式。\
             当与其他文件（如 IDENTITY.md）冲突时，以 SOUL.md 为准。\n\n";
-        Some(format!("{directive}{content}"))
+        Some(format!("{directive}{}", scan.cleaned))
     }
 }
 
@@ -487,7 +492,10 @@ impl PromptSection for ToolsSection {
 /// 记忆 Section — 从 MEMORY.md 读取策展记忆
 ///
 /// Phase 9a 先读取静态文件，后续 MemoryLoader 注入语义检索结果
+/// Hermes: agent 观察类记忆上限 2200 字符，超出截断 tail。
 pub struct MemorySection;
+
+const MEMORY_MD_MAX_CHARS: usize = 2200;
 
 impl PromptSection for MemorySection {
     fn name(&self) -> &str {
@@ -495,10 +503,18 @@ impl PromptSection for MemorySection {
     }
 
     fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
-        let memory = workspace.read("MEMORY.md").filter(|c| !c.trim().is_empty());
-        memory.map(|content| {
-            format!("# Long-Term Memory\n\n{}", content)
-        })
+        let raw = workspace.read("MEMORY.md").filter(|c| !c.trim().is_empty())?;
+        let scan = super::threat_scan::scan("MEMORY.md", &raw);
+        let content = &scan.cleaned;
+        // 字符数（非字节）上限，超出保留尾部（最新追加通常在尾部）
+        let trimmed = if content.chars().count() > MEMORY_MD_MAX_CHARS {
+            let skip = content.chars().count() - MEMORY_MD_MAX_CHARS;
+            let out: String = content.chars().skip(skip).collect();
+            format!("[... {} 字符已截断 ...]\n{}", skip, out)
+        } else {
+            content.to_string()
+        };
+        Some(format!("# Long-Term Memory\n\n{}", trimmed))
     }
 }
 
@@ -638,7 +654,11 @@ impl PromptSection for FocusSection {
 }
 
 /// 用户画像 Section — 从 USER.md 读取
+///
+/// Hermes: 用户画像独立上限 1375 字符，与 MEMORY.md 分域。
 pub struct UserSection;
+
+const USER_MD_MAX_CHARS: usize = 1375;
 
 impl PromptSection for UserSection {
     fn name(&self) -> &str {
@@ -646,7 +666,18 @@ impl PromptSection for UserSection {
     }
 
     fn render(&self, workspace: &AgentWorkspace) -> Option<String> {
-        workspace.read("USER.md").filter(|c| !c.trim().is_empty())
+        let raw = workspace.read("USER.md").filter(|c| !c.trim().is_empty())?;
+        let scan = super::threat_scan::scan("USER.md", &raw);
+        let content = &scan.cleaned;
+        // USER.md 是手编文件，重要内容通常在顶部（介绍/画像）。保留头部，截掉末尾。
+        let trimmed = if content.chars().count() > USER_MD_MAX_CHARS {
+            let head: String = content.chars().take(USER_MD_MAX_CHARS).collect();
+            let cut = content.chars().count() - USER_MD_MAX_CHARS;
+            format!("{}\n[... 末尾 {} 字符已截断 ...]", head, cut)
+        } else {
+            content.to_string()
+        };
+        Some(format!("# User Profile\n\n{}", trimmed))
     }
 }
 

@@ -11,6 +11,8 @@ import { ApprovalDialog } from './hooks/useApproval'
 import SetupPage from './pages/SetupPage'
 import { useUpdater } from './hooks/useUpdater'
 import Layout from './components/Layout'
+import OfflineBanner from './components/OfflineBanner'
+import CommandPalette from './components/CommandPalette'
 
 // 懒加载页面组件
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -29,6 +31,7 @@ const PluginsPage = lazy(() => import('./pages/PluginsPage'))
 const PlazaPage = lazy(() => import('./pages/PlazaPage'))
 const GroupChatPage = lazy(() => import('./pages/GroupChatPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
+const ModelComparePage = lazy(() => import('./pages/ModelComparePage'))
 
 function PageLoader() {
   const { t } = useI18n()
@@ -42,20 +45,79 @@ function PageLoader() {
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
   static getDerivedStateFromError(error: Error) { return { error } }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // 本地持久化一份错误快照，供后续"提交 bug"时收集
+    try {
+      const snapshot = {
+        ts: new Date().toISOString(),
+        ua: navigator.userAgent,
+        url: window.location.href,
+        message: error.message,
+        stack: error.stack,
+        componentStack: info.componentStack,
+      }
+      const key = 'xianzhu.lastCrash'
+      localStorage.setItem(key, JSON.stringify(snapshot))
+    } catch {}
+  }
+
+  copyReport = () => {
+    if (!this.state.error) return
+    const report = [
+      `XianZhu crash report`,
+      `Time: ${new Date().toISOString()}`,
+      `URL: ${window.location.href}`,
+      `User Agent: ${navigator.userAgent}`,
+      ``,
+      `Message: ${this.state.error.message}`,
+      ``,
+      `Stack:`,
+      this.state.error.stack || '(no stack)',
+    ].join('\n')
+    navigator.clipboard.writeText(report).then(() => {
+      alert('错误报告已复制到剪贴板 / Crash report copied to clipboard')
+    }).catch(() => {
+      alert('复制失败，请手动选中上方错误文本')
+    })
+  }
+
+  openIssue = () => {
+    const title = encodeURIComponent(`[crash] ${this.state.error?.message.slice(0, 80) || 'unknown'}`)
+    const body = encodeURIComponent(
+      `请粘贴"复制错误"按钮复制的内容到这里：\n\n\n\n---\n环境：\n- 版本：\n- OS：${navigator.platform}\n- 复现步骤：`
+    )
+    const url = `https://github.com/zyswork/xianzhu-claw/issues/new?title=${title}&body=${body}`
+    window.open(url, '_blank')
+  }
+
   render() {
     if (this.state.error) {
       return (
         <div style={{ padding: 40, color: '#dc2626' }}>
-          <h2>Something went wrong / 页面出错了</h2>
-          <pre style={{ fontSize: 13, whiteSpace: 'pre-wrap', background: '#fef2f2', padding: 16, borderRadius: 8 }}>
+          <h2>页面出错了 / Something went wrong</h2>
+          <pre style={{ fontSize: 13, whiteSpace: 'pre-wrap', background: '#fef2f2', padding: 16, borderRadius: 8, maxHeight: 360, overflow: 'auto' }}>
             {this.state.error.message}
             {'\n\n'}
             {this.state.error.stack}
           </pre>
-          <button onClick={() => { this.setState({ error: null }); window.location.hash = '#/agents' }}
-            style={{ marginTop: 16, padding: '8px 20px', cursor: 'pointer' }}>
-            Back to Home / 返回首页
-          </button>
+          <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => { this.setState({ error: null }); window.location.hash = '#/agents' }}
+              style={{ padding: '8px 20px', cursor: 'pointer', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff' }}>
+              返回首页 / Back to Home
+            </button>
+            <button onClick={this.copyReport}
+              style={{ padding: '8px 20px', cursor: 'pointer', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff' }}>
+              📋 复制错误 / Copy Report
+            </button>
+            <button onClick={this.openIssue}
+              style={{ padding: '8px 20px', cursor: 'pointer', borderRadius: 6, border: 'none', background: '#dc2626', color: '#fff' }}>
+              🐛 提交 Bug / Report Issue
+            </button>
+          </div>
+          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 12 }}>
+            提交 Issue 前请先点"复制错误"，粘贴到模板的对应位置。不包含对话内容或 API Key。
+          </p>
         </div>
       )
     }
@@ -136,12 +198,16 @@ export default function App() {
 
   return (
     <HashRouter>
+      <OfflineBanner />
+      <CommandPalette />
       <ToastContainer />
       <ConfirmDialog />
       <ApprovalDialog />
       {updateAvailable && (
         <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+          // z-index 比 OfflineBanner (9999) 高一级；若离线 banner 同时显示，
+          // updater 浮在上方，但两条都可见（由各自 top 偏移控制避免重叠）
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 10000,
           background: 'linear-gradient(90deg, #238636, #1a7f37)', color: 'white',
           padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16,
           fontSize: 13, fontWeight: 500, boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
@@ -178,6 +244,7 @@ export default function App() {
         <Route path="/plaza" element={<ProtectedPage><PlazaPage /></ProtectedPage>} />
         <Route path="/group-chat" element={<ProtectedPage><GroupChatPage /></ProtectedPage>} />
         <Route path="/settings" element={<ProtectedPage><SettingsPage /></ProtectedPage>} />
+        <Route path="/compare" element={<ProtectedPage><ModelComparePage /></ProtectedPage>} />
         <Route path="*" element={<Navigate to="/agents" replace />} />
       </Routes>
     </HashRouter>

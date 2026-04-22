@@ -96,6 +96,64 @@ pub async fn seed_default_jobs(pool: &SqlitePool) -> Result<(), String> {
             catch_up_limit: 1,
             delete_after_run: false,
         },
+        // Character eval：每周日凌晨 4 点（Hermes character eval）
+        CreateJobRequest {
+            name: "周日人格一致性评估".into(),
+            agent_id: default_agent_id.clone(),
+            job_type: JobType::Agent,
+            schedule: Schedule::Cron {
+                expr: "0 4 * * 0".into(),
+                tz: "Asia/Shanghai".into(),
+            },
+            action_payload: ActionPayload::Agent {
+                // 注意：背景 session 不走前端 slash parser，直接用工具描述
+                prompt: "请使用 memory_write 工具做以下事：\n\
+                    1. 分析你最近一周的对话风格、是否忠实于你的人格设定、是否有 persona drift；\n\
+                    2. 若发现偏离，写一条 category=core 的记忆，标题'persona drift 观察 {YYYY-MM-DD}'；\n\
+                    3. 若无明显偏离，只回复'本周人格稳定，无需调整'，不要调用工具。".into(),
+                session_strategy: "new".into(), model: None, thinking: None,
+            },
+            timeout_secs: 300,
+            guardrails: Guardrails::default(),
+            retry: RetryConfig::default(),
+            misfire_policy: "skip".into(),
+            catch_up_limit: 1,
+            delete_after_run: false,
+        },
+        // Dreaming Light Sleep：每日凌晨 3 点，直接调 run_dream_phase
+        CreateJobRequest {
+            name: "每日 Light Sleep 记忆整理".into(),
+            agent_id: default_agent_id.clone(),
+            job_type: JobType::Agent,
+            schedule: Schedule::Cron {
+                expr: "0 3 * * *".into(),
+                tz: "Asia/Shanghai".into(),
+            },
+            action_payload: ActionPayload::Dreaming { phase: "light".into() },
+            timeout_secs: 120,
+            guardrails: Guardrails::default(),
+            retry: RetryConfig::default(),
+            misfire_policy: "skip".into(),
+            catch_up_limit: 1,
+            delete_after_run: false,
+        },
+        // Dreaming REM Sleep：每周日凌晨 3:30，深度模式提炼
+        CreateJobRequest {
+            name: "每周 REM Sleep 深度记忆整理".into(),
+            agent_id: default_agent_id.clone(),
+            job_type: JobType::Agent,
+            schedule: Schedule::Cron {
+                expr: "30 3 * * 0".into(),
+                tz: "Asia/Shanghai".into(),
+            },
+            action_payload: ActionPayload::Dreaming { phase: "rem".into() },
+            timeout_secs: 180,
+            guardrails: Guardrails::default(),
+            retry: RetryConfig::default(),
+            misfire_policy: "skip".into(),
+            catch_up_limit: 1,
+            delete_after_run: false,
+        },
     ];
 
     for req in &jobs {

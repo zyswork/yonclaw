@@ -198,48 +198,41 @@ export default function MemoryPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 600 }}>{t('memory.title')}</h1>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={handleExtract}
-            disabled={actionLoading}
+          {/* 统一次级按钮风格：浅色底 + 薰衣草边（accent-2），只有"清理"是 warning 色 */}
+          <button onClick={handleExtract} disabled={actionLoading}
             style={{
-              padding: '8px 16px', fontSize: '13px', backgroundColor: '#7C3AED',
-              color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer',
-              opacity: actionLoading ? 0.6 : 1,
-            }}
-          >
+              padding: '8px 14px', fontSize: '13px',
+              backgroundColor: 'var(--accent-2-bg)', color: 'var(--text-primary)',
+              border: '1px solid var(--accent-2)', borderRadius: '8px', cursor: 'pointer',
+              opacity: actionLoading ? 0.6 : 1, transition: 'all 0.15s',
+            }}>
             {actionLoading ? t('common.processing') : t('memory.btnExtract')}
           </button>
-          <button
-            onClick={handleRunLearner}
-            disabled={actionLoading}
+          <button onClick={handleRunLearner} disabled={actionLoading}
             style={{
-              padding: '8px 16px', fontSize: '13px', backgroundColor: '#10b981',
-              color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer',
-              opacity: actionLoading ? 0.6 : 1,
-            }}
-          >
+              padding: '8px 14px', fontSize: '13px',
+              backgroundColor: 'var(--accent-3-bg)', color: 'var(--text-primary)',
+              border: '1px solid var(--accent-3)', borderRadius: '8px', cursor: 'pointer',
+              opacity: actionLoading ? 0.6 : 1, transition: 'all 0.15s',
+            }}>
             {actionLoading ? t('common.processing') : '提取经验教训'}
           </button>
-          <button
-            onClick={handleExport}
-            disabled={actionLoading}
+          <button onClick={handleExport} disabled={actionLoading}
             style={{
-              padding: '8px 16px', fontSize: '13px', backgroundColor: 'var(--accent)',
-              color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer',
-              opacity: actionLoading ? 0.6 : 1,
-            }}
-          >
+              padding: '8px 14px', fontSize: '13px',
+              backgroundColor: 'var(--bg-glass)', color: 'var(--text-primary)',
+              border: '1px solid var(--border-default)', borderRadius: '8px', cursor: 'pointer',
+              opacity: actionLoading ? 0.6 : 1, transition: 'all 0.15s',
+            }}>
             {t('memory.btnExport')}
           </button>
-          <button
-            onClick={handleHygiene}
-            disabled={actionLoading}
+          <button onClick={handleHygiene} disabled={actionLoading}
             style={{
-              padding: '8px 16px', fontSize: '13px', backgroundColor: 'var(--warning)',
-              color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer',
-              opacity: actionLoading ? 0.6 : 1,
-            }}
-          >
+              padding: '8px 14px', fontSize: '13px',
+              backgroundColor: 'var(--warning-bg)', color: 'var(--warning)',
+              border: '1px solid var(--warning)', borderRadius: '8px', cursor: 'pointer',
+              opacity: actionLoading ? 0.6 : 1, transition: 'all 0.15s',
+            }}>
             {t('memory.btnClean')}
           </button>
         </div>
@@ -285,11 +278,11 @@ export default function MemoryPage() {
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: '12px', marginBottom: '20px',
       }}>
-        <MiniCard label={t('memory.statCount')} value={memories.length} color="#8b5cf6" icon="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2 M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2z" />
-        <MiniCard label={t('memory.statVectors')} value={stats.vectorCount} color="#f59e0b" icon="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5" />
-        <MiniCard label={t('memory.statSessions')} value={stats.sessionCount} color="#3b82f6" icon="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        <MiniCard label={t('memory.statMessages')} value={stats.messageCount} color="#10b981" icon="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6" />
-        <MiniCard label={t('memory.statEmbeddingCache')} value={stats.embeddingCacheCount} color="#06b6d4" icon="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        <MiniCard label={t('memory.statCount')} value={memories.length} color="var(--accent-2-text)" icon="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2 M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2z" />
+        <MiniCard label={t('memory.statVectors')} value={stats.vectorCount} color="var(--accent-3-text)" icon="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5" />
+        <MiniCard label={t('memory.statSessions')} value={stats.sessionCount} color="var(--text-primary)" icon="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        <MiniCard label={t('memory.statMessages')} value={stats.messageCount} color="var(--accent-2-text)" icon="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6" />
+        <MiniCard label={t('memory.statEmbeddingCache')} value={stats.embeddingCacheCount} color="var(--accent-3-text)" icon="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
       </div>
 
       {/* 记忆列表 - 按分组 */}

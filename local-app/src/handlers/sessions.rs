@@ -10,6 +10,32 @@ use crate::AppState;
 use super::helpers::{load_providers, find_provider_for_model, resolve_model_context_window, rotate_api_key};
 
 /// 发送消息并通过事件流推送 token（支持 Failover）
+// 发送消息幂等缓存：(session_id, hash(msg)) → 过期时间
+// 3 秒窗口内同 session 同消息请求被拒绝（防止 UI 双击、网络抖动重发）
+static SEND_DEDUPE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+const DEDUPE_WINDOW_SECS: u64 = 3;
+
+fn check_send_dedupe(session_id: &str, message: &str) -> Result<(), String> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    message.hash(&mut hasher);
+    let key = format!("{}:{:x}", session_id, hasher.finish());
+
+    let cache = SEND_DEDUPE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        let now = std::time::Instant::now();
+        // 清过期
+        map.retain(|_, t| now.duration_since(*t).as_secs() < DEDUPE_WINDOW_SECS);
+        if let Some(last) = map.get(&key) {
+            if now.duration_since(*last).as_secs() < DEDUPE_WINDOW_SECS {
+                return Err("重复发送已拒绝（3 秒内相同消息）".to_string());
+            }
+        }
+        map.insert(key, now);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn send_message(
     app: tauri::AppHandle,
@@ -19,6 +45,8 @@ pub async fn send_message(
     message: String,
     _attachments: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
+    // 3 秒幂等窗口防重复发送
+    check_send_dedupe(&session_id, &message)?;
     // 读取 Agent 信息（含 config 用于 failover）
     let agent = {
         let agents = state.orchestrator.list_agents().await?;
@@ -392,12 +420,23 @@ pub async fn cleanup_system_sessions(
     keep_days: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     let pool = state.orchestrator.pool();
+    // 允许 keep_days=0（立即清理全部系统会话）
     let days = keep_days.unwrap_or(7);
-    let cutoff = chrono::Utc::now().timestamp_millis() - (days * 86_400_000);
+    let cutoff = if days == 0 {
+        // 未来的时间戳，让所有 created_at < cutoff 都匹配
+        chrono::Utc::now().timestamp_millis() + 86_400_000
+    } else {
+        chrono::Utc::now().timestamp_millis() - (days * 86_400_000)
+    };
 
-    // 查找旧的系统会话（cron-/heartbeat-/[cron]/[heartbeat] 开头）
+    // 系统会话识别：cron / heartbeat / subagent / cross-agent / cli-*
     let old_sessions: Vec<(String,)> = sqlx::query_as(
-        "SELECT id FROM chat_sessions WHERE agent_id = ? AND (title LIKE 'cron-%' OR title LIKE '[cron]%' OR title LIKE 'heartbeat-%' OR title LIKE '[heartbeat]%') AND created_at < ?"
+        "SELECT id FROM chat_sessions WHERE agent_id = ? AND (\
+            title LIKE 'cron-%' OR title LIKE '[cron]%' \
+            OR title LIKE 'heartbeat-%' OR title LIKE '[heartbeat]%' \
+            OR title LIKE '[subagent]%' OR title LIKE '[cross-agent]%' \
+            OR title LIKE 'cli-infer-%' OR title = 'cli-session' \
+        ) AND created_at < ?"
     )
     .bind(&agent_id).bind(cutoff)
     .fetch_all(pool).await
@@ -473,12 +512,117 @@ pub async fn delete_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
+    // 先取消可能正在进行的流式生成，避免删除后仍写入孤儿消息
+    if state.orchestrator.cancel_session(&session_id) {
+        // 让流 loop 有机会观察到 cancel 并退出（不阻塞太久）
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
     memory::conversation::delete_session(state.orchestrator.pool(), &session_id)
         .await
-        .map_err(|e| format!("删除会话失败: {}", e))
+        .map_err(|e| format!("删除会话失败: {}", e))?;
+    // 失效消息缓存，防止被删会话的旧消息被后续请求误读
+    state.orchestrator.invalidate_session_cache(&session_id);
+    Ok(())
 }
 
-/// 压缩会话上下文
+/// 获取本地 admin server 端口（暴露给 CLI / 外部脚本查询状态）
+#[tauri::command]
+pub async fn get_admin_port(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<u16>, String> {
+    Ok(state.admin_server.get().map(|s| s.port))
+}
+
+/// OpenClaw memory-wiki: 编译最近 N 天的 REM 记忆为 WIKI.md
+#[tauri::command]
+pub async fn compile_memory_wiki(
+    _state: State<'_, Arc<AppState>>,
+    agent_id: String,
+    days: Option<usize>,
+) -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("无法获取 home 目录")?;
+    let workspace = home.join(".xianzhu").join("agents").join(&agent_id);
+    let path = crate::agent::dreaming::compile_wiki_digest(
+        &workspace.to_string_lossy(), days.unwrap_or(14)
+    ).await?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// OpenClaw character eval: 人格一致性评估
+#[tauri::command]
+pub async fn evaluate_character(
+    state: State<'_, Arc<AppState>>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let agent = state.orchestrator.list_agents().await?
+        .into_iter().find(|a| a.id == agent_id)
+        .ok_or("Agent 不存在")?;
+    let providers = load_providers(&state.db).await?;
+    let (api_type, api_key, base_url) = find_provider_for_model(&providers, &agent.model)
+        .ok_or_else(|| format!("未找到模型 {} 的供应商配置", agent.model))?;
+    let llm_config = crate::agent::llm::LlmConfig {
+        provider: api_type,
+        api_key,
+        model: agent.model.clone(),
+        base_url: if base_url.is_empty() { None } else { Some(base_url) },
+        temperature: Some(0.2),
+        max_tokens: Some(512),
+        thinking_level: None,
+    };
+    let result = crate::agent::character_eval::evaluate_character(
+        state.db.pool(), &agent_id, &agent.system_prompt, &llm_config, 48, 30
+    ).await?;
+    Ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+}
+
+/// OpenClaw #63273/#63297: 手动触发 Dreaming / REM 记忆整理
+#[tauri::command]
+pub async fn run_dreaming(
+    state: State<'_, Arc<AppState>>,
+    agent_id: String,
+    phase: Option<String>,  // "light" | "rem"，默认 light
+) -> Result<serde_json::Value, String> {
+    use crate::agent::dreaming::{DreamPhase, run_dream_phase};
+    let phase_enum = match phase.as_deref() {
+        Some("rem") => DreamPhase::RemSleep,
+        _ => DreamPhase::LightSleep,
+    };
+    let agent_model = {
+        let agents = state.orchestrator.list_agents().await?;
+        agents.into_iter()
+            .find(|a| a.id == agent_id)
+            .map(|a| a.model)
+            .ok_or("Agent 不存在")?
+    };
+    let providers = load_providers(&state.db).await?;
+    let (api_type, api_key, base_url) = find_provider_for_model(&providers, &agent_model)
+        .ok_or_else(|| format!("未找到模型 {} 的供应商配置", agent_model))?;
+
+    let llm_config = crate::agent::llm::LlmConfig {
+        provider: api_type,
+        api_key,
+        model: agent_model,
+        base_url: if base_url.is_empty() { None } else { Some(base_url) },
+        temperature: Some(0.3),
+        max_tokens: Some(2048),
+        thinking_level: None,
+    };
+
+    // 解析 agent workspace
+    let home = dirs::home_dir().ok_or("无法获取 home 目录")?;
+    let workspace = home.join(".xianzhu").join("agents").join(&agent_id);
+    let workspace_str = workspace.to_string_lossy().to_string();
+
+    match run_dream_phase(state.db.pool(), &agent_id, &workspace_str, phase_enum, &llm_config).await {
+        Ok((phase_name, path, summary)) => Ok(serde_json::json!({
+            "phase": phase_name,
+            "path": path.to_string_lossy(),
+            "summary": summary,
+        })),
+        Err(e) => Err(e),
+    }
+}
+
 #[tauri::command]
 pub async fn compact_session(
     state: State<'_, Arc<AppState>>,
@@ -733,6 +877,8 @@ pub async fn edit_message(
     //    所以只做 chat_messages 的操作即可（conversations 表是旧格式兼容）
 
     log::info!("编辑消息: session={} seq={} new_content_len={}", session_id, message_seq, new_content.len());
+    // 失效消息缓存，否则下轮请求会从 10s TTL 缓存读到旧消息
+    state.orchestrator.invalidate_session_cache(&session_id);
     Ok(())
 }
 
@@ -755,6 +901,7 @@ pub async fn regenerate_response(
         .map_err(|e| format!("删除消息失败: {}", e))?;
 
     log::info!("重新生成回复: session={} 删除 seq >= {}", session_id, after_seq);
+    state.orchestrator.invalidate_session_cache(&session_id);
     Ok(())
 }
 
@@ -1122,6 +1269,7 @@ pub async fn fork_from_message(
     // fork 点之后的消息标记为旧分支（保留不删，用于切换回来）
     // 新消息将以 branch_id 写入
     log::info!("创建分支: session={}, fork_at_seq={}, branch={}", session_id, message_seq, branch_id);
+    state.orchestrator.invalidate_session_cache(&session_id);
 
     Ok(serde_json::json!({
         "branchId": branch_id,
@@ -1171,6 +1319,7 @@ pub async fn switch_branch(
         .execute(pool).await.map_err(|e| format!("切换分支失败: {}", e))?;
 
     log::info!("切换分支: session={}, branch={}", session_id, branch_id);
+    state.orchestrator.invalidate_session_cache(&session_id);
     Ok(format!("已切换到分支: {}", branch_id))
 }
 

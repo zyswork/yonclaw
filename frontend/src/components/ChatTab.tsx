@@ -19,6 +19,8 @@ import { useVoiceInput } from '../hooks/useVoiceInput'
 import { useVoiceOutput } from '../hooks/useVoiceOutput'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import Select from './Select'
+import { prettyModel } from '../utils/pretty-model'
+import { estimateTokens, estimateCostUsd, formatCost } from '../utils/token-estimate'
 
 // 初始化 Mermaid
 mermaid.initialize({
@@ -42,7 +44,8 @@ const codeBlockRenderer: import('marked').MarkedExtension = {
         .replace(/>/g, '&gt;')
       const langLabel = lang ? `<span class="code-lang">${lang}</span>` : ''
       const copyBtn = `<button class="code-copy-btn">Copy</button>`
-      return `<div class="code-block-wrapper"><div class="code-block-header">${langLabel}${copyBtn}</div><pre><code class="language-${lang || 'text'}">${escaped}</code></pre></div>`
+      const canvasBtn = `<button class="code-canvas-btn" data-lang="${lang || 'text'}">Canvas</button>`
+      return `<div class="code-block-wrapper"><div class="code-block-header">${langLabel}${canvasBtn}${copyBtn}</div><pre><code class="language-${lang || 'text'}">${escaped}</code></pre></div>`
     },
   },
 }
@@ -330,6 +333,59 @@ function extractMediaFromText(text: string): React.ReactNode[] {
     } catch {}
   }
 
+  // 解析 diff 标记: <!--diff:{"file":"...","old":"...","new":"..."}-->
+  const diffTagRegex = /<!--diff:(.*?)-->/g
+  let diffMatch
+  while ((diffMatch = diffTagRegex.exec(text)) !== null) {
+    try {
+      const data = JSON.parse(diffMatch[1])
+      const fileName = (data.file || '').split('/').pop()
+      if (data.old && data.new) {
+        // inline diff: old → new
+        const oldLines = data.old.split('\\n')
+        const newLines = data.new.split('\\n')
+        elements.push(
+          <div key={`diff-${diffMatch.index}`} style={{
+            marginTop: 8, borderRadius: 8, overflow: 'hidden',
+            border: '1px solid var(--border-subtle)', fontSize: 12, fontFamily: 'monospace',
+          }}>
+            <div style={{ padding: '4px 10px', background: 'var(--bg-glass)', borderBottom: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-muted)' }}>
+              {fileName}
+            </div>
+            <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {oldLines.map((line: string, i: number) => (
+                <div key={`old-${i}`} style={{ padding: '1px 10px', background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>- {line}</div>
+              ))}
+              {newLines.map((line: string, i: number) => (
+                <div key={`new-${i}`} style={{ padding: '1px 10px', background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>+ {line}</div>
+              ))}
+            </div>
+          </div>
+        )
+      } else if (data.patch) {
+        // unified diff patch
+        const lines = data.patch.split('\\n')
+        elements.push(
+          <div key={`patch-${diffMatch.index}`} style={{
+            marginTop: 8, borderRadius: 8, overflow: 'hidden',
+            border: '1px solid var(--border-subtle)', fontSize: 12, fontFamily: 'monospace',
+          }}>
+            <div style={{ padding: '4px 10px', background: 'var(--bg-glass)', borderBottom: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-muted)' }}>
+              {fileName} (patch)
+            </div>
+            <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {lines.map((line: string, i: number) => {
+                const bg = line.startsWith('+') ? 'rgba(34,197,94,0.1)' : line.startsWith('-') ? 'rgba(239,68,68,0.1)' : 'transparent'
+                const color = line.startsWith('+') ? '#4ade80' : line.startsWith('-') ? '#f87171' : 'var(--text-primary)'
+                return <div key={i} style={{ padding: '1px 10px', background: bg, color }}>{line}</div>
+              })}
+            </div>
+          </div>
+        )
+      }
+    } catch {}
+  }
+
   // 解析执行进度标记: <!--exec:{"tool":"xxx","index":1,"total":3,"status":"running"}-->
   const execTagRegex = /<!--exec:(.*?)-->/g
   const execSteps: { tool: string; index: number; total: number; status: string }[] = []
@@ -357,6 +413,62 @@ function extractMediaFromText(text: string): React.ReactNode[] {
         ))}
       </div>
     )
+  }
+
+  // OpenClaw #64104: 助手指令 embed tag
+  // <!--embed:{"type":"url|iframe|quote","src":"...","title":"..."}-->
+  const embedTagRegex = /<!--embed:(.*?)-->/g
+  let embedMatch
+  while ((embedMatch = embedTagRegex.exec(text)) !== null) {
+    try {
+      const data = JSON.parse(embedMatch[1])
+      const { type: embedType, src, title } = data
+      if (embedType === 'url' && src) {
+        elements.push(
+          <div key={`embed-url-${embedMatch.index}`} style={{
+            marginTop: 8, padding: '10px 12px', borderRadius: 8,
+            background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+            display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
+          }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {title && <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>}
+              <a href={src} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-accent)', fontSize: 11, wordBreak: 'break-all' }}>
+                {src}
+              </a>
+            </div>
+          </div>
+        )
+      } else if (embedType === 'iframe' && src) {
+        elements.push(
+          <div key={`embed-iframe-${embedMatch.index}`} style={{
+            marginTop: 8, borderRadius: 8, overflow: 'hidden',
+            border: '1px solid var(--border-subtle)',
+          }}>
+            {title && (
+              <div style={{ padding: '6px 10px', background: 'var(--bg-glass)', fontSize: 11, color: 'var(--text-muted)' }}>
+                {title}
+              </div>
+            )}
+            <iframe src={src} style={{ width: '100%', height: 360, border: 'none' }} sandbox="allow-scripts allow-same-origin" />
+          </div>
+        )
+      } else if (embedType === 'quote' && (data.text || data.content)) {
+        elements.push(
+          <blockquote key={`embed-quote-${embedMatch.index}`} style={{
+            marginTop: 8, padding: '8px 14px', borderLeft: '3px solid var(--accent)',
+            background: 'var(--bg-glass)', borderRadius: '0 6px 6px 0',
+            fontSize: 13, color: 'var(--text-secondary)', fontStyle: 'italic',
+          }}>
+            {data.text || data.content}
+            {data.source && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'normal' }}>— {data.source}</div>}
+          </blockquote>
+        )
+      }
+    } catch {}
   }
 
   // fallback: 检测音频文件路径（兼容旧消息，不重复）
@@ -1016,7 +1128,9 @@ function ToolGroupCard({ messages, groupKey, expandedTools, toggleTool }: {
 const isSystemSession = (title: string) =>
   title.startsWith('cron-') || title.startsWith('[cron]') ||
   title.startsWith('heartbeat-') || title.startsWith('[heartbeat]') ||
-  title.startsWith('[group]')
+  title.startsWith('[group]') ||
+  title.startsWith('[subagent]') || title.startsWith('[cross-agent]') ||
+  title.startsWith('cli-infer-') || title.startsWith('cli-session')
 
 const actionBtnStyle: React.CSSProperties = {
   background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 6,
@@ -1043,28 +1157,35 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   // Python 沙箱状态检查（首次挂载时检查一次）
   useEffect(() => {
     let cancelled = false
+    let pollId: ReturnType<typeof setInterval> | null = null
+    let stopId: ReturnType<typeof setTimeout> | null = null
     const check = async () => {
       try {
         const status = await invoke<{ status: string }>('get_python_sandbox_status')
         if (cancelled) return
         if (status.status === 'initializing') {
           toast.info('Python 环境准备中，首次使用需要约 10 秒...')
-          // 轮询直到就绪
-          const poll = setInterval(async () => {
+          pollId = setInterval(async () => {
+            if (cancelled) return
             try {
               const s = await invoke<{ status: string }>('get_python_sandbox_status')
+              if (cancelled) return
               if (s.status === 'ready') {
-                clearInterval(poll)
+                if (pollId) clearInterval(pollId)
                 toast.success('Python 环境已就绪')
               }
             } catch {}
           }, 5000)
-          setTimeout(() => clearInterval(poll), 120000) // 2 分钟后停止轮询
+          stopId = setTimeout(() => { if (pollId) clearInterval(pollId) }, 120000)
         }
       } catch {}
     }
     check()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (pollId) clearInterval(pollId)
+      if (stopId) clearTimeout(stopId)
+    }
   }, [])
 
   // 切换 Agent 时重置状态，避免旧 Agent 的对话内容残留
@@ -1161,7 +1282,6 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         target.textContent = 'Copied'
         setTimeout(() => { target.textContent = 'Copy' }, 1500)
       }).catch(() => {
-        // 回退：选中文本
         const range = document.createRange()
         const codeEl = wrapper?.querySelector('code')
         if (codeEl) {
@@ -1171,6 +1291,17 @@ export default function ChatTab({ agentId }: { agentId: string }) {
           sel?.addRange(range)
         }
       })
+    }
+    // Canvas 按钮：在侧边面板中打开代码
+    if (target.classList.contains('code-canvas-btn')) {
+      e.preventDefault()
+      const wrapper = target.closest('.code-block-wrapper')
+      const code = wrapper?.querySelector('code')?.textContent || ''
+      const lang = target.getAttribute('data-lang') || 'text'
+      setCanvasContent(code)
+      setCanvasLang(lang)
+      setCanvasEditing(false)
+      setCanvasOpen(true)
     }
   }, [])
   // 编辑消息状态
@@ -1202,6 +1333,17 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   // 语音错误提示
   useEffect(() => { if (voiceError) toast.error(voiceError) }, [voiceError])
 
+  // 连续语音对话模式
+  const [voiceLoopMode, setVoiceLoopMode] = useState(false)
+  const voiceLoopRef = useRef(false)
+  useEffect(() => { voiceLoopRef.current = voiceLoopMode }, [voiceLoopMode])
+
+  // Canvas 面板状态
+  const [canvasOpen, setCanvasOpen] = useState(false)
+  const [canvasContent, setCanvasContent] = useState('')
+  const [canvasLang, setCanvasLang] = useState('text')
+  const [canvasEditing, setCanvasEditing] = useState(false)
+
   // 多 Agent 面板状态
   const [showAgentPanel, setShowAgentPanel] = useState(false)
   const [otherAgents, setOtherAgents] = useState<Agent[]>([])
@@ -1211,16 +1353,31 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   const [a2aTarget, setA2aTarget] = useState('')
   const [a2aTopic, setA2aTopic] = useState('')
   const [mailboxMsgs, setMailboxMsgs] = useState<any[]>([])
+  // provider_id → name 映射（用于在多 Agent 面板美化模型名）
+  const [providerNameMap, setProviderNameMap] = useState<Record<string, string>>({})
+  // 当前 Agent 的模型名（用于输入框 token 成本估算）
+  const [currentModel, setCurrentModel] = useState<string>('')
+  useEffect(() => {
+    if (!agentId) return
+    invoke<Agent[]>('list_agents').then(list => {
+      const me = list.find(a => a.id === agentId)
+      if (me) setCurrentModel(me.model)
+    }).catch(() => {})
+  }, [agentId])
 
   // 加载其他 Agent 列表和子 Agent
   const loadAgentPanel = useCallback(async () => {
     try {
-      const [agents, subs] = await Promise.all([
+      const [agents, subs, provs] = await Promise.all([
         invoke<Agent[]>('list_agents'),
         invoke<SubagentRecord[]>('list_subagents', { agentId }),
+        invoke<Array<{ id?: string; name?: string }>>('get_providers').catch(() => []),
       ])
       setOtherAgents(agents.filter(a => a.id !== agentId))
       setActiveSubagents(subs || [])
+      const map: Record<string, string> = {}
+      for (const p of (provs || [])) { if (p.id && p.name) map[p.id] = p.name }
+      setProviderNameMap(map)
     } catch (e) { console.error('loadAgentPanel:', e) }
     // 加载邮箱
     try {
@@ -1377,7 +1534,8 @@ export default function ChatTab({ agentId }: { agentId: string }) {
   }
 
   // 拖拽处理
-  const handleDrop = (e: React.DragEvent) => {
+  const DOC_EXTS = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'xlsm', 'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'toml', 'log']
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     if (e.dataTransfer.files.length > 0) {
@@ -1386,11 +1544,40 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       const others = files.filter(f => !f.type.startsWith('image/'))
       // 图片：添加到图片附件
       if (images.length > 0) addImageFiles(images)
-      // 非图片文件：将文件路径插入输入框，让 agent 用 doc_parse/file_read 处理
+      // 非图片文件：按后缀决定是自动抽取正文还是仅插入路径
       if (others.length > 0) {
-        const paths = others.map(f => (f as any).path || f.name).join('\n')
-        setInput(prev => prev ? `${prev}\n${paths}` : paths)
-        toast.info(`已添加 ${others.length} 个文件路径`)
+        const docs: File[] = []
+        const nonDocs: File[] = []
+        for (const f of others) {
+          const ext = f.name.split('.').pop()?.toLowerCase() || ''
+          if (DOC_EXTS.includes(ext)) docs.push(f)
+          else nonDocs.push(f)
+        }
+        // 可解析文档：调 parse_document 自动抽取
+        for (const f of docs) {
+          const path = (f as any).path || f.name
+          if (!(f as any).path) continue // 浏览器模式下拿不到真实路径，跳过
+          try {
+            toast.info(`正在解析 ${f.name}...`)
+            const text = await invoke<string>('parse_document', {
+              filePath: path,
+              maxChars: 30000,
+            })
+            const block = `[文档: ${f.name}]\n${text}\n[文档结束]`
+            setInput(prev => prev ? `${prev}\n\n${block}` : block)
+            toast.success(`已抽取 ${f.name}（${text.length} 字符）`)
+          } catch (err) {
+            toast.error(`解析 ${f.name} 失败: ${err}`)
+            // 降级：插入路径
+            setInput(prev => prev ? `${prev}\n${path}` : path)
+          }
+        }
+        // 不支持的文件类型：仅插入路径
+        if (nonDocs.length > 0) {
+          const paths = nonDocs.map(f => (f as any).path || f.name).join('\n')
+          setInput(prev => prev ? `${prev}\n${paths}` : paths)
+          toast.info(`已添加 ${nonDocs.length} 个文件路径`)
+        }
       }
     }
   }
@@ -1409,8 +1596,14 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       const result = await invoke<Session[]>('list_sessions', { agentId })
       if (sessionLoadSeqRef.current !== seq) return // 过期响应，丢弃
       setSessions(result)
-      if (result.length > 0 && !activeSession) {
-        setActiveSession(result[0].id)
+      // OpenClaw #59611: 保留用户选中的会话；只有当它不存在时才回落到默认
+      if (result.length > 0) {
+        const stillExists = activeSession && result.some(s => s.id === activeSession)
+        if (!activeSession || !stillExists) {
+          setActiveSession(result[0].id)
+        }
+      } else if (activeSession) {
+        setActiveSession('')
       }
     } catch (e) {
       if (sessionLoadSeqRef.current !== seq) return
@@ -1446,8 +1639,13 @@ export default function ChatTab({ agentId }: { agentId: string }) {
     },
   })
 
-  const loadMessages = useCallback(async () => {
+  const streamingRef = useRef(false)
+  useEffect(() => { streamingRef.current = streaming }, [streaming])
+
+  const loadMessages = useCallback(async (opts?: { force?: boolean }) => {
     if (!activeSession) return
+    // OpenClaw #66997: streaming 期间跳过重载（除非显式 force），避免 optimistic user card 被 DB 重新加载覆盖导致闪烁
+    if (streamingRef.current && !opts?.force) return
     const seq = ++messageLoadSeqRef.current
     try {
       const structured = await invoke<any[]>('load_structured_messages', { sessionId: activeSession, limit: displayCount })
@@ -1456,6 +1654,9 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         const parsed: Message[] = []
         for (const m of structured) {
           if (m.role === 'system') continue
+          // OpenClaw #65458: 隐藏内部 transcript-repair 等合成消息
+          const rawContent = typeof m.content === 'string' ? m.content : ''
+          if (rawContent.startsWith('[系统提示]') || rawContent.startsWith('[System]')) continue
           if (m.role === 'tool') {
             parsed.push({ role: 'tool', content: m.content || '', toolName: m.name || t('common.tools'), seq: m.seq })
           } else if (m.role === 'assistant' && m.tool_calls) {
@@ -1475,7 +1676,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
       } else {
         const msgs = await invoke<Message[]>('get_session_messages', { agentId, sessionId: activeSession })
         if (messageLoadSeqRef.current !== seq) return // 二次检查（fallback 路径）
-        setMessages(msgs)
+        setMessages(msgs || [])
       }
     } catch (e) {
       if (messageLoadSeqRef.current !== seq) return
@@ -1594,13 +1795,17 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         } catch {}
       }
       // 语音朗读：自动朗读最后一条 AI 回复
-      if (voiceEnabledRef.current) {
+      if (voiceEnabledRef.current || voiceLoopRef.current) {
         setMessages(prev => {
           const last = prev.length > 0 ? prev[prev.length - 1] : null
           if (last && last.role === 'assistant' && last.content) {
-            speakRef.current(typeof last.content === 'string' ? last.content : String(last.content))
+            const text = typeof last.content === 'string' ? last.content : String(last.content)
+            // 连续语音模式：朗读完自动开始录音
+            speakRef.current(text, voiceLoopRef.current ? () => {
+              if (voiceLoopRef.current) startRecording()
+            } : undefined)
           }
-          return prev // 不修改 messages
+          return prev
         })
       }
       // 从 DB 重新加载结构化消息（消除 streaming 临时状态与 DB 数据的差异，避免闪烁）
@@ -1705,6 +1910,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
 
   const deleteSession = async (sessionId: string) => {
     if (!await confirm(t('agentDetail.confirmDeleteSession'))) return
+    const victim = sessions.find(s => s.id === sessionId)
     try {
       await invoke('delete_session', { sessionId })
       setSessions((prev) => prev.filter((s) => s.id !== sessionId))
@@ -1712,6 +1918,7 @@ export default function ChatTab({ agentId }: { agentId: string }) {
         setActiveSession('')
         setMessages([])
       }
+      toast.success(`已删除"${victim?.title || ''}"（系统 DB 每周自动备份，如需恢复可从 backups/ 目录找）`)
     } catch (e) { toast.error(friendlyError(e)) }
   }
 
@@ -1871,6 +2078,46 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
           return ''
         }
         return t('agentDetail.errorNoSession')
+
+      // OpenClaw #63273/#63297: Dreaming 记忆整理
+      case 'dream':
+      case 'dreaming': {
+        const phase = args.trim().toLowerCase() === 'rem' ? 'rem' : 'light'
+        try {
+          const result = await invoke<{phase: string; path: string; summary: string}>(
+            'run_dreaming', { agentId, phase }
+          )
+          return `**[Dreaming ${result.phase}]** ✨ 已写入 \`${result.path.split('/').pop()}\`\n\n${result.summary}`
+        } catch (e) {
+          return `⚠️ ${t('chatPage.dreamingFailed') || 'Dreaming 失败'}: ${e}`
+        }
+      }
+
+      // Character eval（人格一致性评估）
+      case 'character':
+      case 'eval': {
+        try {
+          const result = await invoke<{consistency_score: number; drift_notes: string; sampled_turns: number}>(
+            'evaluate_character', { agentId }
+          )
+          const pct = (result.consistency_score * 100).toFixed(1)
+          const notes = result.drift_notes.trim() || '（无明显偏离）'
+          return `**[Character Eval]** 一致性 ${pct}%（抽样 ${result.sampled_turns} 轮）\n\n${notes}`
+        } catch (e) {
+          return `⚠️ ${t('chatPage.characterEvalFailed') || '评估失败'}: ${e}`
+        }
+      }
+
+      // memory-wiki 编译
+      case 'wiki': {
+        const days = Math.max(1, Math.min(60, parseInt(args.trim()) || 14))
+        try {
+          const path = await invoke<string>('compile_memory_wiki', { agentId, days })
+          return `**[Memory Wiki]** ✨ 已合并最近 ${days} 天的 REM 记忆\n\n文件：\`${path}\``
+        } catch (e) {
+          return `⚠️ ${t('chatPage.wikiFailed') || 'Wiki 编译失败'}: ${e}`
+        }
+      }
 
       case 'rename': {
         if (!args.trim()) return t('chatPage.renameUsage')
@@ -2096,11 +2343,12 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
     }
   }
 
-  const handleSend = async () => {
-    if ((!input.trim() && pendingImages.length === 0) || streaming || !activeSession) return
+  const handleSend = async (overrideInput?: string) => {
+    const effectiveInput = overrideInput !== undefined ? overrideInput : input
+    if ((!effectiveInput.trim() && pendingImages.length === 0) || streaming || !activeSession) return
     if (sendingRef.current) return
     sendingRef.current = true
-    const userMsg = input.trim()
+    const userMsg = effectiveInput.trim()
     setInput('')
 
     // 把待发送图片拼为 attachment 标记
@@ -2361,7 +2609,8 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                     e.stopPropagation()
                     if (!await showConfirm(t('agentDetailSub.cleanupConfirm'))) return
                     try {
-                      const r = await invoke<any>('cleanup_system_sessions', { agentId, keepDays: 7 })
+                      // keepDays=0 立即清理全部（subagent/cron/cli/heartbeat）
+                      const r = await invoke<any>('cleanup_system_sessions', { agentId, keepDays: 0 })
                       toast.success(t('agentDetailSub.cleanupDone', { sessions: r.deletedSessions, messages: r.deletedMessages }))
                       loadSessions()
                     } catch (err) { toast.error(t('agentDetailSub.cleanupFailed') + ': ' + err) }
@@ -3035,6 +3284,9 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                 ['/providers', 'List LLM providers', false],
                 ['/memory', 'Query memory', false],
                 ['/compact', 'Compress history', false],
+                ['/dream', 'Dreaming memory (light|rem)', true],
+                ['/wiki', 'Compile memory wiki (days)', true],
+                ['/character', 'Evaluate persona consistency', false],
                 ['/clear', 'Clear session', false],
                 ['/reset', 'Reset agent', false],
                 ['/export', 'Export session', false],
@@ -3145,14 +3397,21 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                   onClick={async () => {
                     if (isRecording) {
                       const text = await stopRecording()
-                      if (text) setInput(prev => prev ? prev + ' ' + text : text)
+                      if (text) {
+                        if (voiceLoopRef.current) {
+                          // 连续语音模式：直接发送
+                          handleSend(text)
+                        } else {
+                          setInput(prev => prev ? prev + ' ' + text : text)
+                        }
+                      }
                     } else if (isTranscribing) {
                       // 识别中不响应
                     } else {
                       startRecording()
                     }
                   }}
-                  onContextMenu={(e) => { e.preventDefault(); if (isRecording) cancelRecording() }}
+                  onContextMenu={(e) => { e.preventDefault(); if (isRecording) { cancelRecording(); if (voiceLoopRef.current) setVoiceLoopMode(false) } }}
                   disabled={streaming}
                   title={isRecording ? t('voice.stopRecording') : isTranscribing ? t('voice.transcribing') : t('voice.startRecording')}
                   style={{
@@ -3184,21 +3443,36 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                   )}
                 </button>
                 <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onCompositionStart={() => { composingRef.current = true }}
-                  onCompositionEnd={() => {
-                    // Windows WebView2 事件顺序：compositionEnd → keyDown
-                    // 延迟重置，确保紧接的 keyDown 还能检测到组合状态
-                    setTimeout(() => { composingRef.current = false }, 50)
-                  }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); handleSend() } }}
-                  onPaste={handlePaste}
-                  placeholder={t('agentDetail.inputHint')}
-                  disabled={streaming}
-                  style={{ flex: 1, padding: '10px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14 }}
-                />
+                <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                  <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onCompositionStart={() => { composingRef.current = true }}
+                    onCompositionEnd={() => {
+                      setTimeout(() => { composingRef.current = false }, 50)
+                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); handleSend() } }}
+                    onPaste={handlePaste}
+                    placeholder={t('agentDetail.inputHint')}
+                    disabled={streaming}
+                    style={{ width: '100%', padding: '10px 110px 10px 10px', border: '1px solid var(--border-subtle)', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }}
+                  />
+                  {/* 输入 token/成本实时预估（右下角） */}
+                  {input.length > 4 && (() => {
+                    const tokens = estimateTokens(input)
+                    const cost = estimateCostUsd(input, currentModel)
+                    const costStr = formatCost(cost)
+                    return (
+                      <div style={{
+                        position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                        fontSize: 10, color: 'var(--text-muted)', pointerEvents: 'none',
+                        background: 'var(--bg-glass)', padding: '1px 6px', borderRadius: 4, opacity: 0.8,
+                      }}>
+                        ~{tokens} tok{costStr ? ` · ${costStr}` : ''}
+                      </div>
+                    )
+                  })()}
+                </div>
                 <button
                   onClick={handleSend}
                   disabled={streaming || (!input.trim() && pendingImages.length === 0)}
@@ -3239,6 +3513,45 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                     )}
                   </svg>
                 </button>
+                {/* 连续语音对话模式按钮 */}
+                <button
+                  onClick={() => {
+                    const next = !voiceLoopMode
+                    setVoiceLoopMode(next)
+                    if (next) {
+                      setVoiceEnabled(true)
+                      toast.success(t('voice.loopModeOn') || 'Voice loop mode ON')
+                      if (!isRecording && !streaming) startRecording()
+                    } else {
+                      if (isRecording) cancelRecording()
+                      stopSpeaking()
+                      toast.success(t('voice.loopModeOff') || 'Voice loop mode OFF')
+                    }
+                  }}
+                  title={voiceLoopMode ? (t('voice.loopModeOn') || 'Voice Loop ON') : (t('voice.loopModeOff') || 'Voice Loop OFF')}
+                  style={{
+                    padding: '8px', backgroundColor: voiceLoopMode ? '#8b5cf6' : 'transparent',
+                    border: voiceLoopMode ? '1px solid #8b5cf6' : '1px solid var(--border-subtle)', borderRadius: 6,
+                    cursor: 'pointer', lineHeight: 1,
+                    color: voiceLoopMode ? '#fff' : 'var(--text-secondary)', flexShrink: 0,
+                    transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 36, height: 36, position: 'relative',
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 1l4 4-4 4"/>
+                    <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                    <path d="M7 23l-4-4 4-4"/>
+                    <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                  </svg>
+                  {voiceLoopMode && (
+                    <span style={{
+                      position: 'absolute', top: -2, right: -2, width: 8, height: 8,
+                      borderRadius: '50%', backgroundColor: '#22c55e',
+                      animation: 'pulse 1.5s ease-in-out infinite',
+                    }} />
+                  )}
+                </button>
                 {/* 多 Agent 面板切换按钮 */}
                 <button
                   onClick={() => setShowAgentPanel(!showAgentPanel)}
@@ -3256,6 +3569,161 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
           </>
         )}
       </div>
+      {/* Canvas 侧边面板 */}
+      {canvasOpen && (
+        <div style={{
+          width: 420, borderLeft: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column',
+          backgroundColor: 'var(--bg-primary)', overflow: 'hidden', flexShrink: 0,
+        }}>
+          {/* Canvas 头部 */}
+          <div style={{
+            padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)',
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+            </svg>
+            <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Canvas</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 4, backgroundColor: 'var(--bg-elevated)' }}>
+              {canvasLang}
+            </span>
+            {/* 编辑/预览切换 */}
+            <button
+              onClick={() => setCanvasEditing(!canvasEditing)}
+              style={{
+                padding: '4px 8px', fontSize: 11, borderRadius: 4,
+                border: '1px solid var(--border-subtle)', cursor: 'pointer',
+                backgroundColor: canvasEditing ? 'var(--accent)' : 'transparent',
+                color: canvasEditing ? '#fff' : 'var(--text-secondary)',
+                transition: 'all 0.2s',
+              }}
+            >
+              {canvasEditing ? t('common.preview') || 'Preview' : t('common.edit') || 'Edit'}
+            </button>
+            {/* 复制 */}
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(canvasContent)
+                toast.success(t('common.copied') || 'Copied')
+              }}
+              title={t('common.copy') || 'Copy'}
+              style={{
+                padding: '4px', border: 'none', borderRadius: 4, cursor: 'pointer',
+                backgroundColor: 'transparent', color: 'var(--text-secondary)',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+            {/* 下载 */}
+            <button
+              onClick={() => {
+                const ext: Record<string, string> = { javascript: 'js', typescript: 'ts', python: 'py', rust: 'rs', html: 'html', css: 'css', json: 'json', markdown: 'md', text: 'txt' }
+                const filename = `canvas.${ext[canvasLang] || canvasLang || 'txt'}`
+                const blob = new Blob([canvasContent], { type: 'text/plain' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url; a.download = filename; a.click()
+                URL.revokeObjectURL(url)
+              }}
+              title={t('common.download') || 'Download'}
+              style={{
+                padding: '4px', border: 'none', borderRadius: 4, cursor: 'pointer',
+                backgroundColor: 'transparent', color: 'var(--text-secondary)',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
+            {/* 关闭 */}
+            <button
+              onClick={() => setCanvasOpen(false)}
+              style={{
+                padding: '4px', border: 'none', borderRadius: 4, cursor: 'pointer',
+                backgroundColor: 'transparent', color: 'var(--text-muted)',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          {/* Canvas 内容 */}
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {canvasEditing ? (
+              <textarea
+                value={canvasContent}
+                onChange={e => setCanvasContent(e.target.value)}
+                spellCheck={false}
+                style={{
+                  width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none',
+                  padding: '12px 16px', fontSize: 13, lineHeight: 1.6,
+                  fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
+                  backgroundColor: 'transparent', color: 'var(--text-primary)',
+                  tabSize: 2,
+                }}
+                onKeyDown={e => {
+                  // Tab 键缩进支持（functional setState 避免 stale 闭包）
+                  if (e.key === 'Tab') {
+                    e.preventDefault()
+                    const ta = e.target as HTMLTextAreaElement
+                    const start = ta.selectionStart
+                    const end = ta.selectionEnd
+                    setCanvasContent(prev => prev.substring(0, start) + '  ' + prev.substring(end))
+                    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2 })
+                  }
+                }}
+              />
+            ) : (
+              <pre style={{
+                margin: 0, padding: '12px 16px', fontSize: 13, lineHeight: 1.6,
+                fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
+                color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                overflow: 'auto', height: '100%',
+              }}>
+                {/* 带行号显示 */}
+                {canvasContent.split('\n').map((line, idx) => (
+                  <div key={idx} style={{ display: 'flex' }}>
+                    <span style={{
+                      display: 'inline-block', width: 40, textAlign: 'right', paddingRight: 12,
+                      color: 'var(--text-muted)', opacity: 0.5, userSelect: 'none', flexShrink: 0,
+                      fontSize: 12,
+                    }}>{idx + 1}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>{line || ' '}</span>
+                  </div>
+                ))}
+              </pre>
+            )}
+          </div>
+          {/* Canvas 底部状态栏 */}
+          <div style={{
+            padding: '6px 14px', borderTop: '1px solid var(--border-subtle)',
+            display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
+            fontSize: 11, color: 'var(--text-muted)',
+          }}>
+            <span>{canvasContent.split('\n').length} {t('common.lines') || 'lines'}</span>
+            <span>{canvasContent.length} {t('common.chars') || 'chars'}</span>
+            <span style={{ flex: 1 }} />
+            {/* 插入到输入框 */}
+            <button
+              onClick={() => {
+                const wrapped = `\`\`\`${canvasLang}\n${canvasContent}\n\`\`\``
+                setInput(prev => prev ? prev + '\n' + wrapped : wrapped)
+                setCanvasOpen(false)
+                toast.success(t('canvas.insertedToInput') || 'Inserted to input')
+              }}
+              style={{
+                padding: '3px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-elevated)', cursor: 'pointer', color: 'var(--text-secondary)',
+              }}
+            >
+              {t('canvas.insertToInput') || 'Insert to Input'}
+            </button>
+          </div>
+        </div>
+      )}
       {/* 多 Agent 协作面板（右侧） */}
       {showAgentPanel && activeSession && (
         <div style={{
@@ -3341,7 +3809,7 @@ hr{border:none;border-top:1px solid #eee;margin:16px 0}
                     <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>AI</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{a.model}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }} title={a.model}>{prettyModel(a.model, providerNameMap)}</div>
                     </div>
                     <button
                       onClick={() => handleInviteAgent(a.id)}

@@ -9,6 +9,7 @@
 )]
 #![allow(dead_code)]
 
+mod admin_server;
 mod agent;
 mod backend_manager;
 mod bridge;
@@ -56,6 +57,7 @@ pub(crate) struct AppState {
     pub orchestrator: Arc<agent::Orchestrator>,
     pub scheduler: std::sync::OnceLock<scheduler::SchedulerManager>,
     pub channel_manager: std::sync::OnceLock<Arc<channels::manager::ChannelManager>>,
+    pub admin_server: std::sync::OnceLock<Arc<admin_server::AdminServer>>,
 }
 
 #[tokio::main]
@@ -78,12 +80,26 @@ async fn main() {
         let _ = std::fs::create_dir_all(&log_dir);
         let log_path = log_dir.join("xianzhu.log");
 
-        // 打开日志文件（追加模式），超过 10MB 时截断
+        // 打开日志文件（追加模式），超过 10MB 时轮转：
+        // xianzhu.log.2 ← xianzhu.log.1 ← xianzhu.log ← new
+        // 保留最近 3 份（.1 .2 .3），防止无限增长
         if log_path.exists() {
             if let Ok(meta) = std::fs::metadata(&log_path) {
                 if meta.len() > 10 * 1024 * 1024 {
-                    // 截断并写入 UTF-8 BOM（Windows 兼容）
-                    let _ = std::fs::write(&log_path, "\u{feff}");
+                    const KEEP: u32 = 3;
+                    // 删除最老的一份
+                    let oldest = log_dir.join(format!("xianzhu.log.{}", KEEP));
+                    let _ = std::fs::remove_file(&oldest);
+                    // 依次往后挪
+                    for i in (1..KEEP).rev() {
+                        let src = log_dir.join(format!("xianzhu.log.{}", i));
+                        let dst = log_dir.join(format!("xianzhu.log.{}", i + 1));
+                        if src.exists() {
+                            let _ = std::fs::rename(&src, &dst);
+                        }
+                    }
+                    let _ = std::fs::rename(&log_path, log_dir.join("xianzhu.log.1"));
+                    // 新建空日志（下面 BOM 分支会补 BOM）
                 }
             }
         }
@@ -373,7 +389,12 @@ async fn main() {
     }
 
     // 构建应用共享状态
-    let app_state = Arc::new(AppState { db, orchestrator: orchestrator.clone(), scheduler: std::sync::OnceLock::new(), channel_manager: std::sync::OnceLock::new() });
+    let app_state = Arc::new(AppState {
+        db, orchestrator: orchestrator.clone(),
+        scheduler: std::sync::OnceLock::new(),
+        channel_manager: std::sync::OnceLock::new(),
+        admin_server: std::sync::OnceLock::new(),
+    });
 
     // 创建 BackendManager 并包装为可共享的引用
     let backend_manager = Arc::new(Mutex::new(backend_manager::BackendManager::new()));
@@ -581,6 +602,36 @@ async fn main() {
                 }
             });
 
+            // 每周 DB 维护：VACUUM + ANALYZE + PRAGMA optimize
+            let pool_for_vacuum = pool_for_setup.clone();
+            tokio::spawn(async move {
+                // 启动后先等 10 分钟，避免和启动高峰争锁
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                loop {
+                    match sqlx::query("VACUUM").execute(&pool_for_vacuum).await {
+                        Ok(_) => log::info!("DB VACUUM 完成"),
+                        Err(e) => log::warn!("DB VACUUM 失败: {}", e),
+                    }
+                    let _ = sqlx::query("ANALYZE").execute(&pool_for_vacuum).await;
+                    let _ = sqlx::query("PRAGMA optimize").execute(&pool_for_vacuum).await;
+                    // 7 天一次
+                    tokio::time::sleep(std::time::Duration::from_secs(7 * 24 * 3600)).await;
+                }
+            });
+
+            // 启动本地只读 admin HTTP 服务（127.0.0.1 随机端口）
+            let pool_for_admin = pool_for_setup.clone();
+            let app_state_for_admin = app_state_for_setup.clone();
+            tokio::spawn(async move {
+                match admin_server::AdminServer::start(pool_for_admin).await {
+                    Ok(srv) => {
+                        log::info!("Admin server 已启动: http://127.0.0.1:{}/status", srv.port);
+                        let _ = app_state_for_admin.admin_server.set(srv);
+                    }
+                    Err(e) => log::warn!("Admin server 启动失败: {}", e),
+                }
+            });
+
             {
                 let mgr = Arc::new(channels::manager::ChannelManager::new(
                     pool_for_setup.clone(),
@@ -638,7 +689,7 @@ async fn main() {
             // sessions
             send_message, send_chat_only, stop_generation, get_conversations, get_session_messages,
             load_structured_messages, clear_history, create_session, list_sessions,
-            rename_session, delete_session, compact_session, cleanup_system_sessions,
+            rename_session, delete_session, compact_session, cleanup_system_sessions, run_dreaming, compile_memory_wiki, evaluate_character, get_admin_port,
             search_messages, export_session_history, get_context_usage, submit_message_feedback,
             edit_message, regenerate_response, transcribe_audio, transcribe_audio_file,
             start_voice_recording, stop_voice_recording,
@@ -663,13 +714,13 @@ async fn main() {
             // plugins
             list_plugins, list_plugin_capabilities, list_system_plugins,
             toggle_system_plugin, save_plugin_config, get_plugin_config,
-            get_agent_plugin_states, set_agent_plugin, import_external_plugin,
+            get_agent_plugin_states, set_agent_plugin, import_external_plugin, install_plugin_from_url,
             // scheduler
             create_cron_job, update_cron_job, delete_cron_job, list_cron_jobs,
             get_cron_job, trigger_cron_job, pause_cron_job, resume_cron_job,
             list_cron_runs, get_scheduler_status,
             // misc
-            save_chat_image, send_notification, backup_database, restore_database,
+            save_chat_image, send_notification, backup_database, restore_database, parse_document,
             estimate_token_cost, list_hooks, sop_list, sop_trigger, sop_runs,
             run_doctor, doctor_auto_fix, detect_browsers, open_in_browser,
             check_runtime, setup_runtime, health_check, get_token_stats, get_token_daily_stats,
@@ -687,8 +738,8 @@ async fn main() {
             get_python_sandbox_status,
             // 文件读取
             read_file_base64,
-            // 数据迁移 + 审计
-            export_app_data, import_app_data, get_audit_log,
+            // 数据迁移（get_audit_log 已在上方注册）
+            export_app_data, import_app_data,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");
@@ -708,6 +759,12 @@ async fn main() {
             // 清理编排器：取消所有活跃会话
             app_state_clone.orchestrator.cancel_all_sessions();
             log::info!("\u{2713} 编排器已清理");
+
+            // 关闭 AdminServer（通知 accept 循环退出）
+            if let Some(srv) = app_state_clone.admin_server.get() {
+                srv.shutdown_signal();
+                log::info!("\u{2713} Admin server 已关闭");
+            }
 
             // 关闭 ChannelManager
             if let Some(cm) = app_state_clone.channel_manager.get() {

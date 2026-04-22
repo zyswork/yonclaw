@@ -4,11 +4,18 @@
  * 展示：顶部统计栏、Agent 列表、最近活动 feed、系统状态、Token 趋势
  */
 
-import { useEffect, useState, useCallback, type CSSProperties } from 'react'
+import { useEffect, useState, useCallback, lazy, Suspense, type CSSProperties } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { toast } from '../hooks/useToast'
+
+// 子 tab 懒加载（聚合后：审计 / Token 监控 / 诊断 合并到仪表板）
+const TokenMonitoringPage = lazy(() => import('./TokenMonitoringPage'))
+const AuditLogPage = lazy(() => import('./AuditLogPage'))
+const DoctorPage = lazy(() => import('./DoctorPage'))
+
+type DashTab = 'overview' | 'tokens' | 'audit' | 'doctor'
 
 /* ─── 数据类型 ─────────────────────────────── */
 
@@ -39,6 +46,29 @@ interface SchedulerStats {
   enabledJobs: number
   runningRuns: number
   recentFailureRate: number
+}
+
+interface ProviderInfo {
+  id: string
+  name: string
+  apiType: string
+  // 后端 get_providers 做了脱敏：apiKey 字段被移除，只返回 masked + count
+  apiKeyMasked?: string
+  apiKeyCount?: number
+  baseUrl?: string
+  enabled: boolean
+  models?: Array<{ id: string; name?: string }>
+}
+
+/** OpenClaw #66211: Provider 认证状态分类 */
+type AuthStatus = 'ok' | 'missing' | 'oauth_expired' | 'disabled'
+
+interface AuthCheck {
+  id: string
+  name: string
+  apiType: string
+  status: AuthStatus
+  detail: string
 }
 
 /* ─── 样式常量 ─────────────────────────────── */
@@ -118,6 +148,8 @@ function SvgIcon({ name, size = 20, color }: { name: string; size?: number; colo
       return <svg {...props}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
     case 'trend':
       return <svg {...props}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+    case 'key':
+      return <svg {...props}><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
     default:
       return <svg {...props}><circle cx="12" cy="12" r="10"/></svg>
   }
@@ -132,24 +164,54 @@ export default function Dashboard() {
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [scheduler, setScheduler] = useState<SchedulerStats | null>(null)
   const [subagentCount, setSubagentCount] = useState(0)
+  const [authChecks, setAuthChecks] = useState<AuthCheck[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  // 子 tab 状态（可以通过 URL ?tab=tokens 深链）
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as DashTab) || 'overview'
+  const switchTab = (t: DashTab) => {
+    if (t === 'overview') setSearchParams({})
+    else setSearchParams({ tab: t })
+  }
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [h, c, a, sched, subs] = await Promise.all([
+      const [h, c, a, sched, subs, provs] = await Promise.all([
         invoke('health_check').catch((e) => { console.warn('health_check failed:', e); return null }),
         invoke('get_cache_stats').catch((e) => { console.warn('get_cache_stats failed:', e); return null }),
         invoke('list_agents').catch((e) => { console.warn('list_agents failed:', e); return [] }),
         invoke('get_scheduler_status').catch((e) => { console.warn('get_scheduler_status failed:', e); return null }),
         invoke('list_subagent_runs', { limit: 1 }).catch((e) => { console.warn('list_subagent_runs failed:', e); return [] }),
+        invoke<ProviderInfo[]>('get_providers').catch(() => []),
       ])
       setHealth(h as HealthData)
       setCache(c as CacheStats)
       setScheduler(sched as SchedulerStats)
       setSubagentCount((subs as unknown[])?.length || 0)
+
+      // Provider 认证状态分类
+      // 注意：后端 get_providers 把 apiKey 字段 remove 了，只返回 apiKeyMasked + apiKeyCount。
+      // 必须用 apiKeyCount / apiKeyMasked 判断，不能用 apiKey。
+      const checks: AuthCheck[] = (provs || []).map((p) => {
+        if (!p.enabled) {
+          return { id: p.id, name: p.name, apiType: p.apiType, status: 'disabled', detail: '已禁用' }
+        }
+        const hasKey = (p.apiKeyCount ?? 0) > 0 || !!(p.apiKeyMasked && p.apiKeyMasked.trim())
+        const isOAuth = p.apiKeyMasked?.startsWith('ya29.') || false
+        const isLocal = (p.baseUrl || '').includes('localhost') || p.id === 'ollama' || p.id === 'lmstudio'
+        if (!hasKey && !isLocal) {
+          return { id: p.id, name: p.name, apiType: p.apiType, status: 'missing', detail: '缺少 API Key' }
+        }
+        if (isOAuth) {
+          return { id: p.id, name: p.name, apiType: p.apiType, status: 'ok', detail: 'OAuth 已授权' }
+        }
+        return { id: p.id, name: p.name, apiType: p.apiType, status: 'ok', detail: isLocal ? '本地' : '已配置' }
+      })
+      setAuthChecks(checks)
 
       const agentList = (a as Array<{ id: string; name: string; model: string; sessionCount?: number }>) || []
       setAgents(
@@ -253,8 +315,69 @@ export default function Dashboard() {
   const statusColor = health?.status === 'healthy' ? 'var(--success)' : 'var(--error)'
   const statusText = health?.status === 'healthy' ? t('dashboard.statusHealthy') : t('dashboard.statusUnhealthy')
 
+  // 非 overview tab → 渲染对应页面
+  if (activeTab !== 'overview') {
+    const tabs: Array<{ id: DashTab; label: string }> = [
+      { id: 'overview', label: t('dashboard.tabOverview') || '概览' },
+      { id: 'tokens', label: t('dashboard.tabTokens') || 'Token 监控' },
+      { id: 'audit', label: t('dashboard.tabAudit') || '审计日志' },
+      { id: 'doctor', label: t('dashboard.tabDoctor') || '系统诊断' },
+    ]
+    return (
+      <div>
+        <div style={{ padding: '20px 32px 0', maxWidth: 1280 }}>
+          <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border-subtle)' }}>
+            {tabs.map(tab => (
+              <button key={tab.id}
+                onClick={() => switchTab(tab.id)}
+                style={{
+                  padding: '10px 16px', border: 'none', background: 'transparent',
+                  fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                  color: activeTab === tab.id ? 'var(--accent)' : 'var(--text-secondary)',
+                  borderBottom: activeTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
+                  marginBottom: -1,
+                  transition: 'color 0.15s',
+                }}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('common.loading')}</div>}>
+          {activeTab === 'tokens' && <TokenMonitoringPage />}
+          {activeTab === 'audit' && <AuditLogPage />}
+          {activeTab === 'doctor' && <DoctorPage />}
+        </Suspense>
+      </div>
+    )
+  }
+
+  // overview tab（原仪表板内容）
   return (
     <div style={{ padding: '28px 32px', maxWidth: '1280px' }}>
+      {/* Tab 导航栏 */}
+      <div style={{ marginBottom: 20, borderBottom: '1px solid var(--border-subtle)', display: 'flex', gap: 4 }}>
+        {[
+          { id: 'overview' as DashTab, label: t('dashboard.tabOverview') || '概览' },
+          { id: 'tokens' as DashTab, label: t('dashboard.tabTokens') || 'Token 监控' },
+          { id: 'audit' as DashTab, label: t('dashboard.tabAudit') || '审计日志' },
+          { id: 'doctor' as DashTab, label: t('dashboard.tabDoctor') || '系统诊断' },
+        ].map(tab => (
+          <button key={tab.id}
+            onClick={() => switchTab(tab.id)}
+            style={{
+              padding: '10px 16px', border: 'none', background: 'transparent',
+              fontSize: 13, fontWeight: 500, cursor: 'pointer',
+              color: activeTab === tab.id ? 'var(--accent)' : 'var(--text-secondary)',
+              borderBottom: activeTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
+              marginBottom: -1,
+              transition: 'color 0.15s',
+            }}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {/* ─── 顶部标题栏 ─── */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -382,6 +505,57 @@ export default function Dashboard() {
                 <QuickActionLink key={item.to} item={item} />
               ))}
             </div>
+          </div>
+
+          {/* Model Auth 状态（OpenClaw #66211） */}
+          <div style={{ ...CARD_STYLE, padding: '20px', boxShadow: CARD_DEFAULT_SHADOW }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+              <SvgIcon name="key" size={18} color="var(--accent)" />
+              <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 600, color: 'var(--text-heading)', flex: 1 }}>
+                {t('dashboard.modelAuth') || 'Model 认证状态'}
+              </h2>
+              {(() => {
+                const missing = authChecks.filter(c => c.status === 'missing').length
+                if (missing > 0) {
+                  return <span style={{ fontSize: 11, color: 'var(--error)', fontWeight: 600 }}>
+                    {missing} 个未配置
+                  </span>
+                }
+                const enabled = authChecks.filter(c => c.status === 'ok').length
+                return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {enabled} 个可用
+                </span>
+              })()}
+            </div>
+            {authChecks.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>
+                <Link to="/settings" style={{ color: 'var(--text-accent)' }}>前往设置</Link> 配置第一个 Provider
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: 220, overflowY: 'auto' }}>
+                {authChecks.map(c => {
+                  const color = c.status === 'ok' ? 'var(--success)'
+                    : c.status === 'missing' ? 'var(--error)'
+                    : c.status === 'oauth_expired' ? '#f59e0b'
+                    : 'var(--text-muted)'
+                  return (
+                    <div key={c.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+                      borderRadius: 6, backgroundColor: 'var(--bg-glass)',
+                      border: '1px solid var(--border-subtle)',
+                    }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color, flexShrink: 0 }} />
+                      <span style={{ fontSize: 12, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.name}
+                      </span>
+                      <span style={{ fontSize: 10, color, whiteSpace: 'nowrap' }}>
+                        {c.detail}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           {/* 系统状态 */}

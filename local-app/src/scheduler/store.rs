@@ -136,22 +136,32 @@ pub async fn get_job(pool: &SqlitePool, job_id: &str) -> Result<CronJob, String>
 
 /// 列出任务
 pub async fn list_jobs(pool: &SqlitePool, filter: Option<&JobFilter>) -> Result<Vec<CronJob>, String> {
-    let mut sql = "SELECT * FROM cron_jobs WHERE 1=1".to_string();
+    let mut sql = String::from("SELECT * FROM cron_jobs WHERE 1=1");
+    let mut agent_id_bind: Option<&str> = None;
+    let mut enabled_bind: Option<i64> = None;
+    let mut job_type_bind: Option<String> = None;
     if let Some(f) = filter {
         if let Some(ref agent_id) = f.agent_id {
-            sql.push_str(&format!(" AND agent_id = '{}'", agent_id));
+            sql.push_str(" AND agent_id = ?");
+            agent_id_bind = Some(agent_id.as_str());
         }
         if let Some(enabled) = f.enabled {
-            sql.push_str(&format!(" AND enabled = {}", enabled as i64));
+            sql.push_str(" AND enabled = ?");
+            enabled_bind = Some(enabled as i64);
         }
         if let Some(ref jt) = f.job_type {
-            sql.push_str(&format!(" AND job_type = '{}'", jt));
+            sql.push_str(" AND job_type = ?");
+            job_type_bind = Some(jt.to_string());
         }
     }
     sql.push_str(" ORDER BY created_at DESC");
 
-    let rows = sqlx::query(&sql)
-        .fetch_all(pool).await
+    let mut q = sqlx::query(&sql);
+    if let Some(a) = agent_id_bind { q = q.bind(a); }
+    if let Some(e) = enabled_bind { q = q.bind(e); }
+    if let Some(ref j) = job_type_bind { q = q.bind(j); }
+
+    let rows = q.fetch_all(pool).await
         .map_err(|e| format!("查询任务列表失败: {}", e))?;
     rows.iter().map(row_to_job).collect()
 }

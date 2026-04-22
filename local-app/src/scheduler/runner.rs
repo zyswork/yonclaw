@@ -48,6 +48,72 @@ impl JobRunner {
             ActionPayload::McpTool { server_name, tool_name, args } => {
                 self.execute_mcp(job, server_name, tool_name, args).await
             }
+            ActionPayload::Dreaming { phase } => {
+                self.execute_dreaming(job, phase).await
+            }
+        }
+    }
+
+    /// Dreaming 记忆整理：直接调 agent::dreaming::run_dream_phase
+    async fn execute_dreaming(&self, job: &CronJob, phase_str: &str) -> ExecResult {
+        let agent_id = match &job.agent_id {
+            Some(id) => id.clone(),
+            None => return ExecResult::Failed { error: "Dreaming 任务缺少 agent_id".to_string() },
+        };
+
+        let phase = match crate::agent::dreaming::DreamPhase::from_str(phase_str) {
+            Ok(p) => p,
+            Err(e) => return ExecResult::Failed { error: e },
+        };
+
+        // 查 agent 的 workspace 和 model（DB 错误必须暴露）
+        let row: Option<(String, Option<String>)> = match sqlx::query_as(
+            "SELECT model, workspace_path FROM agents WHERE id = ?"
+        )
+        .bind(&agent_id)
+        .fetch_optional(&self.pool)
+        .await {
+            Ok(r) => r,
+            Err(e) => return ExecResult::Failed { error: format!("查询 Agent 失败: {}", e) },
+        };
+        let (agent_model, workspace) = match row {
+            Some((m, Some(wp))) if !wp.is_empty() => (m, wp),
+            Some(_) => return ExecResult::Failed { error: format!("Agent {} 无 workspace", agent_id) },
+            None => return ExecResult::Failed { error: format!("Agent {} 不存在", agent_id) },
+        };
+
+        // 加载 provider 配置
+        let (api_type, api_key, base_url) = match self.load_provider(&agent_model).await {
+            Ok(p) => p,
+            Err(e) => return ExecResult::Failed { error: e },
+        };
+
+        let llm_config = crate::agent::llm::LlmConfig {
+            provider: api_type,
+            api_key,
+            model: agent_model.clone(),
+            base_url: if base_url.is_empty() { None } else { Some(base_url) },
+            temperature: None,
+            max_tokens: None,
+            thinking_level: None,
+        };
+
+        match crate::agent::dreaming::run_dream_phase(
+            &self.pool, &agent_id, &workspace, phase, &llm_config,
+        ).await {
+            Ok((phase_name, path, summary)) => {
+                let output = format!(
+                    "Dreaming {} 完成\n路径: {}\n\n摘要:\n{}",
+                    phase_name, path.display(), summary
+                );
+                let (truncated, _) = truncate_output(&output);
+                ExecResult::Success { output: truncated }
+            }
+            // 正常跳过（无对话/无新观察）记为 Success 避免污染失败率
+            Err(e) if e.contains("最近无对话") || e.contains("本次无新观察") => {
+                ExecResult::Success { output: format!("跳过: {}", e) }
+            }
+            Err(e) => ExecResult::Failed { error: e },
         }
     }
 

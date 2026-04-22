@@ -2,6 +2,20 @@
 
 use sqlx::SqlitePool;
 
+/// 尝试执行幂等 ALTER（列已存在不是错误）
+///
+/// SQLite 不支持 ALTER TABLE ADD COLUMN IF NOT EXISTS，只能靠吞掉错误。
+/// 但如果是其他错误（磁盘满/表不存在/权限），应记录而不是完全静默。
+async fn alter_idempotent(pool: &SqlitePool, sql: &str) {
+    if let Err(e) = sqlx::query(sql).execute(pool).await {
+        let msg = e.to_string();
+        // "duplicate column name" 是期望的幂等错误，静默
+        if !msg.contains("duplicate column") && !msg.contains("already exists") {
+            log::warn!("Schema ALTER 非预期错误: {} | SQL: {}", msg, sql);
+        }
+    }
+}
+
 /// 初始化数据库 schema
 pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // 创建对话历史表
@@ -302,13 +316,12 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool).await;
 
     // 会话分支：chat_messages 加 parent_id 和 branch_id
-    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN parent_id TEXT")
-        .execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN branch_id TEXT DEFAULT 'main'")
-        .execute(pool).await;
+    // 注意：这两列已并入 CREATE TABLE 本体（见 schema.rs chat_messages 定义），
+    // 此 ALTER 仅为老库迁移。若非预期失败会留日志便于诊断。
+    alter_idempotent(pool, "ALTER TABLE chat_messages ADD COLUMN parent_id TEXT").await;
+    alter_idempotent(pool, "ALTER TABLE chat_messages ADD COLUMN branch_id TEXT DEFAULT 'main'").await;
     // chat_sessions 加 active_branch
-    let _ = sqlx::query("ALTER TABLE chat_sessions ADD COLUMN active_branch TEXT DEFAULT 'main'")
-        .execute(pool).await;
+    alter_idempotent(pool, "ALTER TABLE chat_sessions ADD COLUMN active_branch TEXT DEFAULT 'main'").await;
 
     // 审计日志表
     let _ = sqlx::query(
@@ -413,6 +426,9 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
 
     // 创建结构化聊天消息表（存储完整消息序列，含工具调用上下文）
+    // 注意：parent_id/branch_id 必须写进 CREATE TABLE 本体
+    // 否则新用户首装时，前面的 ALTER TABLE 对尚未存在的表静默失败，
+    // 结果新库缺这两列，后续 branch/fork 功能查询会 "no such column" 报错
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -426,6 +442,8 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             tool_name TEXT,
             seq INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
+            parent_id TEXT,
+            branch_id TEXT DEFAULT 'main',
             FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
         )
         "#,

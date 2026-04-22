@@ -305,6 +305,14 @@ const PRESET_PROVIDERS: Omit<Provider, 'apiKey' | 'apiKeyMasked'>[] = [
     ],
     enabled: true,
   },
+  {
+    id: 'lmstudio',
+    name: 'LM Studio (Local)',
+    apiType: 'openai',
+    baseUrl: 'http://localhost:1234/v1',
+    models: [],
+    enabled: true,
+  },
 ]
 
 /** 分类导航项定义 */
@@ -2003,6 +2011,7 @@ function TtsSection() {
           <option value="local">本地系统 TTS（免费，无需配置）</option>
           <option value="mimo">小米 MiMo-V2-TTS（高质量，免费）</option>
           <option value="openai">OpenAI TTS（需 API Key）</option>
+          <option value="gemini">Google Gemini TTS（需 Gemini API Key）</option>
         </select>
       </div>
 

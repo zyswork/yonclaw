@@ -9,7 +9,7 @@ function getSystemTheme(): 'light' | 'dark' {
 function resolveInitial(): Theme {
   const saved = localStorage.getItem('xianzhu.theme') as Theme | null
   if (saved && ['light', 'dark', 'system'].includes(saved)) return saved
-  return 'dark' // 默认深色主题
+  return 'light' // 默认浅色（Santorini pastel 方案）
 }
 
 function applyTheme(theme: Theme) {

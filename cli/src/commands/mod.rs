@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod infer;
 pub mod agents;
 pub mod sessions;
 pub mod config;

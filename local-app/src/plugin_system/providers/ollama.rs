@@ -58,9 +58,12 @@ impl ModelProvider for OllamaProvider {
         let base_url = config.base_url.clone()
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
 
+        // OpenClaw #67457: 剥离 ollama/ 前缀，否则 Ollama API 返回 404
+        let model = config.model.strip_prefix("ollama/").unwrap_or(&config.model).to_string();
+
         let llm_config = LlmConfig {
             provider: "openai".to_string(), // Ollama 的 /v1 端点兼容 OpenAI 格式
-            model: config.model.clone(),
+            model,
             api_key: config.api_key.clone(), // Ollama 不需要 key，但字段必填
             base_url: Some(base_url),
             temperature: config.temperature,

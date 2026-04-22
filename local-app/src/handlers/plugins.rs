@@ -220,3 +220,85 @@ pub async fn import_external_plugin(
 
     Ok(result)
 }
+
+/// 从远程 URL 下载插件 manifest 并安装
+///
+/// 参照 OpenClaw 插件市场概念（简化版）：
+/// - URL 必须 https（防 MITM）
+/// - 响应必须是 JSON（manifest）
+/// - 将 manifest 写到本地 ~/.xianzhu/plugins/{name}/manifest.json
+#[tauri::command]
+pub async fn install_plugin_from_url(
+    _state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    // 仅允许 https
+    if !url.starts_with("https://") {
+        return Err("只接受 https:// 开头的 URL".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("xianzhu-plugin-installer/1.0")
+        .build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+    let resp = client.get(&url).send().await
+        .map_err(|e| format!("下载失败: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    // Content-Length 预检（防 OOM）
+    const MAX_SIZE: usize = 256 * 1024;
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_SIZE {
+            return Err(format!("manifest 声明大小 {} 字节超过 256KB 限制", len));
+        }
+    }
+
+    // 流式累积，超限即 abort（保护无 Content-Length 的响应）
+    use futures::StreamExt;
+    let mut body_bytes: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("读取响应失败: {}", e))?;
+        body_bytes.extend_from_slice(&chunk);
+        if body_bytes.len() > MAX_SIZE {
+            return Err("插件 manifest 超过 256KB 限制（流式拒绝）".to_string());
+        }
+    }
+    let body = String::from_utf8(body_bytes)
+        .map_err(|_| "manifest 不是 UTF-8 文本".to_string())?;
+
+    // 解析 JSON
+    let manifest: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("manifest JSON 解析失败: {}", e))?;
+
+    let name = manifest["name"].as_str()
+        .ok_or("manifest 缺少 name 字段")?;
+    // name 防路径穿越
+    if name.contains('/') || name.contains('\\') || name.starts_with('.') || name.is_empty() {
+        return Err(format!("无效插件名: {}", name));
+    }
+
+    let plugins_dir = dirs::home_dir()
+        .ok_or("无法获取 home 目录")?
+        .join(".xianzhu").join("plugins").join(name);
+    tokio::fs::create_dir_all(&plugins_dir).await
+        .map_err(|e| format!("创建目录失败: {}", e))?;
+    let manifest_path = plugins_dir.join("manifest.json");
+    tokio::fs::write(&manifest_path, &body).await
+        .map_err(|e| format!("写入 manifest 失败: {}", e))?;
+
+    // 注意：当前 list_plugins 每次调用都会 new + scan 目录，
+    // 所以新 manifest 文件对下一次 list_plugins 立即可见（不必显式热加载）。
+    // 真正的"激活"（触发 on_install / 注册 MCP / 注册 provider hook）需要重启应用。
+    log::info!("安装插件成功: {} → {:?}（manifest 已写入，下次 list_plugins 即可见；激活需重启应用）", name, manifest_path);
+    Ok(serde_json::json!({
+        "name": name,
+        "path": manifest_path.to_string_lossy(),
+        "version": manifest["version"].as_str().unwrap_or(""),
+        "description": manifest["description"].as_str().unwrap_or(""),
+        "activationRequiresRestart": true,
+    }))
+}

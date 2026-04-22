@@ -167,11 +167,20 @@ pub async fn test_provider_connection(
 
     if status == 200 || status == 201 {
         let data: serde_json::Value = resp.json().await.unwrap_or_default();
-        let model_count = data["data"].as_array().map(|a| a.len()).unwrap_or(0);
+        let models_arr = data["data"].as_array();
+        let model_count = models_arr.map(|a| a.len()).unwrap_or(0);
+        // 前 20 个模型 id（供 SetupPage / Agent 创建时选用，避免硬编码 gpt-4o）
+        let model_ids: Vec<String> = models_arr
+            .map(|arr| arr.iter()
+                .filter_map(|m| m["id"].as_str().map(String::from))
+                .take(20)
+                .collect())
+            .unwrap_or_default();
         Ok(serde_json::json!({
             "status": "ok",
             "latency_ms": latency_ms,
             "models_available": model_count,
+            "model_ids": model_ids,
         }))
     } else if status == 401 || status == 403 {
         Err("API Key 无效或已过期".into())

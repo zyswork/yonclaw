@@ -46,17 +46,24 @@ pub async fn find_provider(
     // 解析限定引用
     let (qualified_pid, model_id) = parse_qualified_model(preferred_model);
 
+    // Bug fix: apiKey 在 DB 中加密存储（XZ1: 前缀），读取时必须解密。
+    // 否则 subagent / channel 会拿到加密字符串发给 API → 401 "API Key 无效或已过期"
+    let get_key = |p: &serde_json::Value| -> String {
+        let raw = p["apiKey"].as_str().unwrap_or("");
+        crate::crypto::decrypt_field(raw)
+    };
+
     // 第 0 轮：限定引用精确匹配（provider_id/model）
     if let Some(pid) = qualified_pid {
         for p in &providers {
             if p["enabled"].as_bool() != Some(true) { continue; }
-            let key = p["apiKey"].as_str().unwrap_or("");
+            let key = get_key(p);
             if key.is_empty() { continue; }
             if p["id"].as_str() == Some(pid) {
                 let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                 let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
                 log::info!("Provider: 限定匹配 {}/{} → {} ({})", pid, model_id, p["name"], api_type);
-                return Some((api_type, key.to_string(), base_url));
+                return Some((api_type, key, base_url));
             }
         }
         log::warn!("Provider: 限定引用 {} 未找到供应商 {}，回退到模型匹配", preferred_model, pid);
@@ -65,7 +72,7 @@ pub async fn find_provider(
     // 第一轮：按模型名精确匹配
     for p in &providers {
         if p["enabled"].as_bool() != Some(true) { continue; }
-        let key = p["apiKey"].as_str().unwrap_or("");
+        let key = get_key(p);
         if key.is_empty() { continue; }
         if let Some(models) = p["models"].as_array() {
             for m in models {
@@ -73,7 +80,7 @@ pub async fn find_provider(
                     let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
                     let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
                     log::info!("Provider: 模型 {} 匹配 → {} ({})", model_id, p["name"], api_type);
-                    return Some((api_type, key.to_string(), base_url));
+                    return Some((api_type, key, base_url));
                 }
             }
         }
@@ -82,13 +89,14 @@ pub async fn find_provider(
     // 第二轮：回退到第一个有 key 的 provider
     for p in &providers {
         if p["enabled"].as_bool() != Some(true) { continue; }
-        let key = p["apiKey"].as_str().unwrap_or("");
+        let key = get_key(p);
         if key.is_empty() { continue; }
         let api_type = p["apiType"].as_str().unwrap_or("openai").to_string();
         let base_url = p["baseUrl"].as_str().unwrap_or("").to_string();
+        let key_preview: String = key.chars().take(8).collect();
         log::warn!("Provider: 模型 {} 无精确匹配，回退到 {} ({}, key={}...)",
-            model_id, p["name"], api_type, &key[..key.len().min(8)]);
-        return Some((api_type, key.to_string(), base_url));
+            model_id, p["name"], api_type, key_preview);
+        return Some((api_type, key, base_url));
     }
 
     log::error!("Provider: 无任何可用 provider（模型: {}）", preferred_model);

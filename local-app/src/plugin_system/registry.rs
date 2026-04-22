@@ -98,6 +98,20 @@ impl PluginRegistry {
                 placeholder: Some("http://localhost:8000/v1".into()), options: None },
         ]));
 
+        // OpenClaw #53248: LM Studio 本地模型（OpenAI 兼容）
+        self.register(PluginManifest::builtin(
+            "lmstudio", "LM Studio",
+            "LM Studio 本地模型（OpenAI 兼容，默认端口 1234）",
+            PluginType::ModelProvider, "\u{1F3AE}",
+        ).with_status("ready").with_config(vec![
+            ConfigField { key: "base_url".into(), label: "LM Studio 地址".into(), field_type: "text".into(),
+                required: false, default: Some("http://localhost:1234/v1".into()),
+                placeholder: Some("http://localhost:1234/v1".into()), options: None },
+            ConfigField { key: "api_key".into(), label: "API Key (可选)".into(), field_type: "password".into(),
+                required: false, default: Some("lm-studio".into()),
+                placeholder: Some("lm-studio".into()), options: None },
+        ]));
+
         // ─── 国产/热门模型快捷入口 ───
         self.register(PluginManifest::builtin(
             "deepseek", "DeepSeek",

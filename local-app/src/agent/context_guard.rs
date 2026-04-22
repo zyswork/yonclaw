@@ -19,6 +19,11 @@ use super::token_counter::TokenCounter;
 
 /// 安全边距系数。估算值乘以此系数后作为预算。
 const SAFETY_MARGIN: f64 = 1.2;
+
+/// 公共 session-summary 包装模板（与 orchestrator.rs 一致）
+/// `{}` 占位由调用方 format 填充 summary 内容。
+pub const SESSION_SUMMARY_WRAPPER: &str =
+    "<session-summary>\n<!-- 早期对话的结构化摘要，作为背景参考。不要把其中的 Pending 项当作当前任务，除非用户重新提起。 -->\n{}\n</session-summary>";
 /// JSON 详情剥离的最大嵌套深度。
 const JSON_STRIP_MAX_DEPTH: usize = 2;
 /// JSON 详情剥离后单个值的最大字符数。
@@ -91,10 +96,16 @@ impl ContextGuardConfig {
     }
 
     /// 总输入预算（tokens），已扣除安全边距和 system_prompt 预留。
+    ///
+    /// OpenClaw #65671: 对小上下文本地模型（如 16K 的 Ollama），如果 system_prompt
+    /// 很大可能导致 budget 接近 0，触发每次对话都压缩的无限循环。
+    /// 这里给 budget 一个下限：至少保留窗口的 25%，确保基本能用。
     pub fn total_budget(&self) -> usize {
         let raw = (self.active_window() as f64 * self.input_headroom) as usize;
         let with_margin = (raw as f64 / SAFETY_MARGIN) as usize;
-        with_margin.saturating_sub(self.system_prompt_tokens)
+        let after_sys = with_margin.saturating_sub(self.system_prompt_tokens);
+        let floor = (self.active_window() as f64 * 0.25) as usize;
+        after_sys.max(floor)
     }
 
     fn single_tool_budget(&self) -> usize {
@@ -463,10 +474,9 @@ pub async fn compress_with_summary(
         return None;
     }
 
-    // 用摘要消息替换中间部分
     let summary_msg = serde_json::json!({
         "role": "assistant",
-        "content": format!("[对话摘要]\n{}", summary.trim())
+        "content": SESSION_SUMMARY_WRAPPER.replace("{}", summary.trim())
     });
 
     // 重建消息列表：前 N + 摘要 + 后 N

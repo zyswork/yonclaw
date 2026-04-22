@@ -10,6 +10,7 @@ pub mod providers;
 pub mod plugin_api;
 pub mod builtin_plugins;
 pub mod bundle_compat;
+pub mod text_transforms;
 
 pub use registry::PluginRegistry;
 pub use provider_trait::{ProviderRegistry, CallConfig};

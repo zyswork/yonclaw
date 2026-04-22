@@ -329,22 +329,19 @@ export default function SkillsPage() {
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 960 }}>
-      {/* 标题栏 */}
+      {/* 标题栏（装饰色用薰衣草，不抢 CTA 暖橙） */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 }}>
         <div style={{
           width: 42, height: 42, borderRadius: 12,
-          background: 'var(--accent-gradient)',
+          backgroundColor: 'rgba(216, 206, 228, 0.28)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 4px 16px rgba(16, 185, 129, 0.3)',
         }}>
-          <SvgIcon name="puzzle" size={22} color="#fff" />
+          <SvgIcon name="puzzle" size={22} color="var(--accent-2-text)" />
         </div>
         <div>
           <h1 style={{
             margin: 0, fontSize: 22, fontWeight: 700,
-            background: 'var(--accent-gradient)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            color: 'var(--text-heading)',
           }}>
             {t('skills.title')}
           </h1>
@@ -355,7 +352,7 @@ export default function SkillsPage() {
         <span style={{ flex: 1 }} />
         {/* Agent 选择器 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('skills.installTo')}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t('skills.installTo')}</span>
           <select
             value={selectedAgent}
             onChange={(e) => setSelectedAgent(e.target.value)}
@@ -408,9 +405,10 @@ export default function SkillsPage() {
               onClick={() => setActiveTab(cat)}
               style={{
                 padding: '6px 16px', borderRadius: 10, fontSize: 12, cursor: 'pointer',
-                backgroundColor: isActive ? 'var(--accent)' : 'transparent',
-                color: isActive ? '#fff' : 'var(--text-secondary)',
-                border: 'none', fontWeight: isActive ? 600 : 400,
+                backgroundColor: isActive ? 'var(--accent-2-bg)' : 'transparent',
+                color: isActive ? 'var(--text-heading)' : 'var(--text-secondary)',
+                border: isActive ? '1px solid var(--accent-2)' : '1px solid transparent',
+                fontWeight: isActive ? 600 : 400,
                 transition: 'all 0.2s ease',
               }}
             >
@@ -441,10 +439,10 @@ export default function SkillsPage() {
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
                   <div style={{
                     width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-                    backgroundColor: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+                    backgroundColor: 'rgba(216, 206, 228, 0.22)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
-                    <SvgIcon name="puzzle" size={20} color="var(--text-accent)" />
+                    <SvgIcon name="puzzle" size={20} color="var(--accent-2-text)" />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -530,12 +528,13 @@ export default function SkillsPage() {
                         style={{
                           display: 'flex', alignItems: 'center', gap: 4,
                           padding: '6px 14px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
-                          border: 'none', fontWeight: 600, transition: 'all 0.15s ease',
-                          background: 'var(--accent-gradient)', color: '#fff',
-                          boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                          fontWeight: 500, transition: 'all 0.15s ease',
+                          backgroundColor: 'transparent',
+                          color: 'var(--accent-2-text)',
+                          border: '1px solid var(--accent-2)',
                         }}
                       >
-                        <SvgIcon name="download" size={13} color="#fff" />
+                        <SvgIcon name="download" size={13} color="var(--accent-2-text)" />
                         {operating === skill.dirName ? t('skills.btnInstalling') : t('skills.btnInstall')}
                       </button>
                     )}
@@ -589,8 +588,8 @@ export default function SkillsPage() {
             <button onClick={() => loadOnlineSkills(onlineSearch)}
               style={{
                 padding: '8px 20px', borderRadius: 10, fontSize: 13, cursor: 'pointer',
-                background: 'var(--accent-gradient)', color: '#fff', border: 'none', fontWeight: 600,
-                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                backgroundColor: 'transparent', color: 'var(--accent-2-text)',
+                border: '1px solid var(--accent-2)', fontWeight: 500,
               }}>
               {t('common.search')}
             </button>
@@ -634,7 +633,7 @@ export default function SkillsPage() {
                         {s.icon ? (
                           <span style={{ fontSize: 20 }}>{s.icon}</span>
                         ) : (
-                          <SvgIcon name="puzzle" size={20} color="var(--text-accent)" />
+                          <SvgIcon name="puzzle" size={20} color="var(--accent-2)" />
                         )}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -677,9 +676,9 @@ export default function SkillsPage() {
                           style={{
                             display: 'flex', alignItems: 'center', gap: 4,
                             padding: '6px 14px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
-                            border: 'none', fontWeight: 600,
-                            background: 'var(--accent-gradient)', color: '#fff',
-                            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)',
+                            fontWeight: 500,
+                            backgroundColor: 'transparent', color: 'var(--accent-2-text)',
+                            border: '1px solid var(--accent-2)',
                           }}
                         >
                           <SvgIcon name="download" size={13} color="#fff" />

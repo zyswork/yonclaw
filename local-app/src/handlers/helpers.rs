@@ -22,7 +22,7 @@ pub fn rotate_api_key(provider_id: &str, multi_key: &str) -> String {
         return multi_key.to_string(); // 单 key 直接返回
     }
 
-    let mut map = KEY_ROTATOR.lock().unwrap();
+    let mut map = KEY_ROTATOR.lock().unwrap_or_else(|p| p.into_inner());
     let counter = map
         .entry(provider_id.to_string())
         .or_insert_with(|| AtomicUsize::new(0));

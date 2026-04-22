@@ -1,0 +1,23 @@
+{
+  "version": "1.1.0",
+  "notes": "XianZhu 1.1.0 - Santorini 主题重塑 + Dreaming 自动化 + 15 处 bug 修复。详见 CHANGELOG.md。",
+  "pub_date": "2026-04-22T00:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/zyswork/xianzhu-claw/releases/download/v1.1.0/XianZhuClaw.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRQU5PSWRxTytFekYzOUFHZER6eWdzZGc4djlUbkIrOEdBQXNjWkFMV3JhcGN6RTFBNys5OW5YZXlrdU5SOWVubVpoQm96aTdic3hJMk1rQS9kSWtwZ0k4S2tPTTV1b2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc2ODYzNTE1CWZpbGU6WGlhblpodUNsYXcuYXBwLnRhci5negpIcmhEU0E0RzNGYTRaQjM2VCtrT3pSWWNXV1lOMklVUDE0WUE1TlhTSzlMSjFxNEhtdG5SWm1wVG83bnRoNnZJQTdsMFVVd05XNXB4eVU4MDlGcUhCZz09Cg=="
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/zyswork/xianzhu-claw/releases/download/v1.1.0/XianZhuClaw-x64.app.tar.gz",
+      "signature": ""
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/zyswork/xianzhu-claw/releases/download/v1.1.0/XianZhuClaw_amd64.AppImage.tar.gz",
+      "signature": ""
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/zyswork/xianzhu-claw/releases/download/v1.1.0/XianZhuClaw_x64_en-US.msi.zip",
+      "signature": ""
+    }
+  }
+}

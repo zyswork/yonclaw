@@ -30,6 +30,71 @@ fn media_tag_inline(media_type: &str, path: &str, mime: &str, base64_data: &str)
     )
 }
 
+/// Hermes-style fuzzy 字符串替换
+///
+/// 把 old_text 和 content 按行切分，对比时先 trim 每行前导空白再比较；
+/// 找到匹配后用 new_text 替换（保留 content 原来的前导空白为缩进基准）。
+///
+/// 返回 `Some((new_content, detected_indent))` 或 `None`。
+fn fuzzy_replace_once(content: &str, old_text: &str, new_text: &str) -> Option<(String, String)> {
+    let old_lines: Vec<&str> = old_text.lines().collect();
+    if old_lines.is_empty() { return None; }
+    let content_lines: Vec<&str> = content.lines().collect();
+
+    let old_trimmed: Vec<&str> = old_lines.iter().map(|l| l.trim_start()).collect();
+    if old_trimmed.iter().all(|l| l.is_empty()) { return None; }
+
+    let n = old_trimmed.len();
+    if content_lines.len() < n { return None; }
+
+    // 先检测是否有多个 fuzzy 匹配 —— 有歧义时不应替换
+    let mut match_positions: Vec<usize> = Vec::new();
+    for i in 0..=(content_lines.len() - n) {
+        let window = &content_lines[i..i + n];
+        if window.iter().zip(&old_trimmed).all(|(c, o)| c.trim_start() == *o) {
+            match_positions.push(i);
+        }
+    }
+    if match_positions.is_empty() { return None; }
+    if match_positions.len() > 1 {
+        log::warn!("fuzzy_replace_once: {} 处匹配，拒绝替换以避免歧义", match_positions.len());
+        return None;
+    }
+    let i = match_positions[0];
+    let window = &content_lines[i..i + n];
+
+    // 计算 delta: window 首行相对 old_text 首行的缩进差
+    // 对 new_text 每行保留 ITS OWN relative indentation，只在前面补 delta
+    let old_first_indent = indent_len(old_lines[0]);
+    let win_first_indent = indent_len(window[0]);
+    let delta: i64 = win_first_indent as i64 - old_first_indent as i64;
+
+    let indent_prefix = |l: &str| -> String {
+        if l.trim().is_empty() { return l.to_string(); }
+        let cur = indent_len(l);
+        let new_indent = (cur as i64 + delta).max(0) as usize;
+        let body = &l[cur..];
+        format!("{}{}", " ".repeat(new_indent), body)
+    };
+
+    let new_lines: Vec<String> = new_text.lines().map(indent_prefix).collect();
+
+    let mut out: Vec<String> = Vec::with_capacity(content_lines.len() + new_lines.len());
+    for (idx, line) in content_lines.iter().enumerate() {
+        if idx < i { out.push((*line).to_string()); }
+        else if idx == i { out.extend(new_lines.iter().cloned()); }
+        else if idx >= i + n { out.push((*line).to_string()); }
+    }
+    let mut result = out.join("\n");
+    if content.ends_with('\n') && !result.ends_with('\n') { result.push('\n'); }
+    let indent: String = window[0][..win_first_indent].to_string();
+    Some((result, indent))
+}
+
+fn indent_len(s: &str) -> usize {
+    s.len() - s.trim_start().len()
+}
+
 /// 计算工具 — 支持基本四则运算
 pub struct CalculatorTool;
 
@@ -177,6 +242,16 @@ impl Tool for MemoryReadTool {
             SqliteMemory::new(self.pool.clone())
         };
 
+        // OpenClaw #67277: memory_get 默认截断摘录，返回 continuation 元数据
+        const EXCERPT_MAX: usize = 800;
+        fn truncate_excerpt(s: &str) -> (String, bool) {
+            if s.chars().count() <= EXCERPT_MAX {
+                (s.to_string(), false)
+            } else {
+                (s.chars().take(EXCERPT_MAX).collect(), true)
+            }
+        }
+
         if query.is_empty() {
             // 无查询：列出全部（按类型过滤）
             let category = memory_type.map(|t| MemoryCategory::from_str(t));
@@ -189,10 +264,21 @@ impl Tool for MemoryReadTool {
             if entries.is_empty() {
                 return Ok("暂无记忆".to_string());
             }
-            let result: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
-                "id": e.id, "type": e.category.as_str(), "content": e.content,
-                "priority": e.priority.as_i32(), "score": e.score,
-            })).collect();
+            let result: Vec<serde_json::Value> = entries.iter().map(|e| {
+                let (excerpt, truncated) = truncate_excerpt(&e.content);
+                let mut v = serde_json::json!({
+                    "id": e.id, "type": e.category.as_str(), "content": excerpt,
+                    "priority": e.priority.as_i32(), "score": e.score,
+                });
+                if truncated {
+                    v["truncated"] = serde_json::Value::Bool(true);
+                    v["total_chars"] = serde_json::json!(e.content.chars().count());
+                    v["continuation"] = serde_json::Value::String(
+                        format!("使用 memory_get_full(id=\"{}\") 获取完整内容", e.id)
+                    );
+                }
+                v
+            }).collect();
             return Ok(serde_json::to_string_pretty(&result).unwrap_or_default());
         }
 
@@ -208,11 +294,22 @@ impl Tool for MemoryReadTool {
             return Ok(format!("没有匹配 \"{}\" 的记忆", query));
         }
 
-        let result: Vec<serde_json::Value> = filtered.iter().map(|e| serde_json::json!({
-            "id": e.id, "type": e.category.as_str(), "content": e.content,
-            "priority": e.priority.as_i32(),
-            "relevance": format!("{:.1}%", e.score.unwrap_or(0.0) * 100.0),
-        })).collect();
+        let result: Vec<serde_json::Value> = filtered.iter().map(|e| {
+            let (excerpt, truncated) = truncate_excerpt(&e.content);
+            let mut v = serde_json::json!({
+                "id": e.id, "type": e.category.as_str(), "content": excerpt,
+                "priority": e.priority.as_i32(),
+                "relevance": format!("{:.1}%", e.score.unwrap_or(0.0) * 100.0),
+            });
+            if truncated {
+                v["truncated"] = serde_json::Value::Bool(true);
+                v["total_chars"] = serde_json::json!(e.content.chars().count());
+                v["continuation"] = serde_json::Value::String(
+                    format!("使用 memory_get_full(id=\"{}\") 获取完整内容", e.id)
+                );
+            }
+            v
+        }).collect();
 
         Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
     }
@@ -354,6 +451,16 @@ impl Tool for FileReadTool {
                 listing.push_str(&format!("  {}{}\n", entry.file_name().to_string_lossy(), marker));
             }
             return Ok(listing);
+        }
+
+        // 文件大小上限：避免 AI 误读巨型日志/binary 导致 OOM
+        const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err(format!(
+                "文件过大（{:.1} MB），上限 {} MB。请使用 `tail`/`head` 或分段读取。",
+                metadata.len() as f64 / 1024.0 / 1024.0,
+                MAX_FILE_BYTES / 1024 / 1024
+            ));
         }
 
         let content = tokio::fs::read_to_string(path)
@@ -1204,15 +1311,23 @@ impl Tool for FileEditTool {
             result_lines.extend_from_slice(&lines[insert_at..]);
             result_lines.join("\n") + if content.ends_with('\n') { "\n" } else { "" }
         } else {
-            // 替换模式
+            // 替换模式 — 精确匹配优先，失败时 fallback 到 fuzzy (缩进宽容)
             let count = content.matches(old_text).count();
-            if count == 0 {
-                return Err(format!("未找到匹配文本，文件未修改。搜索文本前50字符: '{}'", &old_text[..old_text.len().min(50)]));
-            }
             if count > 1 {
                 return Err(format!("找到 {} 处匹配，请提供更精确的文本以避免歧义", count));
             }
-            content.replacen(old_text, new_text, 1)
+            if count == 1 {
+                content.replacen(old_text, new_text, 1)
+            } else {
+                // 参照 Hermes fuzzy skill patching：忽略每行前导空白差异
+                if let Some((replaced, _applied_indent)) = fuzzy_replace_once(&content, old_text, new_text) {
+                    log::info!("file_edit fuzzy 匹配成功");
+                    replaced
+                } else {
+                    let preview: String = old_text.chars().take(50).collect();
+                    return Err(format!("未找到匹配文本（含 fuzzy 尝试），文件未修改。搜索文本前50字符: '{}'", preview));
+                }
+            }
         };
 
         tokio::fs::write(path, &new_content).await
@@ -1233,7 +1348,14 @@ impl Tool for FileEditTool {
         super::super::file_harness::update_hash(path, &new_content);
 
         log::info!("文件已编辑: {}", path);
-        Ok(format!("文件已编辑: {} (新大小: {} 字节)", path, new_content.len()))
+        // diff 标记：前端解析为 diff 视图
+        let diff_tag = if !old_text.is_empty() && old_text.len() < 2000 && new_text.len() < 2000 {
+            let old_escaped = old_text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+            let new_escaped = new_text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+            format!("\n<!--diff:{{\"file\":\"{}\",\"old\":\"{}\",\"new\":\"{}\"}}-->",
+                path.replace('\\', "/").replace('"', "\\\""), old_escaped, new_escaped)
+        } else { String::new() };
+        Ok(format!("文件已编辑: {} (新大小: {} 字节){}", path, new_content.len(), diff_tag))
     }
 }
 
@@ -1294,7 +1416,13 @@ impl Tool for DiffEditTool {
             .filter(|l| !l.starts_with("+++") && !l.starts_with("---"))
             .count();
 
-        Ok(format!("文件 {} 已更新，变更 {} 行", file_path, lines_changed))
+        // diff 标记
+        let diff_escaped = diff.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        let diff_tag = if diff_escaped.len() < 4000 {
+            format!("\n<!--diff:{{\"file\":\"{}\",\"patch\":\"{}\"}}-->",
+                file_path.replace('\\', "/").replace('"', "\\\""), diff_escaped)
+        } else { String::new() };
+        Ok(format!("文件 {} 已更新，变更 {} 行{}", file_path, lines_changed, diff_tag))
     }
 }
 
@@ -1990,6 +2118,33 @@ impl Tool for ProviderTool {
     }
 }
 
+/// 美化模型名：`custom-1774861052113/mimo-v2-pro` → `MiMo (xiaomi) / mimo-v2-pro`
+/// 读取 providers 配置，把限定前缀（provider_id）替换为 provider.name。
+async fn resolve_model_display_name(pool: &sqlx::SqlitePool, model: &str) -> String {
+    let Some((pid, pure_model)) = model.split_once('/') else {
+        return model.to_string();
+    };
+    let Ok(Some(json_str)) = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'providers'"
+    ).fetch_optional(pool).await else {
+        return model.to_string();
+    };
+    let Ok(providers): Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_str) else {
+        return model.to_string();
+    };
+    for p in &providers {
+        if p["id"].as_str() == Some(pid) {
+            let name = p["name"].as_str().unwrap_or(pid);
+            // 如果 name 和 pid 一样（标准 provider），就保持原样；否则美化
+            if name == pid {
+                return model.to_string();
+            }
+            return format!("{} / {}", name, pure_model);
+        }
+    }
+    model.to_string()
+}
+
 /// Agent 自身配置工具 — 让 Agent 能修改自己的模型、温度等参数
 pub struct AgentSelfConfigTool {
     pool: sqlx::SqlitePool,
@@ -2051,11 +2206,17 @@ impl Tool for AgentSelfConfigTool {
                 ).bind(agent_id).fetch_optional(&self.pool).await.map_err(|e| e.to_string())?;
 
                 match row {
-                    Some((name, model, temp, max_t)) => Ok(format!(
-                        "Agent 配置:\n- 名称: {}\n- 模型: {}\n- 温度: {}\n- 最大Token: {}",
-                        name, model, temp.map(|t| format!("{:.1}", t)).unwrap_or("默认".into()),
-                        max_t.map(|t| t.to_string()).unwrap_or("默认".into())
-                    )),
+                    Some((name, model, temp, max_t)) => {
+                        // 美化模型名：若是 `provider_id/model_id` 格式，用 provider 的 displayName 替换 id
+                        // 防止暴露 `custom-1774861052113` 这类自动生成的 id 给 LLM
+                        let display_model = resolve_model_display_name(&self.pool, &model).await;
+                        Ok(format!(
+                            "Agent 配置:\n- 名称: {}\n- 模型: {}\n- 温度: {}\n- 最大Token: {}",
+                            name, display_model,
+                            temp.map(|t| format!("{:.1}", t)).unwrap_or("默认".into()),
+                            max_t.map(|t| t.to_string()).unwrap_or("默认".into())
+                        ))
+                    }
                     None => Err("Agent 不存在".to_string()),
                 }
             }
@@ -2475,7 +2636,7 @@ impl Tool for ImageGenerateTool {
         let size = arguments.get("size").and_then(|s| s.as_str()).unwrap_or("1024x1024");
         let quality = arguments.get("quality").and_then(|q| q.as_str()).unwrap_or("standard");
 
-        log::info!("生成图片: {} (size={}, quality={})", &prompt[..prompt.len().min(50)], size, quality);
+        log::info!("生成图片: {} (size={}, quality={})", prompt.chars().take(50).collect::<String>(), size, quality);
 
         // 从 provider 配置中查找 OpenAI 兼容的图片生成端点
         let (api_key, base_url) = self.find_image_provider().await?;
@@ -2592,7 +2753,10 @@ impl Tool for TtsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tts".to_string(),
-            description: "文字转语音。支持 list_voices（列出可用声音）和 synthesize（合成语音）两种操作。".to_string(),
+            description: "文字转语音（TTS）。支持 list_voices（列出可用声音）和 synthesize（合成语音）两种操作。\n\n\
+                **重要**：合成后返回值中已包含 `<!--media:{...}-->` 标签，前端会自动渲染播放器。\n\
+                **不要自己拼造媒体标签**，只需要执行工具并把原始返回值回复给用户即可。\n\
+                如需用户播放，直接调用本工具，不要让用户复制文件路径。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2663,6 +2827,7 @@ impl Tool for TtsTool {
         match mode {
             "mimo" => self.tts_mimo(text, &arguments).await,
             "api" | "openai" => self.tts_api(text, &arguments).await,
+            "gemini" | "google" => self.tts_gemini(text, &arguments).await,
             _ => self.tts_local(text, &arguments).await,
         }
     }
@@ -2890,7 +3055,7 @@ impl TtsTool {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("MiMo TTS 失败 (HTTP {}): {}", status, &body[..body.len().min(200)]));
+            return Err(format!("MiMo TTS 失败 (HTTP {}): {}", status, body.chars().take(200).collect::<String>()));
         }
 
         // 解析 JSON 响应，提取 audio.data (base64)
@@ -2996,7 +3161,7 @@ impl TtsTool {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("TTS 失败 (HTTP {}): {}", status, &body[..body.len().min(200)]));
+            return Err(format!("TTS 失败 (HTTP {}): {}", status, body.chars().take(200).collect::<String>()));
         }
 
         let bytes = resp.bytes().await.map_err(|e| format!("读取音频失败: {}", e))?;
@@ -3021,14 +3186,265 @@ impl TtsTool {
 
         for p in &providers {
             if p["enabled"].as_bool() != Some(true) { continue; }
-            let key = p["apiKey"].as_str().unwrap_or("");
+            let raw = p["apiKey"].as_str().unwrap_or("");
+            let key = crate::crypto::decrypt_field(raw);  // 解密 XZ1: 前缀
             if key.is_empty() { continue; }
             if p["apiType"].as_str() == Some("openai") {
                 let base_url = p["baseUrl"].as_str().unwrap_or("https://api.openai.com/v1");
-                return Ok((key.to_string(), base_url.to_string()));
+                return Ok((key, base_url.to_string()));
             }
         }
         Err("未找到 OpenAI Provider，请先配置。或使用 mode=local（免费）".to_string())
+    }
+
+    /// OpenClaw #67515: Google Gemini TTS
+    ///
+    /// 使用 gemini-2.5-flash-preview-tts 模型，通过 generateContent 接口合成语音。
+    /// 返回 base64 PCM，需要包装成 WAV 保存到本地。
+    async fn tts_gemini(&self, text: &str, args: &serde_json::Value) -> Result<String, String> {
+        let voice = args.get("voice").and_then(|v| v.as_str()).unwrap_or("Kore");
+        let model = args.get("model").and_then(|m| m.as_str())
+            .unwrap_or("gemini-2.5-flash-preview-tts");
+
+        log::info!("TTS Gemini: {} 字符, voice={}, model={}", text.len(), voice, model);
+
+        let (api_key, base_url) = self.find_gemini_provider().await?;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(45))
+            .build()
+            .map_err(|e| format!("创建客户端失败: {}", e))?;
+
+        let url = format!("{}/models/{}:generateContent?key={}",
+            base_url.trim_end_matches('/'), model, api_key);
+        let resp = client.post(&url)
+            .json(&serde_json::json!({
+                "contents": [{"parts": [{"text": text}]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {"voiceName": voice}
+                        }
+                    }
+                }
+            }))
+            .send().await
+            .map_err(|e| format!("Gemini TTS 请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Gemini TTS 失败 (HTTP {}): {}", status, body.chars().take(300).collect::<String>()));
+        }
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+        let b64 = json["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+            .as_str()
+            .ok_or("Gemini TTS 响应中未找到音频数据")?;
+        use base64::Engine;
+        let pcm = base64::engine::general_purpose::STANDARD.decode(b64)
+            .map_err(|e| format!("解码 base64 失败: {}", e))?;
+
+        // Gemini 返回 PCM @ 24kHz 单声道 16-bit，需要包装成 WAV
+        let wav = pcm_to_wav(&pcm, 24000, 1, 16);
+
+        let output_dir = dirs::home_dir().ok_or("无法获取 home 目录")?.join(".xianzhu/tts");
+        let _ = std::fs::create_dir_all(&output_dir);
+        let filename = format!("tts_gemini_{}.wav", chrono::Utc::now().timestamp_millis());
+        let output_path = output_dir.join(&filename);
+        std::fs::write(&output_path, &wav).map_err(|e| format!("保存失败: {}", e))?;
+
+        let tag = media_tag("audio", &output_path.to_string_lossy(), "audio/wav");
+        Ok(format!("语音已生成（Gemini TTS）: {} ({} 字节)\n文件: {}\n{}",
+            filename, wav.len(), output_path.display(), tag))
+    }
+
+    async fn find_gemini_provider(&self) -> Result<(String, String), String> {
+        let json_str: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'providers'"
+        ).fetch_optional(&self.pool).await.ok().flatten();
+        let providers: Vec<serde_json::Value> = json_str
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        for p in &providers {
+            if p["enabled"].as_bool() != Some(true) { continue; }
+            let raw = p["apiKey"].as_str().unwrap_or("");
+            let key = crate::crypto::decrypt_field(raw);
+            if key.is_empty() { continue; }
+            let api_type = p["apiType"].as_str().unwrap_or("");
+            let id = p["id"].as_str().unwrap_or("");
+            if api_type == "gemini" || api_type == "google" || id.contains("gemini") || id.contains("google") {
+                let base_url = p["baseUrl"].as_str()
+                    .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+                return Ok((key, base_url.to_string()));
+            }
+        }
+        Err("未找到 Gemini/Google Provider，请先配置".to_string())
+    }
+}
+
+/// PCM → WAV 封装（用于 Gemini TTS 返回的裸 PCM 数据）
+fn pcm_to_wav(pcm: &[u8], sample_rate: u32, channels: u16, bits_per_sample: u16) -> Vec<u8> {
+    let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+    let block_align = channels * bits_per_sample / 8;
+    let data_len = pcm.len() as u32;
+    let file_len = 36 + data_len;
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&file_len.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());          // fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes());           // PCM format
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(pcm);
+    wav
+}
+
+// ─── GitHub 只读工具 (OpenClaw d51f527) ───────────────────────
+
+/// GitHub API 只读助手
+///
+/// 支持读取仓库元数据、文件、issue、PR、commit 等。只读，不涉及写操作。
+/// 支持 GITHUB_TOKEN 环境变量（提高速率限制）。
+pub struct GhReadTool;
+
+#[async_trait]
+impl Tool for GhReadTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "gh_read".to_string(),
+            description: "GitHub 只读 API 助手。支持：\n\
+                - repo：获取仓库信息（owner/repo）\n\
+                - file：读取仓库文件（owner/repo/path@ref）\n\
+                - issues：列出 issue（owner/repo?state=open）\n\
+                - issue：获取 issue 详情（owner/repo/123）\n\
+                - pulls：列出 PR\n\
+                - pr：获取 PR 详情（含 diff）\n\
+                - commits：列出提交\n\
+                - releases：列出发布\n\
+                可选环境变量 GITHUB_TOKEN 提高速率限制。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["repo", "file", "issues", "issue", "pulls", "pr", "commits", "releases"],
+                        "description": "操作类型"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "目标：repo 用 owner/repo；file 用 owner/repo/path[@ref]；issue/pr 用 owner/repo/<number>"
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "附加参数（如 state=open/closed/all，per_page=30 等）"
+                    }
+                },
+                "required": ["action", "target"]
+            }),
+        }
+    }
+
+    fn safety_level(&self) -> ToolSafetyLevel { ToolSafetyLevel::Safe }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let action = arguments["action"].as_str().ok_or("缺少 action")?;
+        let target = arguments["target"].as_str().ok_or("缺少 target")?;
+        let params = arguments["params"].as_object();
+
+        // 防止 target 污染 URL（引入 query/fragment）
+        if target.contains('?') || target.contains('#') || target.contains("..") {
+            return Err("target 不能包含 ? # 或 ..".to_string());
+        }
+
+        let url = match action {
+            "repo" => format!("https://api.github.com/repos/{}", target),
+            "file" => {
+                // owner/repo/path[@ref]
+                let (path_part, ref_part) = match target.rsplit_once('@') {
+                    Some((p, r)) => (p, Some(r)),
+                    None => (target, None),
+                };
+                let parts: Vec<&str> = path_part.splitn(3, '/').collect();
+                if parts.len() < 3 {
+                    return Err("file 格式：owner/repo/path[@ref]".to_string());
+                }
+                let base = format!("https://api.github.com/repos/{}/{}/contents/{}", parts[0], parts[1], parts[2]);
+                match ref_part {
+                    Some(r) => format!("{}?ref={}", base, r),
+                    None => base,
+                }
+            }
+            "issues" => {
+                let state = params.and_then(|p| p.get("state")).and_then(|v| v.as_str()).unwrap_or("open");
+                format!("https://api.github.com/repos/{}/issues?state={}&per_page=30", target, state)
+            }
+            "issue" => {
+                let parts: Vec<&str> = target.splitn(3, '/').collect();
+                if parts.len() < 3 { return Err("issue 格式：owner/repo/number".to_string()); }
+                format!("https://api.github.com/repos/{}/{}/issues/{}", parts[0], parts[1], parts[2])
+            }
+            "pulls" => {
+                let state = params.and_then(|p| p.get("state")).and_then(|v| v.as_str()).unwrap_or("open");
+                format!("https://api.github.com/repos/{}/pulls?state={}&per_page=30", target, state)
+            }
+            "pr" => {
+                let parts: Vec<&str> = target.splitn(3, '/').collect();
+                if parts.len() < 3 { return Err("pr 格式：owner/repo/number".to_string()); }
+                format!("https://api.github.com/repos/{}/{}/pulls/{}", parts[0], parts[1], parts[2])
+            }
+            "commits" => format!("https://api.github.com/repos/{}/commits?per_page=20", target),
+            "releases" => format!("https://api.github.com/repos/{}/releases?per_page=10", target),
+            _ => return Err(format!("未知 action: {}", action)),
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent("xianzhu-gh-read/1.0")
+            .build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+        let mut req = client.get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        let resp = req.send().await.map_err(|e| format!("GitHub API 请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GitHub API 失败 ({}): {}", s, body.chars().take(300).collect::<String>()));
+        }
+
+        // file 操作：响应包含 base64 content，解码为原始文本
+        if action == "file" {
+            let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+            if let Some(content_b64) = json["content"].as_str() {
+                use base64::Engine;
+                let cleaned: String = content_b64.chars().filter(|c| !c.is_whitespace()).collect();
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        return Ok(text);
+                    }
+                }
+            }
+            return Ok(serde_json::to_string_pretty(&json).unwrap_or_default());
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        // 对 list 类结果（issues/pulls/commits/releases），精简字段展示
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            return Ok(serde_json::to_string_pretty(&v).unwrap_or(text));
+        }
+        Ok(text)
     }
 }
 
@@ -3142,13 +3558,18 @@ impl Tool for VideoGenerateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "video_generate".to_string(),
-            description: "视频生成工具。通过 AI 生成短视频（文生视频/图生视频）。需要配置 MiniMax 或其他视频生成 API。".to_string(),
+            description: "视频生成工具。通过 AI 生成短视频（文生视频/图生视频）。\n支持模型：\n- minimax（T2V-01，默认）\n- seedance-2（fal.ai bytedance-seedance-2，需 FAL_KEY）\n- heygen（fal.ai heygen-video-agent，需 FAL_KEY）".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "prompt": { "type": "string", "description": "视频内容描述" },
                     "image_url": { "type": "string", "description": "参考图片 URL（图生视频模式，可选）" },
-                    "duration": { "type": "integer", "description": "视频时长秒数（默认 5）" }
+                    "duration": { "type": "integer", "description": "视频时长秒数（默认 5）" },
+                    "model": {
+                        "type": "string",
+                        "description": "视频模型（可选）：minimax / seedance-2 / heygen。默认 minimax",
+                        "enum": ["minimax", "seedance-2", "heygen"]
+                    }
                 },
                 "required": ["prompt"]
             }),
@@ -3158,7 +3579,14 @@ impl Tool for VideoGenerateTool {
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
         let prompt = arguments["prompt"].as_str().ok_or("缺少 prompt")?;
-        // 查找 MiniMax provider
+        let model_choice = arguments["model"].as_str().unwrap_or("minimax");
+
+        // OpenClaw b56cd11/c3aeb71: Seedance 2 + HeyGen via fal.ai
+        if matches!(model_choice, "seedance-2" | "heygen") {
+            return self.generate_via_fal(prompt, &arguments, model_choice).await;
+        }
+
+        // 默认 MiniMax
         let (api_key, base_url) = find_minimax_config(&self.pool).await
             .ok_or("未配置 MiniMax Provider（需要 api.minimaxi.com）")?;
 
@@ -3170,7 +3598,7 @@ impl Tool for VideoGenerateTool {
             body["first_frame_image"] = serde_json::json!(img);
         }
 
-        log::info!("视频生成: prompt={}, model={}, url={}", &prompt[..prompt.len().min(50)], model, url);
+        log::info!("视频生成: prompt={}, model={}, url={}", prompt.chars().take(50).collect::<String>(), model, url);
 
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(180));
@@ -3189,6 +3617,50 @@ impl Tool for VideoGenerateTool {
             Ok(format!("视频生成任务已提交！\n任务 ID: {}\n状态: 处理中...\n\n视频生成通常需要 1-3 分钟，请稍后查询状态。", task_id))
         } else if let Some(err) = data["base_resp"]["status_msg"].as_str() {
             Err(format!("视频生成失败: {}", err))
+        } else {
+            Ok(format!("响应: {}", serde_json::to_string_pretty(&data).unwrap_or_default()))
+        }
+    }
+}
+
+impl VideoGenerateTool {
+    /// OpenClaw b56cd11/c3aeb71: 通过 fal.ai 调用 Seedance 2 / HeyGen
+    async fn generate_via_fal(&self, prompt: &str, args: &serde_json::Value, model: &str) -> Result<String, String> {
+        // 查找 FAL_KEY —— 支持 provider 中 apiType=fal 或 env var
+        let fal_key = std::env::var("FAL_KEY").ok().or_else(|| {
+            // TODO: 从 providers 表读
+            None
+        }).ok_or("未配置 FAL_KEY 环境变量或 fal provider")?;
+
+        let endpoint = match model {
+            "seedance-2" => "fal-ai/bytedance/seedance/v2/text-to-video",
+            "heygen" => "fal-ai/heygen-video-agent",
+            _ => return Err(format!("未知 fal 模型: {}", model)),
+        };
+        let url = format!("https://queue.fal.run/{}", endpoint);
+
+        let mut body = serde_json::json!({ "prompt": prompt });
+        if let Some(img) = args["image_url"].as_str() { body["image_url"] = serde_json::json!(img); }
+        if let Some(d) = args["duration"].as_i64() { body["duration"] = serde_json::json!(d); }
+
+        log::info!("视频生成 (fal.ai {}): prompt={}", model, prompt.chars().take(50).collect::<String>());
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build().map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+        let resp = client.post(&url)
+            .header("Authorization", format!("Key {}", fal_key))
+            .json(&body).send().await.map_err(|e| format!("fal.ai 请求失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("fal.ai 失败 ({}): {}", s, body.chars().take(200).collect::<String>()));
+        }
+
+        let data: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+        if let Some(req_id) = data["request_id"].as_str() {
+            Ok(format!("视频生成任务已提交（fal.ai {}）！\n请求 ID: {}\n\n视频生成通常需要 1-3 分钟，可访问 status_url 查询。", model, req_id))
         } else {
             Ok(format!("响应: {}", serde_json::to_string_pretty(&data).unwrap_or_default()))
         }
@@ -3225,20 +3697,24 @@ impl Tool for MusicGenerateTool {
             .ok_or("未配置 MiniMax Provider（需要 api.minimaxi.com）")?;
 
         let url = format!("{}/music_generation", base_url.trim_end_matches('/'));
-        // MiniMax music-2.5: 必须带 lyrics + output_format
-        let lyrics = arguments["lyrics"].as_str().unwrap_or("[intro] [outro]");
+        // MiniMax music-2.6-free: 免费模型；纯音乐用 is_instrumental，歌曲需提供 lyrics
+        let lyrics = arguments["lyrics"].as_str();
+        let is_instrumental = lyrics.is_none() || arguments["instrumental"].as_bool().unwrap_or(false);
         let mut body = serde_json::json!({
-            "model": "music-2.5",
+            "model": "music-2.6-free",
             "prompt": prompt,
-            "lyrics": lyrics,
             "output_format": "url",
-            "stream": false,
         });
+        if is_instrumental {
+            body["is_instrumental"] = serde_json::json!(true);
+        } else {
+            body["lyrics"] = serde_json::json!(lyrics.unwrap());
+        }
         if let Some(voice) = arguments["refer_voice"].as_str() {
             body["refer_voice"] = serde_json::json!(voice);
         }
 
-        log::info!("音乐生成: prompt={}, url={}", &prompt[..prompt.len().min(50)], url);
+        log::info!("音乐生成: prompt={}, url={}", prompt.chars().take(50).collect::<String>(), url);
 
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(180)); // 音乐生成可能需要 3 分钟
@@ -3847,7 +4323,7 @@ async fn whisper_api_call(api_key: &str, file_path: &str, language: Option<&str>
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Whisper API 错误 {}: {}", status, &body[..body.len().min(200)]));
+        return Err(format!("Whisper API 错误 {}: {}", status, body.chars().take(200).collect::<String>()));
     }
 
     let data: serde_json::Value = resp.json().await

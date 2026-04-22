@@ -581,21 +581,24 @@ export default function GroupChatPage() {
     <div style={{ display: 'flex', position: 'absolute', inset: 0 }}>
       {/* 左侧：群聊列表 */}
       <div style={{
-        width: 220, minWidth: 220, borderRight: '1px solid var(--border-subtle)',
-        display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-elevated)',
+        width: 240, minWidth: 240, borderRight: '1px solid var(--border-subtle)',
+        display: 'flex', flexDirection: 'column', backgroundColor: 'transparent',
       }}>
-        <div style={{ padding: 12, borderBottom: '1px solid var(--border-subtle)' }}>
+        <div style={{ padding: 14, borderBottom: '1px solid var(--border-subtle)' }}>
           <button onClick={() => setShowCreate(true)} style={{
-            width: '100%', padding: '8px', backgroundColor: 'var(--accent)', color: '#fff',
-            border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 500,
+            width: '100%', padding: '9px 12px',
+            background: 'var(--accent-gradient-cta)', color: '#fff',
+            border: 'none', borderRadius: 10, cursor: 'pointer',
+            fontSize: 13, fontWeight: 600,
+            boxShadow: '0 4px 14px rgba(255, 179, 71, 0.28)',
           }}>
             + {t('groupChat.newGroup')}
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
           {rooms.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.6 }}>
               {t('groupChat.noGroups')}
             </div>
           ) : (
@@ -603,15 +606,21 @@ export default function GroupChatPage() {
               const members = room.memberIds
                 .map(id => { const a = allAgents.find(x => x.id === id); return a ? agentDisplayName(a) : '?' })
                 .join(', ')
+              const selected = activeRoom?.id === room.id
               return (
                 <div key={room.id}
                   onClick={() => { setActiveRoom(room); setMessages([]) }}
                   style={{
-                    padding: '10px 14px', cursor: 'pointer',
-                    borderBottom: '1px solid var(--border-subtle)',
-                    backgroundColor: activeRoom?.id === room.id ? 'var(--accent-bg)' : 'transparent',
-                    borderLeft: activeRoom?.id === room.id ? '3px solid var(--accent)' : '3px solid transparent',
+                    padding: '10px 12px', cursor: 'pointer',
+                    borderRadius: 10,
+                    marginBottom: 4,
+                    backgroundColor: selected ? 'var(--accent-2-bg)' : 'transparent',
+                    border: selected ? '1px solid var(--accent-2)' : '1px solid transparent',
+                    backdropFilter: selected ? 'blur(8px)' : 'none',
+                    transition: 'all 160ms ease',
                   }}
+                  onMouseEnter={(e) => { if (!selected) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--bg-glass-hover)' }}
+                  onMouseLeave={(e) => { if (!selected) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent' }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontSize: 16 }}>{''}</span>

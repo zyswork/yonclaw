@@ -109,6 +109,12 @@ pub enum ActionPayload {
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Dreaming 记忆整理（Light/REM 睡眠）
+    /// 直接调用 agent::dreaming::run_dream_phase，不走普通 LLM 对话
+    Dreaming {
+        /// "light" 或 "rem"
+        phase: String,
+    },
 }
 
 fn default_session_strategy() -> String {

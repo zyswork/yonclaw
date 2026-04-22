@@ -48,20 +48,29 @@ export default function Sidebar() {
     return () => mql.removeEventListener('change', handler)
   }, [])
 
-  // 主功能导航（shortcutNum 对应 Cmd+N 快捷键）
-  const mainNav: NavItem[] = [
+  // ─── 聚合后的 4 个语义化分组 ───
+  // 1. 对话
+  const convNav: NavItem[] = [
     { icon: <IconChat size={18} />, label: t('sidebar.chat'), path: '/agents', shortcutNum: 1 },
     { icon: <IconGroup size={18} />, label: t('sidebar.groupChat'), path: '/group-chat', shortcutNum: 2 },
-    { icon: <IconSkills size={18} />, label: t('sidebar.skills'), path: '/skills', shortcutNum: 3 },
-    { icon: <IconCron size={18} />, label: t('sidebar.cron'), path: '/cron', shortcutNum: 4 },
-    { icon: <IconChannels size={18} />, label: t('sidebar.channels'), path: '/channels', shortcutNum: 5 },
   ]
 
-  // 管理导航
-  const manageNav: NavItem[] = [
-    { icon: <IconDashboard size={18} />, label: t('sidebar.dashboard'), path: '/dashboard', shortcutNum: 6 },
-    { icon: <IconMemory size={18} />, label: t('sidebar.memory'), path: '/memory', shortcutNum: 7 },
-    { icon: <IconPlugins size={18} />, label: t('sidebar.plugins'), path: '/plugins', shortcutNum: 8 },
+  // 2. 智能扩展（技能 + 插件 + 记忆）
+  const intelNav: NavItem[] = [
+    { icon: <IconSkills size={18} />, label: t('sidebar.skills'), path: '/skills', shortcutNum: 3 },
+    { icon: <IconPlugins size={18} />, label: t('sidebar.plugins'), path: '/plugins', shortcutNum: 4 },
+    { icon: <IconMemory size={18} />, label: t('sidebar.memory'), path: '/memory', shortcutNum: 5 },
+  ]
+
+  // 3. 自动化（定时任务 + 频道）
+  const autoNav: NavItem[] = [
+    { icon: <IconCron size={18} />, label: t('sidebar.cron'), path: '/cron', shortcutNum: 6 },
+    { icon: <IconChannels size={18} />, label: t('sidebar.channels'), path: '/channels', shortcutNum: 7 },
+  ]
+
+  // 4. 数据洞察（仪表板 = 概览/Token/审计/诊断 tab 承载）+ 广场
+  const dataNav: NavItem[] = [
+    { icon: <IconDashboard size={18} />, label: t('sidebar.dashboard'), path: '/dashboard', shortcutNum: 8 },
     { icon: <IconPlaza size={18} />, label: t('sidebar.plaza'), path: '/plaza', shortcutNum: 9 },
   ]
 
@@ -184,10 +193,12 @@ export default function Sidebar() {
         )}
       </div>
 
-      {/* 分组导航 */}
+      {/* 4 语义化分组：对话 / 智能扩展 / 自动化 / 数据洞察 */}
       <nav style={{ flex: 1, padding: '4px 0', overflowY: 'auto' }}>
-        {renderNavGroup(t('sidebar.sectionMain'), mainNav)}
-        {renderNavGroup(t('sidebar.sectionManage'), manageNav)}
+        {renderNavGroup(t('sidebar.sectionConv') || '对话', convNav)}
+        {renderNavGroup(t('sidebar.sectionIntel') || '智能扩展', intelNav)}
+        {renderNavGroup(t('sidebar.sectionAuto') || '自动化', autoNav)}
+        {renderNavGroup(t('sidebar.sectionData') || '数据洞察', dataNav)}
       </nav>
 
       {/* ── 底部区域 ── */}
@@ -212,49 +223,7 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* 小字链接：审计 / 监控 / 诊断 */}
-        {!collapsed ? (
-          <div className="sidebar-links">
-            <a href="/audit" onClick={(e) => { e.preventDefault(); navigate('/audit') }}>
-              {t('sidebar.audit')}
-            </a>
-            <span className="sidebar-links-dot">&middot;</span>
-            <a href="/token-monitoring" onClick={(e) => { e.preventDefault(); navigate('/token-monitoring') }}>
-              {t('sidebar.tokenMonitor')}
-            </a>
-            <span className="sidebar-links-dot">&middot;</span>
-            <a href="/doctor" onClick={(e) => { e.preventDefault(); navigate('/doctor') }}>
-              {t('sidebar.doctor')}
-            </a>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: '4px 0' }}>
-            <a
-              href="/audit"
-              onClick={(e) => { e.preventDefault(); navigate('/audit') }}
-              className="sidebar-nav-item sidebar-nav-item--collapsed sidebar-tooltip"
-              data-tooltip={t('sidebar.audit')}
-            >
-              <IconAudit size={16} />
-            </a>
-            <a
-              href="/token-monitoring"
-              onClick={(e) => { e.preventDefault(); navigate('/token-monitoring') }}
-              className="sidebar-nav-item sidebar-nav-item--collapsed sidebar-tooltip"
-              data-tooltip={t('sidebar.tokenMonitor')}
-            >
-              <IconTokens size={16} />
-            </a>
-            <a
-              href="/doctor"
-              onClick={(e) => { e.preventDefault(); navigate('/doctor') }}
-              className="sidebar-nav-item sidebar-nav-item--collapsed sidebar-tooltip"
-              data-tooltip={t('sidebar.doctor')}
-            >
-              <IconDoctor size={16} />
-            </a>
-          </div>
-        )}
+        {/* 审计/Token/诊断 已并入仪表板子 tab（Dashboard 页内导航） */}
 
         {/* 分隔线 */}
         <div className="sidebar-divider" />

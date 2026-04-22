@@ -172,7 +172,15 @@ impl PluginManager {
     }
 
     /// 加载一个插件
+    ///
+    /// 同 ID 重复加载会被拒绝：providers 使用 `.extend()` 堆叠，
+    /// 无法按 plugin_id 回退清理，重复加载会导致 dispatcher 路由出错。
     pub fn load_plugin(&mut self, entry: PluginEntry) {
+        if self.plugins.iter().any(|p| p.id == entry.id) {
+            log::warn!("插件 {} 已注册，跳过重复加载", entry.id);
+            return;
+        }
+
         let mut api = PluginApi::new(&entry.id);
         (entry.register)(&mut api);
 

@@ -183,6 +183,14 @@ impl CircuitBreaker {
 }
 
 /// Failover 执行器（含熔断器）
+///
+/// TODO（未接入主路径）：orchestrator 当前直接用 LlmClient::call_stream，
+/// 没走 FailoverExecutor。接入需要：
+/// 1. 在 orchestrator 构造 FailoverExecutor 实例（per agent 或 per session）
+/// 2. `execute(|model| client.call_stream(...))` 包装调用
+/// 3. 把失败 classify 映射到 FailoverError 触发 failover
+/// 现阶段标记为可扩展扩展点。
+#[allow(dead_code)]
 pub struct FailoverExecutor {
     config: ModelChainConfig,
     /// 每个模型的熔断器

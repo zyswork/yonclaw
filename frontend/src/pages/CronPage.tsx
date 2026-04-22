@@ -192,11 +192,20 @@ export default function CronPage() {
   useEffect(() => {
     const listen = (window as any).__TAURI__?.event?.listen
     if (!listen) return
-    const unlisten = listen('cron-run-complete', () => {
+    let cancelled = false
+    let unlistenFn: (() => void) | null = null
+    listen('cron-run-complete', () => {
       loadJobs()
       if (selectedJob) loadRuns(selectedJob)
+    }).then((fn: () => void) => {
+      // 若组件已卸载，直接 unlisten；否则保存 fn 等 cleanup 调
+      if (cancelled) fn()
+      else unlistenFn = fn
     })
-    return () => { unlisten?.then((fn: () => void) => fn()) }
+    return () => {
+      cancelled = true
+      if (unlistenFn) unlistenFn()
+    }
   }, [loadJobs, loadRuns, selectedJob])
 
   const handleToggle = async (job: CronJob) => {
@@ -315,22 +324,19 @@ export default function CronPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 }}>
         <div style={{
           width: 42, height: 42, borderRadius: 12,
-          background: 'var(--accent-gradient)',
+          backgroundColor: 'rgba(216, 206, 228, 0.28)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 4px 16px rgba(16, 185, 129, 0.3)',
         }}>
-          <SvgIcon name="clock" size={22} color="#fff" />
+          <SvgIcon name="clock" size={22} color="var(--accent-2-text)" />
         </div>
         <div>
           <h1 style={{
             margin: 0, fontSize: 22, fontWeight: 700,
-            background: 'var(--accent-gradient)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            color: 'var(--text-heading)',
           }}>
             {t('cron.title')}
           </h1>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             {jobs.length} {jobs.length === 1 ? 'task' : 'tasks'}
           </span>
         </div>
@@ -341,12 +347,11 @@ export default function CronPage() {
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '8px 18px', borderRadius: 10, fontSize: 13, fontWeight: 600,
             cursor: 'pointer', border: 'none', transition: 'all 0.2s ease',
-            background: showCreate ? 'var(--bg-glass)' : 'var(--accent-gradient)',
+            background: showCreate ? 'var(--bg-glass)' : 'var(--accent-gradient-cta)',
             color: showCreate ? 'var(--text-primary)' : '#fff',
-            boxShadow: showCreate ? 'none' : '0 4px 12px rgba(16, 185, 129, 0.3)',
+            boxShadow: showCreate ? 'none' : '0 4px 12px rgba(255, 179, 71, 0.28)',
           }}
         >
-          <SvgIcon name="plus" size={16} color={showCreate ? 'var(--text-primary)' : '#fff'} />
           {showCreate ? t('common.cancel') : t('cron.btnCreate')}
         </button>
       </div>
@@ -539,10 +544,10 @@ export default function CronPage() {
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               padding: '10px 28px', fontSize: 14, fontWeight: 600,
-              background: 'var(--accent-gradient)', color: '#fff', border: 'none',
+              background: 'var(--accent-gradient-cta)', color: '#fff', border: 'none',
               borderRadius: 10, cursor: creating ? 'not-allowed' : 'pointer',
               opacity: creating ? 0.6 : 1, transition: 'opacity 0.2s ease',
-              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+              boxShadow: '0 4px 12px rgba(255, 179, 71, 0.28)',
             }}>
             {creating ? t('common.creating') : t('common.create')}
           </button>

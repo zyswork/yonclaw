@@ -545,6 +545,8 @@ pub struct LlmResponse {
     pub usage: Option<LlmUsage>,
     /// Anthropic extended thinking 内容
     pub thinking_content: String,
+    /// OpenAI Responses API: response.id，用作下轮 previous_response_id
+    pub response_id: Option<String>,
 }
 
 /// Token 使用统计
@@ -712,19 +714,65 @@ impl LlmClient {
     }
 
     pub async fn call_openai(&self, messages: Vec<OpenAiMessage>, temperature: f64, max_tokens: i32) -> Result<String, Box<dyn std::error::Error>> {
+        let tokens = if max_tokens > 0 { max_tokens } else { default_max_tokens(&self.config.provider, &self.config.model) };
+        if tokens <= 0 { return Err("max_tokens 必须为正整数".into()); }
         let url = format!("{}/chat/completions", self.config.base_url.as_deref().unwrap_or("https://api.openai.com/v1"));
-        let request = OpenAiRequest { model: self.config.model.clone(), messages, temperature, max_tokens };
-        let response = self.client.post(&url).header("Authorization", format!("Bearer {}", self.config.api_key)).json(&request).send().await?;
-        let data: OpenAiResponse = response.json().await?;
-        data.choices.first().map(|c| c.message.content.clone()).ok_or("OpenAI 响应为空".into())
+        let request = OpenAiRequest { model: self.config.model.clone(), messages, temperature, max_tokens: tokens };
+
+        // 与流式路径一致：5xx/429 最多重试 3 次，带退避
+        for attempt in 0..3usize {
+            let response = self.client.post(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .json(&request).send().await?;
+            let status = response.status();
+            if status.is_success() {
+                let data: OpenAiResponse = response.json().await?;
+                return data.choices.first().map(|c| c.message.content.clone()).ok_or("OpenAI 响应为空".into());
+            }
+            let body: String = response.text().await.unwrap_or_default().chars().take(300).collect();
+            let is_retryable = status.as_u16() >= 500 || status.as_u16() == 429;
+            if is_retryable && attempt < 2 {
+                let wait = if status.as_u16() == 429 {
+                    match attempt { 0 => 10, _ => 30 }
+                } else { (attempt + 1) as u64 * 2 };
+                log::warn!("call_openai {} 重试 {}/3，等待 {}s", status, attempt + 2, wait);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue;
+            }
+            return Err(format!("OpenAI {} - {}", status, body).into());
+        }
+        Err("OpenAI 请求重试耗尽".into())
     }
 
     pub async fn call_anthropic(&self, messages: Vec<AnthropicMessage>, system: String, temperature: f64, max_tokens: i32) -> Result<String, Box<dyn std::error::Error>> {
+        let tokens = if max_tokens > 0 { max_tokens } else { default_max_tokens(&self.config.provider, &self.config.model) };
+        if tokens <= 0 { return Err("max_tokens 必须为正整数".into()); }
         let url = build_anthropic_url(self.config.base_url.as_deref());
-        let request = AnthropicRequest { model: self.config.model.clone(), messages, system, temperature, max_tokens };
-        let response = self.client.post(&url).header("x-api-key", &self.config.api_key).header("anthropic-version", "2023-06-01").json(&request).send().await?;
-        let data: AnthropicResponse = response.json().await?;
-        data.content.first().and_then(|c| c.text.clone()).ok_or("Anthropic 响应为空".into())
+        let request = AnthropicRequest { model: self.config.model.clone(), messages, system, temperature, max_tokens: tokens };
+
+        for attempt in 0..3usize {
+            let response = self.client.post(&url)
+                .header("x-api-key", &self.config.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&request).send().await?;
+            let status = response.status();
+            if status.is_success() {
+                let data: AnthropicResponse = response.json().await?;
+                return data.content.first().and_then(|c| c.text.clone()).ok_or("Anthropic 响应为空".into());
+            }
+            let body: String = response.text().await.unwrap_or_default().chars().take(300).collect();
+            let is_retryable = status.as_u16() >= 500 || status.as_u16() == 429;
+            if is_retryable && attempt < 2 {
+                let wait = if status.as_u16() == 429 {
+                    match attempt { 0 => 10, _ => 30 }
+                } else { (attempt + 1) as u64 * 2 };
+                log::warn!("call_anthropic {} 重试 {}/3，等待 {}s", status, attempt + 2, wait);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue;
+            }
+            return Err(format!("Anthropic {} - {}", status, body).into());
+        }
+        Err("Anthropic 请求重试耗尽".into())
     }
 
     pub async fn call(&self, messages: Vec<(String, String)>, system_prompt: String, temperature: f64, max_tokens: i32) -> Result<String, Box<dyn std::error::Error>> {
@@ -1148,6 +1196,8 @@ impl LlmClient {
             };
             if !response.status().is_success() {
                 let status = response.status();
+                // 先取 headers（response.text() 会消耗 response）
+                let headers = response.headers().clone();
                 let body_text = response.text().await.unwrap_or_default();
                 let safe_body = body_text
                     .replace(&current_api_key, "***REDACTED***")
@@ -1180,7 +1230,24 @@ impl LlmClient {
                 // 5xx / 429 可重试
                 let is_retryable = status.as_u16() >= 500 || status.as_u16() == 429;
                 if is_retryable && attempt < MAX_RETRIES - 1 {
-                    let wait = (attempt + 1) as u64 * 2;
+                    // 429 特殊处理：优先读 Retry-After header / 响应体中的 retryDelay，否则用更积极的退避
+                    let wait = if status.as_u16() == 429 {
+                        // 1) HTTP Retry-After header
+                        let header_secs = headers.get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.trim().parse::<u64>().ok())
+                            .filter(|s| *s > 0 && *s < 3600);
+                        // 2) 响应体中的 retryDelay（Gemini 格式）或 retry_after
+                        let body_secs = extract_retry_after(&safe_body);
+                        header_secs.or(body_secs)
+                            .unwrap_or_else(|| {
+                                // 3) 兜底：10s / 30s / 60s 积极退避
+                                match attempt { 0 => 10, 1 => 30, _ => 60 }
+                            })
+                            .min(60)  // 本地等待最多 60 秒
+                    } else {
+                        (attempt + 1) as u64 * 2
+                    };
                     log::warn!("LLM API {} 可重试，{}秒后第 {} 次重试", status, wait, attempt + 2);
                     // 通知前端清除已接收的部分 token
                     let _ = tx.send("\x00__XIANZHU_RETRY__".to_string());
@@ -1209,13 +1276,17 @@ impl LlmClient {
             let mut current_sse_event: Option<String> = None;
             // SSE 多行 data 累积缓冲（Responses API 事件 JSON 可能跨行）
             let mut data_accum = String::new();
+            // UTF-8 尾端不完整字节缓冲：chunk 边界可能切断多字节字符（中文/emoji）
+            let mut pending_bytes: Vec<u8> = Vec::new();
 
             let stream_result: Result<(), String> = async {
                 loop {
                     // 检查接收端是否已关闭（会话取消时 receiver 会被 drop）
                     if tx.is_closed() {
-                        log::info!("LLM 流已取消（接收端已关闭）");
-                        return Err("请求已取消".to_string());
+                        log::info!("LLM 流已取消（接收端已关闭），保留已接收 {} 字符", result.content.len());
+                        // 返回 Ok 携带已收到的部分内容，让上层能写入 DB，而不是整个丢弃
+                        result.stop_reason = "cancelled".to_string();
+                        return Ok(());
                     }
                     let maybe_chunk = timeout(Duration::from_secs(60), stream.next())
                         .await.map_err(|_| "流式读取超时（60 秒无数据）".to_string())?;
@@ -1224,7 +1295,23 @@ impl LlmClient {
                         Some(Err(e)) => return Err(e.to_string()),
                         None => break,
                     };
-                    let text = String::from_utf8_lossy(&chunk);
+                    // 把 pending 尾字节与新 chunk 拼起来，按 UTF-8 安全边界解码
+                    // 若尾部是不完整多字节序列（error_len().is_none()），保留给下一 chunk
+                    let mut combined = std::mem::take(&mut pending_bytes);
+                    combined.extend_from_slice(&chunk);
+                    let text = match std::str::from_utf8(&combined) {
+                        Ok(s) => s.to_string(),
+                        Err(e) if e.error_len().is_none() => {
+                            let valid_up_to = e.valid_up_to();
+                            pending_bytes = combined[valid_up_to..].to_vec();
+                            // Safety: from_utf8 guarantees prefix valid
+                            std::str::from_utf8(&combined[..valid_up_to]).unwrap().to_string()
+                        }
+                        Err(_) => {
+                            // 中间真的损坏（非边界切断），退回 lossy 解码
+                            String::from_utf8_lossy(&combined).into_owned()
+                        }
+                    };
                     buffer.push_str(&text);
                     if chunk_debug_count < 3 {
                         log::debug!("SSE raw chunk #{}: {:?}", chunk_debug_count, text.chars().take(500).collect::<String>());
@@ -1606,7 +1693,15 @@ impl LlmClient {
                         *in_think = true;
                         i += 12;
                         continue;
-                    } else if "<think>".starts_with(remaining) || "<commentary>".starts_with(remaining) {
+                    } else if remaining.starts_with("<function>") {
+                        // 参照 OpenClaw #67318: 剥离 Gemma-style <function>...</function> 工具调用负载
+                        *in_think = true;
+                        i += 10;
+                        continue;
+                    } else if "<think>".starts_with(remaining)
+                        || "<commentary>".starts_with(remaining)
+                        || "<function>".starts_with(remaining)
+                    {
                         // 部分匹配，保留在 buffer 等下次
                         break;
                     } else {
@@ -1631,7 +1726,14 @@ impl LlmClient {
                         *in_think = false;
                         i += 13;
                         continue;
-                    } else if "</think>".starts_with(remaining) || "</commentary>".starts_with(remaining) {
+                    } else if remaining.starts_with("</function>") {
+                        *in_think = false;
+                        i += 11;
+                        continue;
+                    } else if "</think>".starts_with(remaining)
+                        || "</commentary>".starts_with(remaining)
+                        || "</function>".starts_with(remaining)
+                    {
                         break;
                     }
                 }
@@ -1826,6 +1928,16 @@ impl LlmClient {
             // 暂不转发思考内容到前端，仅记录
         }
 
+        // OpenClaw #66905: OpenRouter Qwen3 的 reasoning_details 解析
+        // reasoning_details 与 tool_calls 可能在同一 chunk 出现，不能因为发现 reasoning 就 return
+        if let Some(details) = delta["reasoning_details"].as_array() {
+            for d in details {
+                // 格式: {"type": "reasoning", "text": "..."} 或 {"thinking": "..."}
+                let _text = d["text"].as_str().or_else(|| d["thinking"].as_str()).unwrap_or("");
+                // 暂不转发到前端（与 reasoning_content 一致），但保留解析以免被当作正文
+            }
+        }
+
         // 文本内容 — 含 <think> 标签过滤
         if let Some(content) = delta["content"].as_str() {
             if !content.is_empty() {
@@ -1944,7 +2056,17 @@ impl LlmClient {
                                 let _ = tx.send(text.to_string());
                             }
                         }
+                        // OpenClaw: 捕获 response.id 用于下轮 previous_response_id
+                        if let Some(id) = json["response"]["id"].as_str() {
+                            result.response_id = Some(id.to_string());
+                        }
                         result.stop_reason = "stop".to_string();
+                    }
+                    // 也在 response.created 时捕获（有些端点早返）
+                    "response.created" => {
+                        if let Some(id) = json["response"]["id"].as_str() {
+                            result.response_id = Some(id.to_string());
+                        }
                     }
                     // 工具调用（Responses API 格式）
                     "response.function_call_arguments.delta" => {
@@ -2211,6 +2333,129 @@ async fn force_refresh_oauth_token(current_key: &str) -> Option<String> {
     None
 }
 
+/// Hermes-style 结构化错误分类
+///
+/// 每类错误标注 `retryable / should_compress / should_failover / should_refresh_credential`，
+/// 供调用方直接决定行为，不再依赖字符串匹配。
+/// TODO: 后续替换 `classify_llm_error` 的 string-matching 调用点。
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmErrorKind {
+    AuthTransient,        // 401/403 可能 token 过期
+    AuthPermanent,        // 永久拒绝
+    Billing,              // 余额/计费
+    RateLimit,            // 429
+    Overloaded,           // 503/529
+    ServerError,          // 500/502
+    ContextOverflow,      // 触发压缩而非 failover
+    PayloadTooLarge,      // 请求太大（413）
+    ModelNotFound,        // 404 model
+    FormatError,          // 400 请求体格式
+    SessionExpired,       // previous_response_id 失效
+    ThinkingSignature,    // Anthropic 特有
+    SafetyFilter,         // 内容审查拒绝（不可 failover）
+    UpstreamMalformed,    // 响应 JSON 解析失败（短重试）
+    Network,              // 连接失败
+    Timeout,              // 超时
+    Unknown,
+}
+
+impl LlmErrorKind {
+    pub fn retryable(self) -> bool {
+        matches!(self,
+            Self::RateLimit | Self::Overloaded | Self::ServerError
+            | Self::Network | Self::Timeout | Self::AuthTransient
+            | Self::UpstreamMalformed
+        )
+    }
+    pub fn should_compress(self) -> bool {
+        matches!(self, Self::ContextOverflow | Self::PayloadTooLarge)
+    }
+    pub fn should_failover(self) -> bool {
+        matches!(self,
+            Self::Overloaded | Self::ServerError | Self::ModelNotFound
+            | Self::AuthPermanent | Self::Billing
+        )
+    }
+    pub fn should_refresh_credential(self) -> bool {
+        matches!(self, Self::AuthTransient)
+    }
+}
+
+/// 分类错误文本为 LlmErrorKind
+pub fn classify_error_kind(error: &str) -> LlmErrorKind {
+    let lower = error.to_lowercase();
+
+    if lower.contains("no conversation found with session id")
+        || lower.contains("session expired") || lower.contains("session not found")
+        || lower.contains("input item id does not belong to this connection") {
+        return LlmErrorKind::SessionExpired;
+    }
+    if lower.contains("context_length_exceeded") || lower.contains("maximum context length")
+        || lower.contains("context window") || lower.contains("too long") {
+        return LlmErrorKind::ContextOverflow;
+    }
+    if lower.contains("413") || lower.contains("payload too large")
+        || lower.contains("request entity too large") {
+        return LlmErrorKind::PayloadTooLarge;
+    }
+    if lower.contains("thinking_signature") || lower.contains("thinking signature") {
+        return LlmErrorKind::ThinkingSignature;
+    }
+    // 内容审查（Anthropic stop_reason=refusal / OpenAI content_filter）
+    if lower.contains("content_filter") || lower.contains("\"refusal\"")
+        || lower.contains("safety filter") || lower.contains("content policy") {
+        return LlmErrorKind::SafetyFilter;
+    }
+    // 上游响应 JSON 解析失败
+    if lower.contains("expected value at line") || lower.contains("trailing characters")
+        || (lower.contains("json") && lower.contains("parse")) {
+        return LlmErrorKind::UpstreamMalformed;
+    }
+    if lower.contains("429") || lower.contains("rate limit") || lower.contains("too many requests") {
+        return LlmErrorKind::RateLimit;
+    }
+    if lower.contains("503") || lower.contains("529") || lower.contains("overloaded")
+        || lower.contains("service unavailable") {
+        return LlmErrorKind::Overloaded;
+    }
+    if lower.contains("500") || lower.contains("502") || lower.contains("504")
+        || lower.contains("internal server error") || lower.contains("bad gateway") {
+        return LlmErrorKind::ServerError;
+    }
+    if lower.contains("402") || lower.contains("payment required") || lower.contains("insufficient")
+        || lower.contains("quota") || lower.contains("余额不足") || lower.contains("billing") {
+        return LlmErrorKind::Billing;
+    }
+    if lower.contains("401") || (lower.contains("api key") && lower.contains("invalid")) {
+        // OAuth 或 transient 凭证过期型（常见关键词） → 可刷新
+        let transient_hints = ["ya29", "oauth", "token expired", "expired_token",
+            "invalid_grant", "unauthenticated", "credentials", "token has expired"];
+        if transient_hints.iter().any(|k| lower.contains(k)) {
+            return LlmErrorKind::AuthTransient;
+        }
+        return LlmErrorKind::AuthPermanent;
+    }
+    if lower.contains("403") || lower.contains("forbidden") {
+        return LlmErrorKind::AuthPermanent;
+    }
+    if lower.contains("404") && (lower.contains("model") || lower.contains("not found")) {
+        return LlmErrorKind::ModelNotFound;
+    }
+    if lower.contains("400") || lower.contains("bad request") || lower.contains("invalid request") {
+        return LlmErrorKind::FormatError;
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return LlmErrorKind::Timeout;
+    }
+    if lower.contains("connection refused") || lower.contains("connection reset")
+        || lower.contains("connect error") || lower.contains("dns")
+        || (lower.contains("network") && lower.contains("error")) {
+        return LlmErrorKind::Network;
+    }
+    LlmErrorKind::Unknown
+}
+
 pub fn classify_llm_error(error: &str) -> String {
     let lower = error.to_lowercase();
 
@@ -2233,6 +2478,14 @@ pub fn classify_llm_error(error: &str) -> String {
         return "请求过于频繁，建议等待 30 秒后重试".to_string();
     }
 
+    // OpenClaw #66475 / #65028: session 失效类错误，提示新建会话而非认证失败
+    if lower.contains("no conversation found with session id")
+        || lower.contains("input item id does not belong to this connection")
+        || lower.contains("session expired") || lower.contains("session not found")
+    {
+        return "会话已失效，请在侧边栏新建会话后重试".to_string();
+    }
+
     // 401 / unauthorized
     if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key")
         || lower.contains("invalid x-api-key") || lower.contains("authentication") || (lower.contains("api key") && lower.contains("invalid"))
@@ -2246,6 +2499,13 @@ pub fn classify_llm_error(error: &str) -> String {
         || lower.contains("额度") || lower.contains("credit") || lower.contains("billing")
     {
         return "API 额度不足，请充值或更换供应商".to_string();
+    }
+
+    // OpenRouter 404 JSON：{"error":{"code":404,"message":"..."}}
+    if lower.contains("openrouter") && (lower.contains("\"code\":404") || lower.contains("404"))
+        && (lower.contains("model") || lower.contains("not available"))
+    {
+        return "OpenRouter：该模型暂不可用或未订阅，请换模型或检查账户".to_string();
     }
 
     // 404 通用（非 Cloud Code）

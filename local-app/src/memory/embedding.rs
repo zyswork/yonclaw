@@ -50,7 +50,11 @@ impl EmbeddingClient {
     pub fn new(config: EmbeddingConfig) -> Self {
         Self {
             config, fallback_configs: Vec::new(),
-            client: reqwest::Client::new(),
+            // OpenClaw #66418: embedding 请求显式超时，避免悬挂（本地 Ollama 也受尊重）
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build().unwrap_or_default(),
             cache_pool: None,
             cache_hits: std::sync::atomic::AtomicU64::new(0),
             cache_misses: std::sync::atomic::AtomicU64::new(0),
@@ -61,7 +65,11 @@ impl EmbeddingClient {
     pub fn with_cache(config: EmbeddingConfig, pool: sqlx::SqlitePool) -> Self {
         Self {
             config, fallback_configs: Vec::new(),
-            client: reqwest::Client::new(),
+            // OpenClaw #66418: embedding 请求显式超时，避免悬挂（本地 Ollama 也受尊重）
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build().unwrap_or_default(),
             cache_pool: Some(pool),
             cache_hits: std::sync::atomic::AtomicU64::new(0),
             cache_misses: std::sync::atomic::AtomicU64::new(0),

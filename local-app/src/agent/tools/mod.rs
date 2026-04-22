@@ -159,19 +159,26 @@ pub enum ErrorClass {
     Semantic,
     /// 验证失败（lint/test 不通过）— 需修复后重试
     Validation,
+    /// OpenClaw #65922/#66145: 未知工具 — 不可重试（跨工具名累计）
+    UnknownTool,
 }
 
 impl ErrorClass {
     /// 该类错误是否允许自动重试
     pub fn is_retryable(&self) -> bool {
-        !matches!(self, ErrorClass::Permission)
+        !matches!(self, ErrorClass::Permission | ErrorClass::UnknownTool)
     }
 
     /// 从错误文本自动分类
     pub fn classify(error: &str) -> Self {
         let e = error.to_lowercase();
+        // 未知工具（跨不同工具名累计计数，防止 LLM 无限尝试变体名）
+        // 只匹配我们自己产生的精确前缀，避免 bash `command not found` / `which foo: not found` 误触
+        if e.starts_with("工具不存在:") || e.starts_with("tool not found:")
+            || e.starts_with("unknown tool:") {
+            ErrorClass::UnknownTool
         // 权限错误（不可重试）
-        if e.contains("permission") || e.contains("denied") || e.contains("forbidden")
+        } else if e.contains("permission") || e.contains("denied") || e.contains("forbidden")
             || e.contains("安全拦截") || e.contains("安全限制") || e.contains("不允许") {
             ErrorClass::Permission
         // Python 模块缺失 / npm 包缺失 → 外部依赖（区别于普通环境错误）

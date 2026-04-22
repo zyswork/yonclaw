@@ -40,6 +40,21 @@ enum Commands {
         message: Option<String>,
     },
 
+    /// 一次性推理（脚本化用途，无需会话）
+    Infer {
+        /// 要提问的内容
+        prompt: String,
+        /// 指定模型（可选）
+        #[arg(short, long)]
+        model: Option<String>,
+        /// 系统指令前缀（可选）
+        #[arg(short, long)]
+        system: Option<String>,
+        /// 以 JSON 输出结果
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Agent 管理
     #[command(subcommand)]
     Agents(AgentsCmd),
@@ -278,6 +293,9 @@ async fn main() {
     let result = match cli.command {
         Commands::Chat { session, agent, message } => {
             commands::chat::run(&client, agent.as_deref(), session.as_deref(), message.as_deref()).await
+        }
+        Commands::Infer { prompt, model, system, json } => {
+            commands::infer::run(&client, model.as_deref(), &prompt, system.as_deref(), json).await
         }
         Commands::Agents(cmd) => commands::agents::run(&client, cmd).await,
         Commands::Sessions(cmd) => commands::sessions::run(&client, cmd).await,

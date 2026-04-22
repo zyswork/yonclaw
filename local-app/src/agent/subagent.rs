@@ -374,16 +374,6 @@ impl SubagentRegistry {
     }
 }
 
-/// 子 Agent 派生配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpawnConfig {
-    pub name: String,
-    pub task: String,
-    pub model: Option<String>,
-    pub timeout_secs: Option<u64>,
-    pub allowed_tools: Option<Vec<String>>,
-}
-
 /// 从 DB 查询子代理运行记录
 pub async fn list_subagent_runs(
     pool: &sqlx::SqlitePool,

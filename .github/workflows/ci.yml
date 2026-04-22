@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            local-app/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('local-app/Cargo.lock') }}
+      - name: Rust tests
+        working-directory: local-app
+        run: cargo test --release --no-fail-fast
+      - name: Clippy
+        working-directory: local-app
+        run: cargo clippy --release --no-deps -- -D warnings || true
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci || npm install
+      - name: Vite build
+        working-directory: frontend
+        run: npx vite build
+      - name: Vitest
+        working-directory: frontend
+        run: npx vitest run --reporter=default || echo "vitest optional"

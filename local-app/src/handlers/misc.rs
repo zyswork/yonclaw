@@ -10,6 +10,29 @@ use crate::sop;
 use crate::AppState;
 use super::helpers::{load_providers, find_provider_for_model};
 
+/// 解析文档（PDF / DOCX / XLSX / TXT / MD / CSV / JSON 等）为纯文本
+///
+/// 供前端拖拽文档时自动抽取正文，免去 AI 先调工具一来一回。
+/// 底层复用 `doc_parse` 工具同一份解析逻辑。
+#[tauri::command]
+pub async fn parse_document(
+    state: State<'_, Arc<AppState>>,
+    file_path: String,
+    max_chars: Option<u64>,
+) -> Result<String, String> {
+    let mut args = serde_json::json!({ "file_path": file_path });
+    if let Some(n) = max_chars {
+        args["max_chars"] = serde_json::json!(n);
+    }
+    let r = state.orchestrator.tool_manager()
+        .execute_tool("doc_parse", args).await;
+    if r.success {
+        Ok(r.result)
+    } else {
+        Err(r.error.unwrap_or_else(|| "解析失败".to_string()))
+    }
+}
+
 /// 保存聊天中粘贴的图片到磁盘
 #[tauri::command]
 pub async fn save_chat_image(
@@ -64,6 +87,41 @@ pub fn send_notification(app: tauri::AppHandle, title: String, body: String) -> 
         .body(&body)
         .show()
         .map_err(|e| format!("通知发送失败: {}", e))
+}
+
+/// 破坏性操作前自动备份（带原因标签）—— 非 Tauri 命令，内部调用
+///
+/// 存到 `~/Library/Application Support/com.xianzhu.app/backups/auto/{reason}-{ts}.db`
+/// 仅保留最近 10 份 auto 备份，溢出删除最旧的。
+pub async fn auto_backup_before(pool: &sqlx::SqlitePool, reason: &str) -> Result<std::path::PathBuf, String> {
+    let backup_root = dirs::data_dir().unwrap_or_default()
+        .join("com.xianzhu.app/backups/auto");
+    let _ = std::fs::create_dir_all(&backup_root);
+
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let safe_reason: String = reason.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let path = backup_root.join(format!("{}-{}.db", safe_reason, ts));
+
+    sqlx::query(&format!("VACUUM INTO '{}'", path.display()))
+        .execute(pool).await
+        .map_err(|e| format!("自动备份失败: {}", e))?;
+
+    // 只保留最近 10 份
+    if let Ok(entries) = std::fs::read_dir(&backup_root) {
+        let mut files: Vec<_> = entries.flatten()
+            .filter(|e| e.path().extension().map(|x| x == "db").unwrap_or(false))
+            .collect();
+        files.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+        let cutoff = files.len().saturating_sub(10);
+        for old in files.iter().take(cutoff) {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+
+    log::info!("自动备份 [{}]: {}", reason, path.display());
+    Ok(path)
 }
 
 /// 备份数据库到文件

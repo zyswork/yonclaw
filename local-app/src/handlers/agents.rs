@@ -105,6 +105,8 @@ pub async fn delete_agent(
     state: State<'_, Arc<AppState>>,
     agent_id: String,
 ) -> Result<(), String> {
+    // 破坏性操作前自动备份 DB
+    let _ = crate::handlers::misc::auto_backup_before(state.db.pool(), "delete_agent").await;
     state.orchestrator.delete_agent(&agent_id).await
 }
 

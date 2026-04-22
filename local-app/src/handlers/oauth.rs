@@ -328,13 +328,32 @@ pub async fn start_oauth_flow(
         }
     });
 
+    // OpenClaw #64161: URL 校验防 cmd.exe 注入
+    // 方案：只允许 http(s)，且用 url::Url 解析校验结构。
+    // 因下方统一走 Command::arg() / rundll32（非 cmd /C start），& | 等不再需要过滤。
+    let safe_url = {
+        let parsed = url::Url::parse(&url).map_err(|e| format!("无效 URL: {}", e))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(format!("拒绝打开非安全 URL scheme: {}", parsed.scheme()));
+        }
+        // 控制字符仍拒绝（换行可能骗 CLI 参数）
+        if url.chars().any(|c| c.is_control()) {
+            return Err("URL 包含控制字符，拒绝打开".to_string());
+        }
+        url.clone()
+    };
+
     // 打开浏览器
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("open").arg(&url).spawn(); }
+    { let _ = std::process::Command::new("open").arg(&safe_url).spawn(); }
     #[cfg(target_os = "linux")]
-    { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+    { let _ = std::process::Command::new("xdg-open").arg(&safe_url).spawn(); }
     #[cfg(target_os = "windows")]
-    { let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn(); }
+    {
+        // 不用 cmd /C start，改用 rundll32 直接调用 ShellExecute，避免 cmd.exe meta 解析
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &safe_url]).spawn();
+    }
 
     log::info!("OAuth 流程已启动: provider={}, callback=http://localhost:{}", provider, port);
 

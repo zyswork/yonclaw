@@ -31,21 +31,24 @@ export function useVoiceOutput() {
   )
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null)
 
-  const speak = useCallback((text: string) => {
-    if (!text || !window.speechSynthesis) return
+  const onEndCallbackRef = useRef<(() => void) | null>(null)
+
+  const speak = useCallback((text: string, onEnd?: () => void) => {
+    if (!text || !window.speechSynthesis) { onEnd?.(); return }
     window.speechSynthesis.cancel()
 
     const cleaned = stripMarkdown(text)
-    if (!cleaned) return
+    if (!cleaned) { onEnd?.(); return }
 
+    onEndCallbackRef.current = onEnd || null
     const utter = new SpeechSynthesisUtterance(cleaned)
     // 检测语言
     const hasChinese = /[\u4e00-\u9fff]/.test(cleaned)
     utter.lang = hasChinese ? 'zh-CN' : 'en-US'
     utter.rate = 1.0
     utter.onstart = () => setIsSpeaking(true)
-    utter.onend = () => setIsSpeaking(false)
-    utter.onerror = () => setIsSpeaking(false)
+    utter.onend = () => { setIsSpeaking(false); onEndCallbackRef.current?.(); onEndCallbackRef.current = null }
+    utter.onerror = () => { setIsSpeaking(false); onEndCallbackRef.current?.(); onEndCallbackRef.current = null }
     utterRef.current = utter
     window.speechSynthesis.speak(utter)
   }, [])

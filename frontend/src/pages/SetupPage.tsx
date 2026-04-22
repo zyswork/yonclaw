@@ -42,15 +42,15 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       setSetupStatus(s => ({ ...s, node: 'done' }))
     } catch { setSetupStatus(s => ({ ...s, node: 'skip' })) }
 
-    // 默认 Agent
+    // 默认 Agent — 检查已有，若无则延迟到用户完成 provider 配置后（handleSaveProvider）再创建
+    // 这样能用用户 provider 里真实可用的模型，而不是硬编码 gpt-4o
     try {
       const agents = await invoke<Array<{ id: string; name: string }>>('list_agents')
-      if (!agents || agents.length === 0) {
-        await invoke('create_agent', {
-          name: t('chatPage.templateGeneral'), systemPrompt: t('chatPage.defaultPrompt'), model: 'gpt-4o',
-        })
+      if (agents && agents.length > 0) {
+        setSetupStatus(s => ({ ...s, agent: 'done' }))
+      } else {
+        setSetupStatus(s => ({ ...s, agent: 'pending' }))
       }
-      setSetupStatus(s => ({ ...s, agent: 'done' }))
     } catch { setSetupStatus(s => ({ ...s, agent: 'skip' })) }
 
     // 加载技能
@@ -72,20 +72,56 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   const handleSaveProvider = async () => {
     if (!apiKey.trim()) return
     try {
+      const baseUrl = apiUrl.trim() || 'https://api.openai.com/v1'
+      // 先探测真实可用模型（避免硬编码 gpt-4o：用户可能用 Deepseek / Gemini / 其他 OpenAI 兼容服务）
+      let modelIds: string[] = []
+      try {
+        const result = await invoke<{ model_ids?: string[] }>('test_provider_connection', {
+          apiType: 'openai', apiKey: apiKey.trim(), baseUrl: baseUrl || null,
+        })
+        modelIds = result.model_ids || []
+      } catch { /* 探测失败仍允许保存，使用兜底 */ }
+
+      // 从探测结果里挑一个合适的默认：优先 chat 模型，过滤 embedding/tts/whisper 等
+      const firstChatModel = modelIds.find(id => {
+        const low = id.toLowerCase()
+        return !low.includes('embedding')
+          && !low.includes('embed')
+          && !low.includes('tts')
+          && !low.includes('whisper')
+          && !low.includes('moderation')
+      }) || modelIds[0] || 'gpt-4o-mini'
+
+      const builtModels = modelIds.length > 0
+        ? modelIds.slice(0, 10).map(id => ({ id, name: id }))
+        : [{ id: 'gpt-4o-mini', name: 'GPT-4o Mini' }]
+
       const p = await invoke<Array<{ name: string; apiKey?: string; enabled: boolean; id?: string }>>('get_providers') || []
       const custom = {
         id: 'custom-' + Date.now(),
         name: t('settingsExtra.customProvider'),
         apiType: 'openai',
-        baseUrl: apiUrl.trim() || 'https://api.openai.com/v1',
+        baseUrl,
         apiKey: apiKey.trim(),
-        models: [{ id: 'gpt-4o', name: 'GPT-4o' }, { id: 'gpt-4o-mini', name: 'GPT-4o Mini' }],
+        models: builtModels,
         enabled: true,
       }
       p.push(custom)
       await invoke('set_setting', { key: 'providers', value: JSON.stringify(p) })
       setProviders(prev => [...prev, { name: custom.name, hasKey: true }])
       setApiKey('')
+
+      // 如果之前延迟了 agent 创建（runAutoSetup 里无 agent），现在用真实模型补上
+      if (setupStatus.agent === 'pending') {
+        try {
+          await invoke('create_agent', {
+            name: t('chatPage.templateGeneral'),
+            systemPrompt: t('chatPage.defaultPrompt'),
+            model: firstChatModel,
+          })
+          setSetupStatus(s => ({ ...s, agent: 'done' }))
+        } catch { setSetupStatus(s => ({ ...s, agent: 'skip' })) }
+      }
     } catch (e) { toast.error(t('settingsExtra.saveFailed') + ': ' + e) }
   }
 

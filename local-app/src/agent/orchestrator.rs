@@ -8,7 +8,7 @@ use super::skill_tool::SkillTool;
 use super::media::MediaProvider; // 导入 trait 使 describe_image 可用
 use super::skills::SkillManager;
 use super::soul::{SoulEngine, SectionBudget};
-use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, VideoGenerateTool, MusicGenerateTool, TtsTool, SttTool, DocParseTool, DocWriteTool, ClipboardTool, ScreenshotTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, Tool};
+use super::tools::{ToolManager, CalculatorTool, DateTimeTool, FileReadTool, FileWriteTool, FileListTool, FileEditTool, DiffEditTool, FileRollbackTool, BashExecTool, CodeSearchTool, WebFetchTool, WebSearchTool, ImageGenerateTool, VideoGenerateTool, MusicGenerateTool, TtsTool, SttTool, DocParseTool, DocWriteTool, ClipboardTool, ScreenshotTool, ApplyPatchTool, HttpRequestTool, SessionTool, FocusTool, ResearchTool, CollaborateTool, YieldTool, A2aTool, MemoryReadTool, MemoryWriteTool, SettingsTool, ProviderTool, AgentSelfConfigTool, SkillManageTool, CronManageTool, PluginManageTool, BrowserTool, GhReadTool, Tool};
 use super::tools::{parse_tools_config, is_tool_enabled};
 use super::workspace::AgentWorkspace;
 use super::subagent::SubagentRegistry;
@@ -17,6 +17,47 @@ use super::tool_policy::ToolPolicyEngine;
 /// 估算文本的 token 数（中文 1 字 ≈ 1.5 token，英文 1 词 ≈ 1.3 token）
 /// 公开版本供其他模块使用
 pub fn estimate_tokens_pub(text: &str) -> usize { estimate_tokens(text) }
+
+/// Hermes 预压缩：把 tool 输出或长 assistant 内容替换为一行摘要
+///
+/// 识别常见 pattern：
+/// - bash 输出（exit code + 行数）
+/// - JSON 结果（字段数）
+/// - 错误文本（保留错误类型）
+fn compress_tool_output(content: &str, fallback_chars: usize) -> String {
+    let char_count = content.chars().count();
+    // 短内容直接返回
+    if char_count <= fallback_chars { return content.chars().take(fallback_chars).collect(); }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let line_count = lines.len();
+
+    // 错误消息检测 —— 只匹配"错误:"/"Error:"在行首 或 exit code 非零
+    let is_error = content.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("错误:") || t.starts_with("Error:") || t.starts_with("error:")
+            || t.starts_with("ERROR:") || t.starts_with("panic:")
+            || (t.starts_with("exit code") && !t.contains("exit code: 0"))
+    });
+    if is_error {
+        let first: String = content.lines().next().unwrap_or("").chars().take(200).collect();
+        return format!("[工具出错] {} ({} 行)", first, line_count);
+    }
+
+    // 纯 JSON 对象
+    if content.trim_start().starts_with('{') && content.trim_end().ends_with('}') {
+        return format!("[JSON 结果 {} 行，{} 字符]", line_count, char_count);
+    }
+
+    // 纯 JSON 数组
+    if content.trim_start().starts_with('[') && content.trim_end().ends_with(']') {
+        return format!("[JSON 数组 {} 行，{} 字符]", line_count, char_count);
+    }
+
+    // 默认：首行 + 行数统计
+    let first_line: String = lines.first().map(|l| l.chars().take(200).collect()).unwrap_or_default();
+    format!("{} [+ {} more lines, 共 {} 字符]", first_line, line_count.saturating_sub(1), char_count)
+}
 
 fn estimate_tokens(text: &str) -> usize {
     let mut tokens = 0usize;
@@ -209,6 +250,8 @@ pub struct Orchestrator {
     pub approval_manager: super::approval::ApprovalManager,
     /// 活跃会话的取消令牌：session_id → CancellationToken
     active_cancellations: std::sync::Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    /// 插件文本变换注册表（PreLlm 在 send_message_stream 入口生效）
+    pub text_transforms: std::sync::RwLock<crate::plugin_system::text_transforms::TransformRegistry>,
 }
 
 /// RAII 守卫：函数返回时自动从 active_cancellations 中移除会话的取消令牌
@@ -239,6 +282,7 @@ impl Orchestrator {
         tool_manager.register_tool(Box::new(FileRollbackTool));
         tool_manager.register_tool(Box::new(CodeSearchTool));
         tool_manager.register_tool(Box::new(WebFetchTool));
+        tool_manager.register_tool(Box::new(GhReadTool));
         tool_manager.register_tool(Box::new(WebSearchTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(ImageGenerateTool::new(pool.clone())));
         tool_manager.register_tool(Box::new(VideoGenerateTool::new(pool.clone())));
@@ -300,6 +344,9 @@ impl Orchestrator {
             evolution_config: super::self_evolution::EvolutionConfig::default(),
             approval_manager: super::approval::ApprovalManager::new(),
             active_cancellations: std::sync::Mutex::new(HashMap::new()),
+            text_transforms: std::sync::RwLock::new(
+                crate::plugin_system::text_transforms::TransformRegistry::new()
+            ),
         }
     }
 
@@ -335,73 +382,6 @@ impl Orchestrator {
     /// 获取子 Agent 注册表引用
     pub fn subagent_registry(&self) -> &SubagentRegistry {
         &self.subagent_registry
-    }
-
-    /// 派生并执行子 Agent
-    ///
-    /// 创建子 Agent 记录，在后台执行任务，完成后更新状态
-    pub async fn spawn_subagent(
-        &self,
-        parent_id: &str,
-        config: super::subagent::SpawnConfig,
-        api_key: &str,
-        api_type: &str,
-        base_url: Option<&str>,
-    ) -> Result<String, String> {
-        let sub_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().timestamp_millis();
-
-        // 获取父 Agent 信息
-        let parent = {
-            let agents = self.list_agents().await?;
-            agents.into_iter().find(|a| a.id == parent_id)
-                .ok_or("父 Agent 不存在")?
-        };
-
-        // 创建子 Agent 记录
-        let record = super::subagent::SubagentRecord {
-            id: sub_id.clone(),
-            parent_id: parent_id.to_string(),
-            name: config.name.clone(),
-            task: config.task.clone(),
-            status: super::subagent::SubagentStatus::Running,
-            result: None,
-            created_at: now,
-            finished_at: None,
-            timeout_secs: config.timeout_secs.unwrap_or(300),
-        };
-        self.subagent_registry.register(record).await;
-
-        // 创建临时 Agent 用于子任务
-        let model = config.model.unwrap_or(parent.model.clone());
-        let system_prompt = format!(
-            "{}\n\n---\n你是由 Agent「{}」派生的子 Agent。你的任务是：\n{}",
-            parent.system_prompt, parent.name, config.task
-        );
-
-        // 注册临时 Agent 到数据库
-        let sub_agent = self.register_agent(&config.name, &system_prompt, &model).await?;
-        let _sub_agent_id = sub_agent.id.clone();
-
-        // 创建会话
-        let _session = memory::conversation::create_session(&self.pool, &_sub_agent_id, &config.name)
-            .await.map_err(|e| format!("创建子 Agent 会话失败: {}", e))?;
-
-        // 在后台执行子任务
-        let _timeout_secs = config.timeout_secs.unwrap_or(300);
-        let _api_key = api_key.to_string();
-        let _api_type = api_type.to_string();
-        let _base_url = base_url.map(|s| s.to_string());
-
-        // 注意：后台执行尚未实现，标记为 Failed 并记录日志
-        log::warn!("子 Agent {} 后台执行尚未实现，标记为 Failed", sub_id);
-        self.subagent_registry.update_status(
-            &sub_id,
-            super::subagent::SubagentStatus::Failed("后台执行尚未实现".to_string()),
-            None,
-        ).await;
-
-        Ok(sub_id)
     }
 
     /// 获取工具管理器的可变引用（用于注册额外工具）
@@ -524,6 +504,29 @@ impl Orchestrator {
         tx: mpsc::UnboundedSender<String>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String, String> {
+        // 0-transform. 插件文本变换（PreLlm）：把用户输入先过一遍注册的 transform
+        let transformed_owned: String;
+        let user_message: &str = {
+            let reg = self.text_transforms.read().unwrap_or_else(|p| p.into_inner());
+            if reg.list().is_empty() {
+                user_message
+            } else {
+                transformed_owned = reg.apply(user_message, crate::plugin_system::text_transforms::TransformStage::PreLlm);
+                transformed_owned.as_str()
+            }
+        };
+
+        // 0-link. Link Understanding：检测消息里的 URL，抽标题/描述/摘要作为前置上下文
+        // 静默失败：无 URL 或抓取失败均不影响主流程
+        let link_enriched_owned: String;
+        let user_message: &str = match super::link_understanding::enrich_urls(user_message).await {
+            Some(context_block) => {
+                link_enriched_owned = format!("{}{}", context_block, user_message);
+                link_enriched_owned.as_str()
+            }
+            None => user_message,
+        };
+
         // 0. 并发控制：同一 session 串行执行
         let session_lock = {
             let mut locks = self.session_locks.lock().unwrap_or_else(|p| p.into_inner());
@@ -866,7 +869,7 @@ impl Orchestrator {
         if let Some(ref summary) = session_summary {
             messages.push(serde_json::json!({
                 "role": "assistant",
-                "content": format!("[对话摘要] 以下是之前对话的要点：\n\n{}\n\n---\n请基于以上背景继续对话。", summary)
+                "content": super::context_guard::SESSION_SUMMARY_WRAPPER.replace("{}", summary)
             }));
             log::info!("compact: 摘要注入为 assistant 消息（{}字符），boundary_seq={}", summary.len(), compact_boundary);
         }
@@ -1037,7 +1040,7 @@ impl Orchestrator {
                                     if !summary.is_empty() {
                                         messages.push(serde_json::json!({
                                             "role": "assistant",
-                                            "content": format!("[对话摘要] 以下是之前对话的要点：\n\n{}\n\n---\n请基于以上背景继续对话。", summary)
+                                            "content": super::context_guard::SESSION_SUMMARY_WRAPPER.replace("{}", summary)
                                         }));
                                     }
                                 }
@@ -1546,7 +1549,19 @@ impl Orchestrator {
     /// 清除会话的对话历史
     pub async fn clear_history(&self, session_id: &str) -> Result<(), String> {
         memory::conversation::clear_session_history(&self.pool, session_id)
-            .await.map_err(|e| format!("清除对话历史失败: {}", e))
+            .await.map_err(|e| format!("清除对话历史失败: {}", e))?;
+        // 关键：失效消息缓存，否则 10 秒内的下一次请求会读到旧消息
+        if let Ok(mut cache) = self.session_msg_cache.lock() {
+            cache.pop(session_id);
+        }
+        Ok(())
+    }
+
+    /// 手动失效某个 session 的消息缓存（供外部删除路径使用）
+    pub fn invalidate_session_cache(&self, session_id: &str) {
+        if let Ok(mut cache) = self.session_msg_cache.lock() {
+            cache.pop(session_id);
+        }
     }
 
     /// 压缩会话（参考 OpenClaw compact 机制）
@@ -1585,18 +1600,25 @@ impl Orchestrator {
         log::info!("compact: 将压缩 {} 条，保留 {} 条", compact_count, keep_count);
 
         // 构建要压缩的对话文本
-        // 改进：增加字符预算到 16000，每条消息截断到 300 字符，保留更多语义
+        // 改进：增加字符预算到 16000；对 tool/assistant 长输出先预压缩为一行摘要
+        // 参照 Hermes context_compressor.py —— 把 tool 输出替换为 `[tool] 出站行数/退出码` 之类的极简摘要
         let mut conversation_text = String::new();
         let char_budget = 16000usize;
         for (_, role, content) in to_compact.iter() {
-            let truncated: String = content.chars().take(300).collect();
-            let line = format!("{}: {}\n", role, truncated);
+            let compressed_line = if role == "tool" || role == "assistant" {
+                // 预压缩：识别常见 tool 输出 pattern 并极简化
+                compress_tool_output(content, 300)
+            } else {
+                content.chars().take(300).collect()
+            };
+            let line = format!("{}: {}\n", role, compressed_line);
             if conversation_text.len() + line.len() > char_budget { break; }
             conversation_text.push_str(&line);
         }
 
-        // 提取最后一条 user 消息（用于 "MUST PRESERVE" 指令）
-        let last_user_request: String = to_compact.iter()
+        // 提取最后一条 user 消息 —— 必须从所有消息（含 kept tail）里找，
+        // 否则 compact 会把早期 user 请求当成"最新"，严重误导 summarizer。
+        let last_user_request: String = all_messages.iter()
             .rev()
             .find(|(_, role, _)| role == "user")
             .map(|(_, _, content)| content.chars().take(200).collect())
@@ -1607,25 +1629,31 @@ impl Orchestrator {
         let compact_model = agent_info.model.clone();
         log::info!("compact: 使用模型 {} 生成摘要", compact_model);
 
-        // 参照 OpenClaw compaction.ts 的保留指令
+        // Hermes 风格结构化摘要模板：Resolved/Pending 双轴追踪 + 明确的 handoff 标记
         let summary_prompt = format!(
-            "请将以下对话压缩为简洁摘要（最多 800 字符）。使用与对话相同的语言。\n\
+            "你正在做对话压缩。下一轮 LLM 会把这段摘要作为**背景参考**（不是新任务）继续工作。\n\
+             使用与对话相同的语言，最多 1200 字符。\n\
              \n\
-             **必须保留：**\n\
-             - 用户最后的请求是什么，以及当前的处理状态\n\
-             - 活跃的任务及其进度（进行中、已阻塞、待处理）\n\
-             - 已做出的决策及其理由\n\
-             - 待办事项、开放问题和约束条件\n\
-             - 所有文件路径、URL、ID 等标识符必须精确保留\n\
+             请按以下结构输出（缺失段落用「无」）：\n\
              \n\
-             **可以省略：**\n\
-             - 工具调用的详细参数和返回值\n\
-             - 重复的对话内容\n\
-             - 已完成且不再相关的中间步骤\n\
+             ## Context\n\
+             [1-2 句说明这段对话在解决什么问题]\n\
              \n\
-             用户最后的请求: {}\n\
+             ## Resolved\n\
+             [已完成的工作、已采纳的决策、已得出的结论，每条一行 bullet]\n\
              \n\
-             只输出摘要，不要其他内容。\n\n---\n{}\n---",
+             ## Pending\n\
+             [未完成任务、待答问题、阻塞项、TODO，每条一行]\n\
+             \n\
+             ## Key Identifiers\n\
+             [对话中出现的关键文件路径、URL、ID、配置项，必须逐字保留]\n\
+             \n\
+             **硬性要求：**\n\
+             - **不要**在摘要里回答任何尚未处理的问题\n\
+             - **不要**给出新建议，只陈述事实\n\
+             - 用户最后的明确请求：{}\n\
+             \n\
+             ---\n{}\n---",
             last_user_request, conversation_text
         );
 
@@ -1635,7 +1663,7 @@ impl Orchestrator {
             model: compact_model,
             base_url: base_url.map(|s| s.to_string()),
             temperature: Some(0.2),
-            max_tokens: Some(1024),
+            max_tokens: Some(1536),  // Hermes 风格结构化摘要 ~1200 字符，留富余
             thinking_level: None,
         };
         let client = LlmClient::new(config);
@@ -1748,6 +1776,7 @@ mod tests {
         tm.register_tool(Box::new(BashExecTool));
         tm.register_tool(Box::new(CodeSearchTool));
         tm.register_tool(Box::new(WebFetchTool));
+        tm.register_tool(Box::new(GhReadTool));
         tm.register_tool(Box::new(MemoryReadTool::new(pool.clone())));
         tm.register_tool(Box::new(MemoryWriteTool::new(pool.clone())));
         let defs = tm.get_tool_definitions();

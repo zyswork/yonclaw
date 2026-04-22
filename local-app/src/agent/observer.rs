@@ -130,6 +130,8 @@ impl EventBroadcaster {
 
 impl Default for EventBroadcaster {
     fn default() -> Self {
-        Self::new(100)
+        // 容量从 100 提升到 512：一次长任务可能 15 轮 × 多工具 = 几十事件，
+        // 加上多订阅者（审计日志/前端/telemetry），100 易触发 Lagged 丢事件
+        Self::new(512)
     }
 }

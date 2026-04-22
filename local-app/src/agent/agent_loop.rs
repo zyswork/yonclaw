@@ -597,7 +597,17 @@ pub async fn run_agent_loop(
             }
         } else {
             // 串行执行
+            let mut cancelled_mid_tools = false;
             for (i, tc) in &parallel_tasks {
+                // 取消检查：避免取消后仍执行后续工具（多工具批处理场景常见）
+                if let Some(ref token) = cancel_token {
+                    if token.is_cancelled() {
+                        log::info!("Agent loop 工具链执行被取消（已完成 {}/{}）", i, total_tools);
+                        let _ = tx.send("\n\n⚠️ 已取消\n".to_string());
+                        cancelled_mid_tools = true;
+                        break;
+                    }
+                }
                 log::info!("执行工具 {}/{}: {} (id={})", i + 1, total_tools, tc.name, tc.id);
                 let _ = tx.send(format!("<!--exec:{{\"tool\":\"{}\",\"index\":{},\"total\":{},\"status\":\"running\"}}-->", tc.name, i + 1, total_tools));
 
@@ -694,7 +704,12 @@ pub async fn run_agent_loop(
                     let error_class = super::tools::ErrorClass::classify(&result_text);
                     let error_preview: String = result_text.chars().take(200).collect();
                     // 循环检测：按 "工具名:错误类型" 计数（不是精确错误文本）
-                    let fail_sig = format!("{}:{:?}", tc.name, error_class);
+                    // OpenClaw #65922/#66145: UnknownTool 类跨工具名累计，防止 LLM 尝试变体名
+                    let fail_sig = if matches!(error_class, super::tools::ErrorClass::UnknownTool) {
+                        "*:UnknownTool".to_string()
+                    } else {
+                        format!("{}:{:?}", tc.name, error_class)
+                    };
                     fail_history.push(fail_sig.clone());
                     let repeat_count = fail_history.iter().filter(|s| **s == fail_sig).count();
 
@@ -750,6 +765,9 @@ pub async fn run_agent_loop(
                         }
                     }
                 }
+            }
+            if cancelled_mid_tools {
+                break;
             }
         }
 
@@ -996,7 +1014,8 @@ async fn execute_builtin_tool(
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     tool_name: name.to_string(),
-                    arguments: args.clone(),
+                    // OpenClaw #61077/#64790: 审批卡片前 redact 敏感字段，避免密钥泄漏
+                    arguments: super::approval::redact_secrets(&args),
                     safety_level: "approval".to_string(),
                     timestamp: chrono::Utc::now().timestamp_millis(),
                 };
@@ -1022,6 +1041,8 @@ async fn execute_builtin_tool(
                         return (msg, false, "user_denied", 0);
                     }
                     _ => {
+                        // OpenClaw #66239: 超时主动清理 pending，防止竞态下用户误点导致 Err 被吞
+                        mgr.expire(&req_id);
                         // 审批超时 → 升级通知
                         log::warn!("工具 {} 审批超时，检查是否有上级 Agent 可升级", name);
                         deps.event_broadcaster.emit(super::observer::AgentEvent::ToolBlocked {
@@ -1035,7 +1056,7 @@ async fn execute_builtin_tool(
                             &args.to_string(), Some("审批超时"), false,
                             "timeout_escalation", "approval", 0,
                         ).await;
-                        return ("审批超时（60秒），已记录并通知。如需执行请重新发起。".to_string(), false, "approval_timeout", 0);
+                        return ("审批超时（30秒），已记录并通知。如需执行请重新发起。".to_string(), false, "approval_timeout", 0);
                     }
                 }
             } else {
@@ -1216,6 +1237,7 @@ mod tests {
             tool_calls: vec![],
             stop_reason: "stop".to_string(),
             usage: None,
+            response_id: None,
         };
         append_assistant_message(&mut messages, &response, "openai");
         assert_eq!(messages.len(), 1);
@@ -1236,6 +1258,7 @@ mod tests {
             }],
             stop_reason: "tool_use".to_string(),
             usage: None,
+            response_id: None,
         };
         append_assistant_message(&mut messages, &response, "openai");
         assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 1);

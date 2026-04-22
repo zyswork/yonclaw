@@ -1,6 +1,12 @@
 import '@testing-library/jest-dom'
 import { vi } from 'vitest'
 
+// Polyfill scrollIntoView（jsdom 不实现）
+Object.defineProperty(Element.prototype, 'scrollIntoView', {
+  value: vi.fn(),
+  writable: true,
+})
+
 // Mock window.matchMedia（jsdom 不支持）
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

@@ -74,10 +74,18 @@ function getModelColor(model: string): string {
 }
 
 /** 模型名缩写显示 */
-function getModelLabel(model: string): string {
-  // 如果太长就截短
-  if (model.length > 20) return model.slice(0, 18) + '...'
-  return model
+function getModelLabel(model: string, providerMap?: Record<string, string>): string {
+  // 先把 `custom-xxx/mimo-v2-pro` 转成 `mimo / mimo-v2-pro`
+  let label = model
+  const slash = model.indexOf('/')
+  if (slash > 0 && providerMap) {
+    const pid = model.slice(0, slash)
+    const rest = model.slice(slash + 1)
+    const name = providerMap[pid]
+    if (name && name !== pid) label = `${name} / ${rest}`
+  }
+  if (label.length > 20) return label.slice(0, 18) + '...'
+  return label
 }
 
 export default function AgentListPage() {
@@ -90,13 +98,20 @@ export default function AgentListPage() {
   const [search, setSearch] = useState('')
   const [stats, setStats] = useState<Record<string, AgentStats>>({})
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
+  const [providerMap, setProviderMap] = useState<Record<string, string>>({})
 
   const loadAgents = useCallback(async () => {
     try {
       setLoading(true)
-      const result = await invoke<Agent[]>('list_agents_with_stats')
+      const [result, providers] = await Promise.all([
+        invoke<Agent[]>('list_agents_with_stats'),
+        invoke<Array<{ id: string; name: string }>>('get_providers').catch(() => []),
+      ])
       setAgents(result)
       setError('')
+      const map: Record<string, string> = {}
+      for (const p of providers || []) { if (p.id && p.name) map[p.id] = p.name }
+      setProviderMap(map)
 
       // 从单次查询结果中提取统计数据（不再 N+1）
       const statsMap: Record<string, AgentStats> = {}
@@ -385,7 +400,7 @@ export default function AgentListPage() {
                       color: getModelColor(agent.model),
                       fontWeight: 600, letterSpacing: '0.01em',
                     }}>
-                      {getModelLabel(agent.model)}
+                      {getModelLabel(agent.model, providerMap)}
                     </span>
                   </div>
 

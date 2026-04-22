@@ -111,6 +111,8 @@ impl TokenCounter {
     pub fn model_context_window(model: &str) -> usize {
         let m = model.to_lowercase();
         match &*m {
+            // OpenClaw #66453: gpt-5.4-pro 前向兼容，256K 窗口
+            _ if m.starts_with("gpt-5.4-pro") || m.starts_with("gpt-5-pro") => 256_000,
             _ if m.starts_with("gpt-5") => 128_000,
             _ if m.starts_with("gpt-4o") => 128_000,
             _ if m.starts_with("gpt-4-turbo") => 128_000,

@@ -20,6 +20,8 @@ import McpTab from '../components/McpTab'
 import ChannelsTab from '../components/ChannelsTab'
 import Select from '../components/Select'
 import ProviderModelSelector from '../components/ProviderModelSelector'
+import { prettyModel } from '../utils/pretty-model'
+import { trackRecent } from '../utils/recent'
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -111,25 +113,41 @@ export default function AgentDetailPage() {
   const [agent, setAgent] = useState<Agent | null>(null)
   const [activeTab, setActiveTab] = useState<TabId>('chat')
   const [loading, setLoading] = useState(true)
+  // provider_id → display name 映射（把 custom-1774861052113 替换为 "mimo"）
+  const [providerNameMap, setProviderNameMap] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (!agentId) return
     setActiveTab('chat')
     setAgent(null)
     setLoading(true)
+    let cancelled = false
     ;(async () => {
       try {
-        const agents = await invoke<Agent[]>('list_agents')
+        const [agents, providers] = await Promise.all([
+          invoke<Agent[]>('list_agents'),
+          invoke<Array<{ id: string; name: string }>>('get_providers').catch(() => []),
+        ])
+        if (cancelled) return
         const found = agents.find((a) => a.id === agentId)
-        if (found) setAgent(found)
+        if (found) {
+          setAgent(found)
+          trackRecent('agent', found.id, found.name, { model: found.model })
+        }
+        const map: Record<string, string> = {}
+        for (const p of providers || []) { if (p.id && p.name) map[p.id] = p.name }
+        setProviderNameMap(map)
       } catch (e) {
+        if (cancelled) return
         console.error(e)
         toast.error(t('common.error') + ': ' + String(e))
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     })()
+    return () => { cancelled = true }
   }, [agentId])
+
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('common.loading')}</div>
   if (!agent || !agentId) return <div style={{ padding: 40, textAlign: 'center' }}>{t('agentDetail.notFound')}</div>
@@ -149,8 +167,8 @@ export default function AgentDetailPage() {
           <span style={{
             fontSize: 12, padding: '2px 8px', borderRadius: 4,
             backgroundColor: 'var(--bg-glass)', color: 'var(--text-secondary)',
-          }}>
-            {agent.model}
+          }} title={agent.model}>
+            {prettyModel(agent.model, providerNameMap)}
           </span>
         </div>
       </div>
